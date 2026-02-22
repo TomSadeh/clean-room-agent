@@ -1,33 +1,43 @@
-# OpenClaw Context Curation Experiment
+# Clean Room Agent
 
-**Status**: Reconnaissance complete, implementation deferred (post-alpha)
-**Thesis**: Strategic pre-filtering of what the model sees produces better outputs than larger models with naive context.
-**Approach**: Three-prompt retrieval strategy, stress-tested with a deliberately small model.
+**Status**: Research and design phase (post-alpha)
+**Thesis**: The primary bottleneck in LLM application performance is not model capability but context curation.
 
 ## Core Idea
 
 LLM agent performance is bottlenecked by context management, not model capability. Researchers are trying to make models better at finding relevant items in a noisy room. Our approach is to clean the room before the model enters. The model's job is reasoning, not filtering. Separate the responsibilities.
 
-## Three-Prompt Strategy
+## The N-Prompt Architecture
 
-The experiment uses a three-stage retrieval pipeline to progressively narrow what the coding agent sees:
+A custom coding agent harness built around a multi-stage context curation pipeline:
 
-1. **Scope & Relevance Filter** — Takes the full repository and the task description, filters down to a scope that a small context window can handle. This is the coarse pass: which files, modules, and directories are even in the ballpark?
+1. **Centralized Knowledge Base** — Everything the system has ever done, learned, or encountered, structured and indexed. Self-maintaining: grows automatically with every task. Cold-startable from git history.
 
-2. **Precision Filter** — Takes the scoped material from stage 1 and extracts exactly what is relevant to the coding task. Function signatures, type definitions, dependencies, test expectations, relevant documentation. No noise.
+2. **Deterministic Retrieval** — Not embedding similarity hoping to capture relevance. Deterministic metadata extraction first, AI-assisted only for ambiguous items, grounded with confirmed metadata.
 
-3. **Full Prompt** — The actual coding prompt, grounded with the curated context from stage 2. The model receives only what it needs to reason about the task.
+3. **N-Stage Prompt Pipeline** — Early stages filter and ground. Later stages reason and execute. Each prompt starts clean with curated context. No conversation accumulation, no compaction, no degradation.
 
-The pipeline is designed to be stress-tested with a very small model (7B class or smaller) to prove that context curation, not model scale, is the primary driver of agent quality.
+4. **Per-Stage LoRA Adapters** (long-term) — One per pipeline stage, fine-tuned for that stage's specific job. Same base model, tiny adapter swap between stages.
+
+**Result**: A 32K context window at nearly 100% signal relevance, versus a 200K window at 10-15% effective utilization.
+
+## MVP: Three-Prompt Strategy
+
+The initial experiment uses a three-stage pipeline as the minimum viable version:
+
+1. **Scope & Relevance Filter** — Full repository + task description → manageable scope for a small context window.
+2. **Precision Filter** — Scoped material → exactly the context needed for the coding task.
+3. **Full Prompt** — Curated context + task description → code generation.
+
+Stress-tested with a deliberately small model (7B class or smaller) to prove context curation, not model scale, is the primary driver of agent quality.
 
 ## Prior Art
 
-This approach is validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, where a 4B local model with curated retrieval outperforms much larger models with full context. The experiment extends this thesis from game narration to coding agents.
+Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, where a 4B local model with curated retrieval outperforms much larger models with full context.
 
-## Target Platform: OpenClaw
+## Repository Contents
 
-[OpenClaw](https://github.com/openclaw/openclaw) is the test harness. See [findings/architecture-sweep.md](findings/architecture-sweep.md) for the full reconnaissance report.
-
-## Strategic Notes
-
-The thesis that context curation beats model scale is a competitive advantage. If the experiment validates in the coding domain, results will not be published immediately. This is a moat, not a paper.
+- `findings/architecture-sweep.md` — OpenClaw architecture reconnaissance (intervention surfaces, context management layers)
+- `findings/three-prompt-strategy.md` — Detailed three-prompt MVP design and stress test matrix
+- `context_management_and_agents_review.md` — Survey of 12 open-source coding agent harnesses and LLM context management research
+- `conversation_summary_2026_02_22.md` — Full N-Prompt architecture design, Auto-GM vision, and MapGen V3 review notes
