@@ -66,7 +66,7 @@ tests/
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Scoring | Weighted deterministic signals | Interpretable and tunable without model training. |
-| Task parsing | Heuristics first, optional local LLM fallback | Deterministic default behavior with graceful fallback. |
+| Task parsing | Heuristics first, optional local LLM assist | Deterministic by default. LLM path is explicit opt-in (`--llm-assist`), not a silent fallback. |
 | Budget control | Priority-based eviction and demotion | Preserve highest-value context under hard token limits. |
 | Context output | Typed dataclasses + separate renderers | Easier testing and format portability. |
 

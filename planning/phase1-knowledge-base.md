@@ -254,7 +254,7 @@ clean-room-agent/
 2. Simple `tsconfig.json` `baseUrl` + `paths` mapping (best-effort, no `extends` chains)
 3. Non-relative, non-mapped imports: assumed external, discarded
 
-**Dependency kinds**: `"import"` (standard), `"type_ref"` (TypeScript `import type`). `"call"` and `"inheritance"` reserved in schema for post-MVP enhancement — not populated in Phase 1 and no phase currently writes them. Kept to avoid a schema migration later.
+**Dependency kinds**: `"import"` (standard), `"type_ref"` (TypeScript `import type`). Only these two kinds exist in the schema. Add others when a phase actually needs to write them.
 
 Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs) to avoid filesystem lookups during resolution.
 
@@ -302,7 +302,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 11. Log indexing run metadata (files scanned, changed, duration, status) -> **raw**
 12. Report results
 
-**Error handling**: Individual file parse failures caught and logged, indexing continues. Each file's data committed atomically.
+**Error handling**: File parse failures raise immediately by default (fail-fast — a parse failure likely means the parser is broken). Use `--continue-on-error` flag to log failures and continue when deliberately debugging other parts. Each file's data committed atomically.
 
 **Depends on**: Steps 1-6 (everything)
 
@@ -328,7 +328,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent — see Phase 3 plan.
 
-**LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. Graceful fallback on JSON parse failure.
+**LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. JSON parse failure raises with full context (raw response included).
 
 **Query API** (`KnowledgeBase` class) - reads exclusively from the **curated DB**. This is the contract Phase 2 depends on:
 - `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`

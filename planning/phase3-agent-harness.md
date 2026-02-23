@@ -13,9 +13,7 @@ The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces va
 ## Scope Boundary
 
 - `In scope`: LLM client, prompt builder, response parser, patch application, validation, retry loop, solve orchestration.
-- `Deferred`: Baseline context construction (validation/benchmarking concern, outside active plan).
-- `Out of scope`: External benchmark-suite loading, benchmark runner, pass-rate reporting, config matrix comparison.
-- `Out of scope`: Thesis validation.
+- `Out of scope`: Baseline context mode, benchmark loading/running/reporting, thesis validation.
 
 ---
 
@@ -64,11 +62,10 @@ tests/
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), plus optional SDK adapters for API providers in `agent/llm_client.py` | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Adapters keep interface extensible. |
+| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), wrapped in `agent/llm_client.py` | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Add other providers when actually needed. |
 | Output format | Search-and-replace blocks (primary), unified diff (fallback) | S&R blocks are easier for small models and easier to validate. |
-| Patch isolation | `git worktree` per attempt, with fallback | Clean rollback on failure and isolated retries. Fallback to git stash/rollback or temp directory copy if worktree creation fails (Windows long-path issues). Test worktree lifecycle early on Windows. |
+| Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. Worktree creation must succeed — if it fails (e.g., Windows long-path issues), error out with diagnostic context. Test worktree lifecycle early on Windows. |
 | Retry strategy | Fresh prompt with structured error context, max 3 attempts | Bounded retries and deterministic behavior. |
-| Baseline approach | **Deferred** | Baseline context mode design is a validation concern outside the active plan. Phase 3 builds the pipeline solve path only. No baseline implementation files are created in Phase 3. |
 
 ---
 
@@ -118,7 +115,7 @@ class AttemptRecord:
 @dataclass
 class TaskResult:
     task_id: str
-    mode: str                         # "pipeline" or "baseline"
+    mode: str                         # "pipeline"
     success: bool
     attempts: list[AttemptRecord]
     total_tokens: int
@@ -176,7 +173,7 @@ class TaskResult:
 **Requirements**:
 - Primary parse format: search-and-replace blocks.
 - Fallback formats: unified diff, then fenced replacements.
-- Robust malformed-block handling with non-crashing behavior.
+- Malformed blocks raise with full context (raw block content included) so you see exactly what the model produced.
 
 ---
 
@@ -230,15 +227,7 @@ class TaskResult:
 
 ---
 
-### Step 7: Baseline Context Mode (Deferred)
-
-**Status**: Deferred. Baseline context mode is a validation/benchmarking concern outside the active plan. Its design (how naive, what it reads, filesystem vs curated DB) is intentionally postponed.
-
-**Implementation rule**: Do not create `baseline.py` or baseline tests in Phase 3.
-
----
-
-### Step 8: Agent Harness + CLI
+### Step 7: Agent Harness + CLI
 
 **Delivers**: `cra solve` end-to-end command.
 
@@ -275,9 +264,7 @@ Step 1 (LLM Client)
   +--> Step 2 (Prompt Builder)    --|
   +--> Step 3 (Response Parser)   --|--> Step 6 (Retry Loop)
   +--> Step 4 (Patch Application) --|        |
-  +--> Step 5 (Validation)        --|        +--> Step 8 (Agent Harness + CLI)
-
-Step 7 (Baseline Context Mode) - deferred
+  +--> Step 5 (Validation)        --|        +--> Step 7 (Agent Harness + CLI)
 
 [All steps depend on Phases 1 + 2]
 ```
@@ -300,7 +287,7 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <mo
 **Gate criteria**:
 1. `cra solve` runs end-to-end without crashes.
 2. At least one retry path succeeds on a real task and emits a valid unified diff.
-3. Retry loop handles parse failures and patch failures gracefully.
+3. Retry loop surfaces parse failures and patch failures with actionable context.
 4. Local validation output is structured and actionable.
 5. Logs are sufficient to debug failed attempts.
 6. Raw DB contains complete attempt records (including raw LLM responses) for every solve run.
