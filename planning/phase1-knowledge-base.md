@@ -2,7 +2,7 @@
 
 ## Context
 
-This is the foundation layer of the Clean Room Agent. It creates all three database schemas (curated, raw, session) and indexes a codebase into the curated DB with structured metadata — AST-extracted symbols, dependency graphs, docstrings, comments, git history, and LLM-generated file summaries. No embeddings, no vector search. Everything is structured and queryable with deterministic SQL.
+This is the foundation layer of the Clean Room Agent. It creates all three database schemas (curated, raw, session) and indexes a codebase into the curated DB with structured metadata - AST-extracted symbols, dependency graphs, docstrings, comments, git history, and LLM-generated file summaries. No embeddings, no vector search. Everything is structured and queryable with deterministic SQL.
 
 Phase 1 also establishes the connection factory and raw DB logging infrastructure. Indexing run metadata is logged to raw DB. Session DB schema is created but not populated until Phase 2/3.
 
@@ -87,7 +87,7 @@ clean-room-agent/
 | CLI | Click | Mature, battle-tested |
 | Tree-sitter | Individual packages (`tree-sitter-python`, `-typescript`, `-javascript`) | Minimal deps, latest grammar versions, only 3 languages needed |
 | DB | Raw SQL + helper functions | No ORM overhead, full control over queries |
-| LLM client | `httpx` to local Ollama | 100% local inference, no data leaves the machine. Model is configurable — use whatever's loaded in Ollama |
+| LLM client | `httpx` to local Ollama | 100% local inference, no data leaves the machine. Model is configurable - use whatever's loaded in Ollama |
 | Linter | Ruff | Replaces flake8+isort+black in one tool |
 
 ---
@@ -110,14 +110,14 @@ clean-room-agent/
 **Delivers**: Working Python package, `cra` CLI command (help only), all three SQLite schemas (curated, raw, session), connection factory, basic CRUD helpers for each DB.
 
 **Files**:
-- `pyproject.toml` — hatchling build, dependencies, `[project.scripts] cra = "clean_room.cli:main"`
+- `pyproject.toml` - hatchling build, dependencies, `[project.scripts] cra = "clean_room.cli:main"`
 - `src/clean_room/__init__.py`, `__main__.py`
-- `src/clean_room/cli.py` — Click group with stub `index` command
-- `src/clean_room/db/connection.py` — Connection factory: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. WAL mode, foreign keys, `sqlite3.Row` factory. Manages DB file paths under `.clean_room/` (curated.sqlite, raw.sqlite, sessions/session_<task_id>.sqlite).
-- `src/clean_room/db/schema.py` — Full DDL for all three DBs: `create_curated_schema()`, `create_raw_schema()`, `create_session_schema()`
-- `src/clean_room/db/queries.py` — Curated DB helpers: `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
-- `src/clean_room/db/raw_queries.py` — Raw DB helpers: `insert_index_run`, `insert_retrieval_decision`, `insert_task_run`, `insert_run_attempt`, `insert_validation_result`, `insert_session_archive`
-- `src/clean_room/db/session_queries.py` — Session DB helpers: `set_retrieval_state`, `get_retrieval_state`, `set_working_context`, `get_working_context`, `set_scratch_note`, `get_scratch_notes`
+- `src/clean_room/cli.py` - Click group with stub `index` command
+- `src/clean_room/db/connection.py` - Connection factory: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. WAL mode, foreign keys, `sqlite3.Row` factory. Manages DB file paths under `.clean_room/` (curated.sqlite, raw.sqlite, sessions/session_<task_id>.sqlite).
+- `src/clean_room/db/schema.py` - Full DDL for all three DBs: `create_curated_schema()`, `create_raw_schema()`, `create_session_schema()`
+- `src/clean_room/db/queries.py` - Curated DB helpers: `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
+- `src/clean_room/db/raw_queries.py` - Raw DB helpers: `insert_index_run`, `insert_retrieval_decision`, `insert_task_run`, `insert_run_attempt`, `insert_validation_result`, `insert_session_archive`
+- `src/clean_room/db/session_queries.py` - Session DB helpers: `set_retrieval_state`, `get_retrieval_state`, `set_working_context`, `get_working_context`, `set_scratch_note`, `get_scratch_notes`
 - `tests/conftest.py`, `tests/test_db.py`
 
 **Curated DB schema highlights** (existing tables, unchanged):
@@ -129,17 +129,17 @@ clean-room-agent/
 - Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
 
 **Raw DB schema highlights** (new):
-- `index_runs` — timestamp, repo_path, files_scanned, files_changed, duration_ms, status
-- `retrieval_decisions` — task_id, stage, file_id, score, included, reason, timestamp
-- `task_runs` — task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp
-- `run_attempts` — task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp
-- `validation_results` — attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
-- `session_archives` — task_id, session_blob (full session DB content), archived_at
+- `index_runs` - timestamp, repo_path, files_scanned, files_changed, duration_ms, status
+- `retrieval_decisions` - task_id, stage, file_id, score, included, reason, timestamp
+- `task_runs` - task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp
+- `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp
+- `validation_results` - attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
+- `session_archives` - task_id, session_blob (full session DB content), archived_at
 
 **Session DB schema highlights** (new):
-- `retrieval_state` — key-value store for retrieval pipeline state (stage, scores, decisions)
-- `working_context` — staged context fragments being assembled during retrieval/solve
-- `scratch_notes` — freeform per-task notes (error classifications, retry context)
+- `retrieval_state` - key-value store for retrieval pipeline state (stage, scores, decisions)
+- `working_context` - staged context fragments being assembled during retrieval/solve
+- `scratch_notes` - freeform per-task notes (error classifications, retry context)
 
 **Verify**: `pip install -e ".[dev]" && cra --help && pytest tests/test_db.py`
 
@@ -150,8 +150,8 @@ clean-room-agent/
 **Delivers**: Walk a repo, detect languages, compute content hashes, diff against previous index run.
 
 **Files**:
-- `src/clean_room/indexer/file_scanner.py` — `scan_repo(repo_path) -> Iterator[FileInfo]`
-- `src/clean_room/indexer/incremental.py` — `diff_files(conn, repo_id, files) -> IncrementalDiff`
+- `src/clean_room/indexer/file_scanner.py` - `scan_repo(repo_path) -> Iterator[FileInfo]`
+- `src/clean_room/indexer/incremental.py` - `diff_files(conn, repo_id, files) -> IncrementalDiff`
 - `tests/test_file_scanner.py`
 
 **Key details**:
@@ -169,11 +169,11 @@ clean-room-agent/
 **Delivers**: The `LanguageParser` protocol and complete Python implementation. This establishes the pattern for all parsers.
 
 **Files**:
-- `src/clean_room/parsers/base.py` — Protocol + dataclasses: `ExtractedSymbol`, `ExtractedDocstring`, `ExtractedComment`, `ExtractedImport`, `ParseResult`
-- `src/clean_room/parsers/python_parser.py` — Full Python parser
-- `src/clean_room/extractors/docstrings.py` — Format detection (Google/NumPy/Sphinx/plain) + structured field parsing
-- `src/clean_room/extractors/comments.py` — Comment classification heuristics
-- `src/clean_room/parsers/registry.py` — Language -> parser dispatch
+- `src/clean_room/parsers/base.py` - Protocol + dataclasses: `ExtractedSymbol`, `ExtractedDocstring`, `ExtractedComment`, `ExtractedImport`, `ParseResult`
+- `src/clean_room/parsers/python_parser.py` - Full Python parser
+- `src/clean_room/extractors/docstrings.py` - Format detection (Google/NumPy/Sphinx/plain) + structured field parsing
+- `src/clean_room/extractors/comments.py` - Comment classification heuristics
+- `src/clean_room/parsers/registry.py` - Language -> parser dispatch
 - `tests/fixtures/sample_python.py`, `tests/test_python_parser.py`
 
 **Python parser extracts**:
@@ -213,14 +213,14 @@ clean-room-agent/
 **Files**:
 - `src/clean_room/parsers/typescript_parser.py`
 - `src/clean_room/parsers/javascript_parser.py`
-- `src/clean_room/parsers/_js_common.py` — Shared JSDoc parsing, JS/TS comment handling
+- `src/clean_room/parsers/_js_common.py` - Shared JSDoc parsing, JS/TS comment handling
 - `tests/fixtures/sample_typescript.ts`, `tests/fixtures/sample_javascript.js`
 - `tests/test_typescript_parser.py`, `tests/test_javascript_parser.py`
 
 **TypeScript additions beyond Python**:
 - Symbol kinds: `interface_declaration`, `type_alias_declaration`, `enum_declaration`, `method_definition`, `arrow_function` (when const-assigned)
 - `export_statement` wrapping declarations
-- JSDoc (`/** */`) as docstrings — associated with the next sibling declaration node
+- JSDoc (`/** */`) as docstrings - associated with the next sibling declaration node
 - TSX handled by loading `language_tsx()` for `.tsx` files
 
 **JavaScript differences**:
@@ -246,7 +246,7 @@ clean-room-agent/
 1. Detect package roots: directories with `__init__.py`, `src/` layout detection
 2. Absolute imports: convert dots to path separators, search for `.py` or `/__init__.py`
 3. Relative imports: count leading dots, resolve relative to importing file's directory
-4. External packages (stdlib, third-party): discarded — intra-repo only
+4. External packages (stdlib, third-party): discarded - intra-repo only
 
 **TypeScript/JavaScript resolution**:
 1. Relative imports (`./foo`, `../bar`): try extensions in order `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, then `index.*`
@@ -266,8 +266,8 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 **Delivers**: Commit history, file-commit associations, and co-change pairs.
 
 **Files**:
-- `src/clean_room/git/history.py` — `extract_git_history(repo_path, since=None) -> GitHistory`
-- `src/clean_room/git/cochange.py` — `compute_co_changes(commits, file_index) -> list[CoChange]`
+- `src/clean_room/git/history.py` - `extract_git_history(repo_path, since=None) -> GitHistory`
+- `src/clean_room/git/cochange.py` - `compute_co_changes(commits, file_index) -> list[CoChange]`
 - `tests/test_git.py`, `tests/test_cochange.py`
 
 **Git history**: Uses `git log --pretty=format:... --name-status --numstat` via subprocess. Bounded by `--max-commits` (default 5000). `--since` flag for incremental extraction.
@@ -283,22 +283,22 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 **Delivers**: `cra index /path/to/repo` produces a fully populated SQLite database.
 
 **Files**:
-- `src/clean_room/indexer/orchestrator.py` — `index_repository(repo_path, ...) -> IndexingResult`
-- Update `src/clean_room/cli.py` — Wire `index` command
+- `src/clean_room/indexer/orchestrator.py` - `index_repository(repo_path, ...) -> IndexingResult`
+- Update `src/clean_room/cli.py` - Wire `index` command
 - `tests/test_orchestrator.py`, `tests/test_cli.py`
 
 **Pipeline sequence** (annotated with DB targets):
 1. Open/create curated + raw DBs, apply schemas for all three DB types (session schema defined, no per-task session DB created during indexing)
-2. Register repo (detect git remote URL) → **curated**
-3. Scan files → (in-memory)
-4. Compute incremental diff → (in-memory, reads **curated**)
-5. Delete data for removed/changed files → **curated**
-6. Upsert file records → **curated**
-7. Parse each new/changed file → insert symbols, docstrings, comments, and Python symbol-reference edges → **curated**
-8. Resolve all imports → insert dependencies → **curated**
-9. Extract git history → insert commits, file-commits → **curated**
-10. Compute co-changes → upsert pairs → **curated**
-11. Log indexing run metadata (files scanned, changed, duration, status) → **raw**
+2. Register repo (detect git remote URL) -> **curated**
+3. Scan files -> (in-memory)
+4. Compute incremental diff -> (in-memory, reads **curated**)
+5. Delete data for removed/changed files -> **curated**
+6. Upsert file records -> **curated**
+7. Parse each new/changed file -> insert symbols, docstrings, comments, and Python symbol-reference edges -> **curated**
+8. Resolve all imports -> insert dependencies -> **curated**
+9. Extract git history -> insert commits, file-commits -> **curated**
+10. Compute co-changes -> upsert pairs -> **curated**
+11. Log indexing run metadata (files scanned, changed, duration, status) -> **raw**
 12. Report results
 
 **Error handling**: Individual file parse failures caught and logged, indexing continues. Each file's data committed atomically.
@@ -312,9 +312,9 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 **Delivers**: `cra enrich` command for LLM metadata generation (separate from indexing, optional), and the `KnowledgeBase` query class that Phase 2 will consume.
 
 **Files**:
-- `src/clean_room/llm/metadata.py` — Ollama `/api/generate` via httpx, structured prompt, JSON output parsing
-- `src/clean_room/query/api.py` — `KnowledgeBase` class with query methods
-- Update `src/clean_room/cli.py` — Add `enrich` command
+- `src/clean_room/llm/metadata.py` - Ollama `/api/generate` via httpx, structured prompt, JSON output parsing
+- `src/clean_room/query/api.py` - `KnowledgeBase` class with query methods
+- Update `src/clean_room/cli.py` - Add `enrich` command
 - `tests/test_llm_metadata.py`, `tests/test_query_api.py`
 
 **`cra enrich`** is separate from `cra index` because:
@@ -322,11 +322,11 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - LLM generation is seconds/file vs milliseconds/file for parsing
 - Users may re-enrich with different models without re-indexing
 
-**All LLM calls are local** — Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded — user specifies whatever they have loaded.
+**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded.
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. Graceful fallback on JSON parse failure.
 
-**Query API** (`KnowledgeBase` class) — reads exclusively from the **curated DB**. This is the contract Phase 2 depends on:
+**Query API** (`KnowledgeBase` class) - reads exclusively from the **curated DB**. This is the contract Phase 2 depends on:
 - `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`
 - `search_files_by_metadata(repo_id, domain?, module?, concepts?)`
 - `get_symbols_for_file(file_id, kind?)`, `search_symbols_by_name(repo_id, pattern)`
@@ -335,8 +335,8 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - `get_co_change_neighbors(file_id, min_count)`
 - `get_docstrings_for_file(file_id)`, `get_rationale_comments(file_id)`
 - `get_recent_commits_for_file(file_id, limit)`
-- `get_file_context(file_id)` — composite: symbols + docstrings + rationale comments + deps + co-changes + commits
-- `get_repo_overview(repo_id)` — file counts, domain distribution, most-connected files
+- `get_file_context(file_id)` - composite: symbols + docstrings + rationale comments + deps + co-changes + commits
+- `get_repo_overview(repo_id)` - file counts, domain distribution, most-connected files
 
 **Depends on**: Step 7 (orchestrator populates the data this queries)
 
@@ -346,19 +346,16 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 ```
 Step 1 (DB + Skeleton)
-  ├──► Step 2 (File Scanner)
-  │      ├──► Step 3 (Python Parser)
-  │      │      ├──► Step 4 (TS + JS Parsers)
-  │      │      └──► Step 5 (Import Resolution) ◄── Step 4
-  │      │                │
-  └──────┼──► Step 6 (Git) │  [parallel track]
-         │                │
-         └──► Step 7 (Orchestrator) ◄── Steps 5, 6
-                  │
-                  └──► Step 8 (LLM + Query API)
+  -> Step 2 (File Scanner)
+     -> Step 3 (Python Parser)
+        -> Step 4 (TS + JS Parsers)
+        -> Step 5 (Import Resolution) <- Step 4
+  -> Step 6 (Git) [parallel track]
+  -> Step 7 (Orchestrator) <- Steps 5, 6
+  -> Step 8 (LLM + Query API)
 ```
 
-Steps 3-5 and Step 6 are independent tracks — can be built in parallel.
+Steps 3-5 and Step 6 are independent tracks - can be built in parallel.
 
 ---
 
@@ -417,3 +414,4 @@ cra enrich /path/to/repo --model <your-loaded-model>
 ```
 
 **Gate criteria**: All curated DB tables populated, queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, connection factory creates all three DB types correctly.
+

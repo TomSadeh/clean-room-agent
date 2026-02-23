@@ -24,7 +24,7 @@ Phase 4 does not build core solve-path features. It evaluates them.
 | Raw | **Read-only** | Primary data source for all analysis: retrieval decisions, attempt records, task results, validation results, LLM outputs |
 | Session | **Never touches** | Reads archived session copies from raw DB if needed |
 
-Phase 4 is a **read-only consumer** of raw DB data. It analyzes logged decisions and results from Phases 1-3 to produce metrics and reports. Raw→curated derivation analysis (identifying which raw signals should be promoted) is a key Phase 4 output that informs future automation.
+Phase 4 is a **read-only consumer** of raw DB data. It analyzes logged decisions and results from Phases 1-3 to produce metrics and reports. Raw->curated derivation analysis (identifying which raw signals should be promoted) is a key Phase 4 output that informs future automation.
 
 ---
 
@@ -150,6 +150,7 @@ cra report results/pilot/
 
 - Phase 4 owns thesis validation.
 - Phase 3 completion is a prerequisite, not evidence of benchmark superiority.
-- Phase 4 is a **read-only consumer** — it never writes to any DB. All data comes from raw DB records logged by Phases 1-3.
-- Raw→curated derivation is analyzed but **not automated** in Phase 4. Phase 4 identifies what should be promoted; the promotion mechanism is a post-Phase 4 decision.
+- Phase 4 is a **read-only consumer** - it never writes to any DB. All data comes from raw DB records logged by Phases 1-3.
+- Raw->curated derivation is analyzed but **not automated** in Phase 4. Phase 4 identifies what should be promoted; the promotion mechanism is a post-Phase 4 decision.
 - Fine-tuning data extraction from raw DB is a Phase 4 deliverable, feeding into the long-term per-stage LoRA adapter goal.
+

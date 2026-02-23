@@ -37,3 +37,4 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, 
 - `planning/` - Active plans and phase documents (source of truth for current work)
 - `archive/` - Archived notes and superseded research/context documents
 
+

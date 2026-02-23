@@ -23,8 +23,8 @@ The gate for Phase 3: `cra solve` works end-to-end in both pipeline and baseline
 
 | DB | Access | Purpose |
 |----|--------|---------|
-| Curated | **Never touches** | Phase 3 has no curated DB access — all context comes via the context package from Phase 2 |
-| Raw | **Append-only** | Log all attempts (`AttemptRecord`→`run_attempts`), task results (`TaskResult`→`task_runs`), validation results (`ValidationResult`→`validation_results`), and raw LLM outputs |
+| Curated | **Never touches** | Phase 3 has no curated DB access - all context comes via the context package from Phase 2 |
+| Raw | **Append-only** | Log all attempts (`AttemptRecord`->`run_attempts`), task results (`TaskResult`->`task_runs`), validation results (`ValidationResult`->`validation_results`), and raw LLM outputs |
 | Session | **Read/write** | Inherits session DB from Phase 2, writes retry context (error classifications, attempt history), closes session on task completion |
 
 Phase 3 **inherits** the session DB created by Phase 2 and **closes** it after the task run completes. Optionally archives session content to raw DB.
@@ -128,7 +128,7 @@ class TaskResult:
     final_diff: str | None
 ```
 
-**Database mapping**: These dataclasses map directly to raw DB tables — `AttemptRecord`→`run_attempts`, `TaskResult`→`task_runs`, `ValidationResult`→`validation_results`. All instances are persisted to raw DB as they are created.
+**Database mapping**: These dataclasses map directly to raw DB tables - `AttemptRecord`->`run_attempts`, `TaskResult`->`task_runs`, `ValidationResult`->`validation_results`. All instances are persisted to raw DB as they are created.
 
 ---
 
@@ -161,6 +161,7 @@ class TaskResult:
 **Requirements**:
 - Shared system prompt with strict edit output contract.
 - Token-aware retry prompts with bounded error output.
+- Hard prompt token gate before LLM call: assembled prompt must fit the active model context window; overflow is trimmed deterministically by dropping lowest-priority context/retry details.
 - Retry wording must assume fresh worktree application per attempt.
 
 ---
@@ -317,9 +318,11 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwe
 5. Logs are sufficient to debug failed attempts.
 6. Raw DB contains complete attempt records (including raw LLM responses) for every solve run.
 7. Session DB lifecycle is correct: created/inherited at start, closed at end, optionally archived.
+8. Final model-bound prompt never exceeds configured model context limits in either mode.
 
 ---
 
 ## Handoff to Phase 4
 
 Phase 4 consumes Phase 3 outputs (`TaskResult`, unified diffs, logs) to run external benchmark validation and reporting.
+

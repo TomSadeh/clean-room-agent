@@ -47,9 +47,9 @@ No phase should pull validation gates from a later phase.
 
 Three separate SQLite files with independent WAL journals, backups, and lifecycles:
 
-- **Curated DB** (`curated.sqlite`) — the "clean room" the model reads from. Verified signals only.
-- **Raw DB** (`raw.sqlite`) — append-only log of all activity. Training corpus and analysis source.
-- **Session DB** (`session_<task_id>.sqlite`) — ephemeral per-task working memory. Created per run, discarded after.
+- **Curated DB** (`curated.sqlite`) - the "clean room" the model reads from. Verified signals only.
+- **Raw DB** (`raw.sqlite`) - append-only log of all activity. Training corpus and analysis source.
+- **Session DB** (`session_<task_id>.sqlite`) - ephemeral per-task working memory. Created per run, discarded after.
 
 ### Ownership Table
 
@@ -64,6 +64,7 @@ Three separate SQLite files with independent WAL journals, backups, and lifecycl
 
 - Phases 2 and 3 never write to curated DB.
 - Phase 4 never writes to any DB.
-- Raw→curated derivation is explicitly not automated in any phase. Phase 4 analysis informs what to automate.
+- Raw->curated derivation is explicitly not automated in any phase. Phase 4 analysis informs what to automate.
 - Phase 2 and Phase 3 share one session DB per task run. Phase 2 creates it, Phase 3 inherits it, Phase 3 closes it.
 - Connection factory: `get_connection(role, task_id=None)` is the single point of DB management.
+

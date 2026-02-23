@@ -214,3 +214,4 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --format json >
 ## Handoff to Phase 4
 
 Phase 4 owns formal retrieval quality evaluation and benchmark reporting.
+
