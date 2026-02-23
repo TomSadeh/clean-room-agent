@@ -88,6 +88,17 @@ clean-room-agent/
 
 ---
 
+## MVP Boundary Checklist
+
+- `Must`: Store Python symbol-level reference edges (`symbol_references`) during indexing.
+- `Must`: Expose Python symbol neighbor traversal in Query API (`get_symbol_neighbors`).
+- `Must`: Keep file-level dependency graph for Python/TS/JS.
+- `Must`: Keep indexing functional without any LLM dependency (`cra index` remains deterministic).
+- `Must Not`: Require TS/JS symbol-level call/reference edges for MVP completion.
+- `Post-MVP`: Add TS/JS symbol-edge extraction and extend precision traversal to consume it.
+
+---
+
 ## Implementation Steps
 
 ### Step 1: Project Skeleton + Database Layer
@@ -99,16 +110,17 @@ clean-room-agent/
 - `src/clean_room/__init__.py`, `__main__.py`
 - `src/clean_room/cli.py` — Click group with stub `index` command
 - `src/clean_room/db/connection.py` — Connection factory with WAL mode, foreign keys, `sqlite3.Row` factory
-- `src/clean_room/db/schema.py` — Full DDL for all 11 permanent KB tables + indexes
-- `src/clean_room/db/queries.py` — `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
+- `src/clean_room/db/schema.py` — Full DDL for KB tables + indexes (including `symbol_references` for symbol-level edges)
+- `src/clean_room/db/queries.py` — `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
 - `tests/conftest.py`, `tests/test_db.py`
 
-**Schema highlights** (from meta-plan, with refinements):
+**Schema highlights** (from `planning/meta-plan.md`, with refinements):
 - `INTEGER PRIMARY KEY` for all IDs (SQLite rowid alias)
 - `content_hash` as TEXT (hex SHA-256) on `files`
 - `co_changes` composite PK `(file_a_id, file_b_id)` with CHECK `file_a_id < file_b_id`
+- `symbol_references` for symbol-level edges: `caller_symbol_id`, `callee_symbol_id`, `reference_kind`, `confidence`
 - JSON columns (`concepts`, `parsed_fields`, `files_involved`) as TEXT
-- Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
+- Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
 
 **Verify**: `pip install -e ".[dev]" && cra --help && pytest tests/test_db.py`
 
@@ -150,6 +162,7 @@ clean-room-agent/
 - **Docstrings**: First `expression_statement > string` in function/class/module body (anchored with `.` in tree-sitter query). Format detected, structured fields parsed for recognized formats.
 - **Comments**: Every `comment` node. Classified by keyword: TODO, FIXME, HACK, NOTE, bug refs (`#123`), rationale patterns ("because", "workaround for", "so that"). `is_rationale` flag. Associated with innermost enclosing symbol.
 - **Imports**: `import_statement`, `import_from_statement`. Preserves relative import dots.
+- **MVP symbol references (Python-only)**: intra-file call/reference edges (caller symbol -> candidate callee symbol) captured for Phase 2 precision traversal.
 
 **Key tree-sitter queries** (py-tree-sitter 0.25.x API):
 ```python
@@ -195,6 +208,8 @@ clean-room-agent/
 - No interfaces, type aliases, enums
 - CommonJS: `const foo = require('./bar')` detected via call_expression query
 - Both ES module imports and `require()` calls extracted
+
+**MVP scope note**: TS/JS do not produce symbol-level call/reference edges in Phase 1. They rely on file-level dependency + symbol-name signals in Phase 2. Symbol-edge extraction for TS/JS is a post-MVP enhancement.
 
 **Depends on**: Step 3 (protocol, shared extractors)
 
@@ -260,7 +275,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 4. Compute incremental diff
 5. Delete data for removed/changed files
 6. Upsert file records
-7. Parse each new/changed file → insert symbols, docstrings, comments
+7. Parse each new/changed file → insert symbols, docstrings, comments, and Python symbol-reference edges
 8. Resolve all imports → insert dependencies
 9. Extract git history → insert commits, file-commits
 10. Compute co-changes → upsert pairs
@@ -295,6 +310,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`
 - `search_files_by_metadata(repo_id, domain?, module?, concepts?)`
 - `get_symbols_for_file(file_id, kind?)`, `search_symbols_by_name(repo_id, pattern)`
+- `get_symbol_neighbors(symbol_id, direction, kinds?)` (Python in MVP)
 - `get_dependencies(file_id, direction)`, `get_dependency_subgraph(file_ids, depth)`
 - `get_co_change_neighbors(file_id, min_count)`
 - `get_docstrings_for_file(file_id)`, `get_rationale_comments(file_id)`
@@ -363,3 +379,4 @@ cra enrich /path/to/repo --model <your-loaded-model>
 ```
 
 **Gate criteria**: All tables populated, queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed).
+

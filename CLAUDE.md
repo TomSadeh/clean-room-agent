@@ -4,7 +4,7 @@
 
 A custom coding agent harness built around the thesis: **the primary bottleneck in LLM application performance is not model capability but context curation.** The model's job is reasoning, not filtering. Clean the room before the model enters.
 
-This is a standalone Python coding agent. No external platform dependency — the harness, retrieval pipeline, and benchmark runner are all ours.
+This is a standalone Python coding agent. No external platform dependency — the harness and retrieval pipeline are all ours; benchmark validation is a separate phase.
 
 ## Core Architecture: The N-Prompt Pipeline
 
@@ -21,23 +21,23 @@ Target: a 32K window at ~100% signal relevance, beating a 200K window at 10-15% 
 
 The minimum viable experiment:
 
-- **Stage 1 (Scope)**: Full repo + task → 50-100 relevant files. Can be partially deterministic (AST + embeddings).
+- **Stage 1 (Scope)**: Full repo + task → 50-100 relevant files. Can be deterministic (AST + metadata heuristics).
 - **Stage 2 (Precision)**: Scoped files + task → exact context needed. Extracts signatures, types, tests, docs.
 - **Stage 3 (Execute)**: Curated context + task → code generation. Pure reasoning, zero exploration.
 
-Stress-tested with a small model (7B class, e.g. Qwen-2.5-Coder-7B) to prove context curation > model scale.
+Stress-tested with a deliberately small local model (default benchmark profile: Qwen 3B class) to prove context curation > model scale.
 
 ## Repository Contents
 
 ```
-findings/
-  three-prompt-strategy.md   — Three-prompt MVP design and stress test matrix
 planning/
-  phase1-knowledge-base.md   — Knowledge Base + Indexer (8 steps)
-  phase2-retrieval-pipeline.md — Retrieval pipeline (8 steps)
-  phase3-agent-harness.md    — Agent harness + SWE-bench benchmark (10 steps)
-context_management_and_agents_review.md  — Survey of 12 agent harnesses + LLM context research
-conversation_summary_2026_02_22.md       — Full N-Prompt architecture design notes
+  meta-plan.md                   � Top-level phase boundaries and gates
+  phase1-knowledge-base.md       � Knowledge Base + Indexer (8 steps)
+  phase2-retrieval-pipeline.md   � Retrieval pipeline build (7 steps)
+  phase3-agent-harness.md        � Agent harness build (8 steps)
+  phase4-validation-benchmark.md � Validation + benchmark plan (4 steps)
+archive/
+  (archived notes and superseded research/context documents)
 ```
 
 ## Prior Art
@@ -48,8 +48,8 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system: 
 
 | Config | Model | Context Strategy | Expected |
 |--------|-------|-----------------|----------|
-| A (baseline) | 7B | Naive full context | Low |
-| B (experiment) | 7B | Three-prompt pipeline | B > A |
+| A (baseline) | Small local (3B class) | Naive full context | Low |
+| B (experiment) | Small local (3B class) | Three-prompt pipeline | B > A |
 | C (reference) | 70B+ | Naive full context | B ~ C |
 | D (combined) | 70B+ | Three-prompt pipeline | D > C |
 
@@ -90,14 +90,21 @@ SWE-bench Verified is comparability. SWE-ContextBench is thesis validation. Aide
 
 ## Baseline Model
 
-The stress test model is the **same 4B Qwen already running in Auto-GM's knowledge system** — the one that already outperforms larger models with curated retrieval. Using a known model with a proven track record in our own system is a stronger statement than chasing the latest efficient release. If the three-prompt pipeline makes a 4B model competitive on SWE-bench Verified, that's the thesis proven with zero ambiguity.
+The stress test model is a **small local Qwen profile** with fixed configuration across baseline and pipeline runs (default: `qwen2.5-coder:3b`). Using one fixed small model for both arms isolates the impact of context curation. If the three-prompt pipeline makes the small-model profile competitive, that is the thesis signal.
 
 ## Status
 
 Research and design phase. Next steps:
 1. Build the knowledge base and indexer (Phase 1)
 2. Build the retrieval pipeline (Phase 2)
-3. Build the standalone agent harness with benchmark runner (Phase 3)
-4. Run A/B comparison: three-prompt pipeline on/off, same model, same tasks
+3. Build the standalone agent harness (Phase 3)
+4. Validate with Phase 4 benchmark plan (A/B comparison: pipeline on/off, same model, same tasks)
 5. Measure against SWE-bench Verified first, then SWE-ContextBench for thesis validation
 6. Graduate to SWE-bench Pro and SWE-EVO once Verified baseline is established
+
+
+
+
+
+
+

@@ -27,7 +27,7 @@ Signals to use:
 
 **Goal**: Reduce a 10,000-file repo to the 50-100 files that could plausibly matter.
 
-**Model requirement**: Can be a very small model or even partially deterministic (AST parsing + embedding similarity).
+**Model requirement**: Can be a very small model or even partially deterministic (AST parsing + metadata heuristics).
 
 ---
 
@@ -68,14 +68,14 @@ The model's job is now purely reasoning and code generation. It doesn't need to 
 
 ## Stress Test Design
 
-Use a deliberately small model (7B class or smaller, e.g., Qwen-2.5-Coder-7B) for all three stages. The point is to demonstrate that the pipeline compensates for limited model capability through better context management.
+Use a deliberately small local model profile (default: Qwen 3B class) for all three stages. The point is to demonstrate that the pipeline compensates for limited model capability through better context management.
 
 ### Comparison Matrix
 
 | Configuration | Model | Context Strategy |
 |---------------|-------|-----------------|
-| A (baseline) | Small (7B) | Naive — full context, no curation |
-| B (experiment) | Small (7B) | Three-prompt pipeline |
+| A (baseline) | Small local (3B class) | Naive � full context, no curation |
+| B (experiment) | Small local (3B class) | Three-prompt pipeline |
 | C (reference) | Large (70B+) | Naive — full context, no curation |
 | D (combined) | Large (70B+) | Three-prompt pipeline |
 
@@ -97,3 +97,5 @@ This strategy mirrors the knowledge curation approach in Auto-GM:
 - This experiment: repo-level scoping → precision context extraction → grounded code generation
 
 The principle is the same: the model's job is reasoning, not filtering. Separate the responsibilities.
+
+

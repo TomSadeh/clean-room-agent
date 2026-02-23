@@ -11,13 +11,10 @@ LLM agent performance is bottlenecked by context management, not model capabilit
 
 A custom coding agent harness built around a multi-stage context curation pipeline:
 
-1. **Centralized Knowledge Base** — Everything the system has ever done, learned, or encountered, structured and indexed. Self-maintaining: grows automatically with every task. Cold-startable from git history.
-
-2. **Deterministic Retrieval** — Not embedding similarity hoping to capture relevance. Deterministic metadata extraction first, AI-assisted only for ambiguous items, grounded with confirmed metadata.
-
-3. **N-Stage Prompt Pipeline** — Early stages filter and ground. Later stages reason and execute. Each prompt starts clean with curated context. No conversation accumulation, no compaction, no degradation.
-
-4. **Per-Stage LoRA Adapters** (long-term) — One per pipeline stage, fine-tuned for that stage's specific job. Same base model, tiny adapter swap between stages.
+1. **Centralized Knowledge Base** - Everything the system has ever done, learned, or encountered, structured and indexed. Self-maintaining: grows automatically with every task. Cold-startable from git history.
+2. **Deterministic Retrieval** - Not embedding similarity hoping to capture relevance. Deterministic metadata extraction first, AI-assisted only for ambiguous items, grounded with confirmed metadata.
+3. **N-Stage Prompt Pipeline** - Early stages filter and ground. Later stages reason and execute. Each prompt starts clean with curated context. No conversation accumulation, no compaction, no degradation.
+4. **Per-Stage LoRA Adapters** (long-term) - One per pipeline stage, fine-tuned for that stage's specific job. Same base model, tiny adapter swap between stages.
 
 **Result**: A 32K context window at nearly 100% signal relevance, versus a 200K window at 10-15% effective utilization.
 
@@ -25,11 +22,11 @@ A custom coding agent harness built around a multi-stage context curation pipeli
 
 The initial experiment uses a three-stage pipeline as the minimum viable version:
 
-1. **Scope & Relevance Filter** — Full repository + task description → manageable scope for a small context window.
-2. **Precision Filter** — Scoped material → exactly the context needed for the coding task.
-3. **Full Prompt** — Curated context + task description → code generation.
+1. **Scope & Relevance Filter** - Full repository + task description -> manageable scope for a small context window.
+2. **Precision Filter** - Scoped material -> exactly the context needed for the coding task.
+3. **Full Prompt** - Curated context + task description -> code generation.
 
-Stress-tested with a deliberately small model (7B class or smaller) to prove context curation, not model scale, is the primary driver of agent quality.
+Stress-tested with a deliberately small local model (default benchmark profile: Qwen 3B class) to prove context curation, not model scale, is the primary driver of agent quality.
 
 ## Prior Art
 
@@ -37,7 +34,6 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, 
 
 ## Repository Contents
 
-- `findings/three-prompt-strategy.md` — Detailed three-prompt MVP design and stress test matrix
-- `planning/` — Implementation plans for all three phases (knowledge base, retrieval, agent harness)
-- `context_management_and_agents_review.md` — Survey of 12 open-source coding agent harnesses and LLM context management research
-- `conversation_summary_2026_02_22.md` — Full N-Prompt architecture design, Auto-GM vision, and MapGen V3 review notes
+- `planning/` - Active plans and phase documents (source of truth for current work)
+- `archive/` - Archived notes and superseded research/context documents
+
