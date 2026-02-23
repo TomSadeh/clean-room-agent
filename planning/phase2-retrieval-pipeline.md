@@ -76,6 +76,7 @@ tests/
 
 - `BudgetConfig`: shared between Phase 2 and Phase 3. Contains model context window size, reserved tokens for system prompt/retry overhead, and the effective retrieval budget `(window - reserved)`. Defined in `retrieval/dataclasses.py`, imported by Phase 3.
 - `TaskQuery`: parsed task intent (`task_type`, keywords, file/symbol hints, error patterns, concepts).
+- `RetrievalRefinementRequest`: structured request from Phase 3 when context is insufficient (`reason`, `missing_files[]`, `missing_symbols[]`, `missing_tests[]`, `error_signatures[]`).
 - `FileScore`: per-file relevance score with signal breakdown.
 - `ScopeResult`: ranked scoped files plus expansion provenance.
 - `SymbolContext`: selected symbol details and relevance tier.
@@ -111,8 +112,8 @@ tests/
 - Seed-file handling.
 - Dependency and co-change expansion.
 
-**Defaults**:
-- Scope size target around 75 files (configurable).
+**Configuration (explicit, no core hardcoded defaults)**:
+- Scope size target is caller-provided (required in `BudgetConfig`/retrieval config).
 - Task-type weight tweaks (`bug_fix`, `refactor`, `test`).
 
 **Session state**: Writes scope results (ranked file list, scores) to **session DB** for downstream stages. Logs all scoring decisions (file scores, inclusion/exclusion reasons) to **raw DB**.
@@ -124,7 +125,7 @@ tests/
 **Delivers**:
 - Symbol-tier classification: `primary`, `supporting`, `type_context`, `excluded`.
 - Python symbol-edge traversal via `symbol_references`.
-- TS/JS MVP fallback heuristics.
+- TS/JS MVP heuristics path (file-level dependencies + symbol-name signals).
 - Test assertion extraction and rationale-comment inclusion.
 
 **Data source**: Reads scoped file list from **session DB**, queries symbol details from **curated DB**. Logs precision decisions to **raw DB**.
@@ -137,7 +138,7 @@ tests/
 - Token counting and hard budget enforcement.
 - Tiered eviction and primary-body demotion to signatures when needed.
 
-**Budget source**: Phase 2 receives a `BudgetConfig` from the caller (Phase 3's `cra solve`). This config contains the target model's context window size and reserved tokens for system prompt/retry overhead. Phase 2 targets `(window - reserved)` tokens for the context package. The `BudgetConfig` is a shared data structure defined in a common module, consumed by both Phase 2 and Phase 3.
+**Budget source**: Phase 2 receives a `BudgetConfig` from its caller. In `cra solve`, Phase 3 constructs and passes it. In standalone `cra retrieve`, the CLI requires explicit budget inputs and constructs it (no implicit defaults). This config contains the target model's context window size and reserved tokens for system prompt/retry overhead. Phase 2 targets `(window - reserved)` tokens for the context package. The `BudgetConfig` is a shared data structure defined in a common module, consumed by both Phase 2 and Phase 3.
 
 **Constraint**:
 - Output must never exceed the budget allocated by `BudgetConfig`.
@@ -156,18 +157,36 @@ tests/
 ### Step 7: Pipeline Orchestrator + CLI
 
 **Delivers**:
-- `cra retrieve` standalone command (for inspection/debugging — outputs context package as JSON/markdown to stdout).
+- `cra retrieve` standalone command (for inspection/debugging; outputs context package as JSON/markdown to stdout).
 - `RetrievalPipeline` class callable in-process by Phase 3's `cra solve` (primary production path).
 - End-to-end retrieval execution with verbose diagnostics.
 
-**Handoff model**: In production, `cra solve --mode pipeline` calls `RetrievalPipeline` internally. The `ContextPackage` stays in-memory — no serialization needed. `cra retrieve` exists as a standalone CLI command for inspecting/debugging retrieval output, but is not part of the normal solve flow.
+**Standalone budget contract**: `cra retrieve` must require explicit `--context-window` and `--reserved-tokens` (or an explicit `--budget-config` path). Missing budget inputs are a hard error.
+
+**CLI budget rules (`cra retrieve`)**:
+- Provide either:
+  - `--context-window <int>` and `--reserved-tokens <int>`, or
+  - `--budget-config <path>`
+- `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
+- Validation is strict and fail-fast:
+  - `context_window > 0`
+  - `reserved_tokens >= 0`
+  - `reserved_tokens < context_window`
+- No defaults and no model-name inference in standalone retrieval.
+- Effective retrieval budget is always computed as: `retrieval_budget = context_window - reserved_tokens`.
+- Persist the effective budget config for the run to raw DB alongside retrieval decisions for reproducibility.
+
+**Handoff model**: In production, `cra solve --mode pipeline` calls `RetrievalPipeline` internally. The `ContextPackage` stays in-memory (no serialization required). `cra retrieve` exists as a standalone CLI command for inspection/debugging, not the normal solve path.
+
+**Refinement model**: `RetrievalPipeline` supports re-entry from Phase 3 using `RetrievalRefinementRequest`. The same `task_id` and session handle are reused. Refinement adds/adjusts context and returns a new `ContextPackage` without giving Phase 3 direct curated access.
 
 **Database lifecycle**:
-1. Open curated DB connection (read-only) via connection factory.
+1. Open curated DB connection in read-only mode via connection factory (`get_connection('curated', read_only=True)`).
 2. Open raw DB connection (append) via connection factory.
 3. Create session DB for this task via `get_connection('session', task_id=task_id)`. Task ID is generated by the caller (`cra solve` generates it at startup; `cra retrieve` standalone generates its own).
 4. Run pipeline stages (each reads curated, writes session state, logs decisions to raw).
-5. Return `ContextPackage` in-memory to caller. Leave session DB open for Phase 3 handoff (or close if running retrieval standalone).
+5. On refinement re-entry, load prior stage state from session DB, apply refinement constraints, rerun scope/precision/budget deterministically, and log refinement decisions to raw DB.
+6. Return `ContextPackage` plus an explicit session handle to the caller. In `cra solve`, Phase 3 takes ownership and closes it. In standalone `cra retrieve`, close it before process exit.
 
 ---
 
@@ -214,9 +233,12 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --format json >
 5. Output is coherent and actionable for Phase 3 solve prompts.
 6. Raw DB contains retrieval decision records for every scored file.
 7. Session DB contains retrieval state and working context for the task run.
+8. Refinement re-entry works for the same `task_id` and produces an updated, budget-compliant `ContextPackage`.
 
 ---
 
 ## Future Handoff
 
 Formal retrieval quality evaluation and benchmark reporting are handled outside the active plan.
+
+

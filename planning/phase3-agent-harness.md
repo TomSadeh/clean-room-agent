@@ -4,7 +4,7 @@
 
 This is the execution build phase of the Clean Room Agent. It takes the curated context package from Phase 2 and uses an LLM to generate and apply code changes with a retry loop and local validation.
 
-Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated). Phase 3 executes (never touches curated DB). Phase 3 logs all attempts, results, and LLM outputs to raw DB and uses session DB for retry working memory.
+Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated). Phase 3 executes without direct curated DB access. Phase 3 logs all attempts, results, and LLM outputs to raw DB and uses session DB for retry working memory.
 
 The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces valid patches, logs all activity to raw DB, and is operationally stable.
 
@@ -12,7 +12,7 @@ The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces va
 
 ## Scope Boundary
 
-- `In scope`: LLM client, prompt builder, response parser, patch application, validation, retry loop, solve orchestration.
+- `In scope`: LLM client, prompt builder, response parser, patch application, validation, retry loop, solve orchestration, and explicit context-refinement handoff to Phase 2.
 - `Out of scope`: Baseline context mode, benchmark loading/running/reporting, thesis validation.
 
 ---
@@ -21,7 +21,7 @@ The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces va
 
 | DB | Access | Purpose |
 |----|--------|---------|
-| Curated | **Never touches** | Phase 3 has no curated DB access - all context comes via the context package from Phase 2 |
+| Curated | **No direct access** | Phase 3 does not open curated DB connections; preflight checks run inside the Phase 2 retrieval entrypoint and context arrives as a `ContextPackage` |
 | Raw | **Append-only** | Log all attempts (`AttemptRecord`->`run_attempts`), task results (`TaskResult`->`task_runs`), validation results (`ValidationResult`->`validation_results`), and raw LLM outputs |
 | Session | **Read/write** | Inherits session DB from Phase 2, writes retry context (error classifications, attempt history), closes session on task completion |
 
@@ -63,9 +63,9 @@ tests/
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), wrapped in `agent/llm_client.py` | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Add other providers when actually needed. |
-| Output format | Search-and-replace blocks (primary), unified diff (fallback) | S&R blocks are easier for small models and easier to validate. |
-| Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. Worktree creation must succeed — if it fails (e.g., Windows long-path issues), error out with diagnostic context. Test worktree lifecycle early on Windows. |
-| Retry strategy | Fresh prompt with structured error context, max 3 attempts | Bounded retries and deterministic behavior. |
+| Output format | Search-and-replace blocks (single required format) | Single strict format keeps parser behavior deterministic and fail-fast. |
+| Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. Worktree creation must succeed - if it fails (e.g., Windows long-path issues), error out with diagnostic context. Test worktree lifecycle early on Windows. |
+| Retry strategy | Fresh prompt with structured error context; max attempts provided explicitly by caller config | Bounded retries without hardcoded core defaults. |
 
 ---
 
@@ -76,8 +76,8 @@ tests/
 class LLMConfig:
     provider: str                     # "ollama", "anthropic", "openai"
     model: str
-    temperature: float = 0.0
-    max_tokens: int = 4096
+    temperature: float
+    max_tokens: int
     base_url: str | None = None
 
 @dataclass
@@ -111,6 +111,14 @@ class AttemptRecord:
     patch_applied: bool
     validation: ValidationResult | None
     unified_diff: str
+
+@dataclass
+class RefinementRequest:
+    reason: str                      # "insufficient_context"
+    missing_files: list[str]
+    missing_symbols: list[str]
+    missing_tests: list[str]
+    error_signatures: list[str]
 
 @dataclass
 class TaskResult:
@@ -171,8 +179,7 @@ class TaskResult:
 - `tests/test_response_parser.py`
 
 **Requirements**:
-- Primary parse format: search-and-replace blocks.
-- Fallback formats: unified diff, then fenced replacements.
+- Parse format: search-and-replace blocks only.
 - Malformed blocks raise with full context (raw block content included) so you see exactly what the model produced.
 
 ---
@@ -219,11 +226,15 @@ class TaskResult:
 - Fresh worktree each attempt.
 - Structured error classification for retry prompts.
 - Clear terminal states for no-edits, apply-failure, validation-failure.
+- `insufficient_context` is a first-class terminal for an attempt cycle: emit `RefinementRequest`, call Phase 2 retrieval re-entry, then continue retries on the returned context package.
+- Refinement is bounded by explicit caller config (`max_refinement_loops`) and requires concrete evidence (missing symbol/file/test/error signature).
 
 **Database writes**:
-- Each attempt: write `AttemptRecord` (including raw LLM response) to **raw DB** immediately after generation.
+- At solve startup, create a `task_runs` row first and keep its `task_run_id` for this run.
+- Each attempt: write `AttemptRecord` (including raw LLM response) to **raw DB** immediately after generation, linked by `task_run_id`.
 - Each validation: write `ValidationResult` to **raw DB** immediately after validation completes.
 - Retry context (error classifications, attempt summaries): write to **session DB** for prompt builder to consume on next attempt.
+- Refinement requests and outcomes: write to **session DB** and **raw DB** for traceability.
 
 ---
 
@@ -238,21 +249,33 @@ class TaskResult:
 
 **CLI interface**:
 ```bash
-cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
-cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --dry-run
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --context-window <int> --reserved-tokens <int>
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --budget-config <path> --dry-run
 ```
+
+**CLI budget rules (`cra solve`)**:
+- Provide either:
+  - `--context-window <int>` and `--reserved-tokens <int>`, or
+  - `--budget-config <path>`
+- `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
+- Validation is strict and fail-fast:
+  - `context_window > 0`
+  - `reserved_tokens >= 0`
+  - `reserved_tokens < context_window`
+- No defaults and no inference from `--model`.
+- Effective retrieval budget is computed as: `retrieval_budget = context_window - reserved_tokens`.
 
 **Task ID and handoff**: `cra solve` generates a task ID (UUID4) at startup. This ID is passed to the retrieval pipeline (Phase 2) which creates the session DB, and then used throughout the solve loop. The user never needs to manage task IDs.
 
 **Startup sequence**:
 1. Generate task ID.
-2. Verify curated DB exists and `file_metadata` is populated (i.e., `cra index` and `cra enrich` have been run). Error if not.
-3. Create `BudgetConfig` from model parameters (context window size, reserved tokens for system prompt/retry overhead).
-4. Call `RetrievalPipeline` in-process, passing task ID and `BudgetConfig`. Retrieval creates the session DB and returns `ContextPackage` in-memory.
-5. Open raw DB connection (append) via connection factory.
-6. Run retry loop (each attempt writes to raw DB and session DB).
-7. Write final `TaskResult` to raw DB.
-8. Close session DB. Optionally archive session content to raw DB (`session_archives` table).
+2. Build `BudgetConfig` and retrieval config from explicit CLI inputs (or explicit `--budget-config` file), validate constraints, and fail fast on invalid/missing values.
+3. Open raw DB connection (append) and create a `task_runs` row immediately to obtain `task_run_id` before any attempts are generated. Persist the effective budget config for run reproducibility.
+4. Call `RetrievalPipeline` in-process, passing task ID and `BudgetConfig`. Retrieval performs curated preflight checks (including `file_metadata` presence), creates session DB, and returns `ContextPackage` plus a session handle in-memory.
+5. Run retry loop (each attempt writes to raw DB and session DB). When context is insufficient, emit `RefinementRequest` and call retrieval re-entry for updated context.
+6. Finalize the existing `task_runs` row with success/totals/final diff.
+7. Close session handle. Optionally archive session content to raw DB (`session_archives` table).
+8. Exit with task status and diagnostics.
 
 ---
 
@@ -269,7 +292,7 @@ Step 1 (LLM Client)
 [All steps depend on Phases 1 + 2]
 ```
 
-Steps 2, 3, 4, 5 are independent of each other — they are all consumed by Step 6 (Retry Loop) and can be built in parallel.
+Steps 2, 3, 4, 5 are independent of each other - they are all consumed by Step 6 (Retry Loop) and can be built in parallel.
 
 ---
 
@@ -294,9 +317,12 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <mo
 7. Session DB lifecycle is correct: created at retrieval start, inherited by solve, closed at end, optionally archived.
 8. Final model-bound prompt never exceeds `BudgetConfig` context limits.
 9. `cra solve` errors clearly if `cra index` or `cra enrich` haven't been run.
+10. Refinement handoff works end-to-end without Phase 3 opening curated DB connections.
 
 ---
 
 ## Future Handoff
 
 External benchmark validation and reporting consume Phase 3 outputs (`TaskResult`, unified diffs, logs) outside the active plan.
+
+

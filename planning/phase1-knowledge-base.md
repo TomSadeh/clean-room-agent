@@ -23,7 +23,7 @@ clean-room-agent/
       db/
         __init__.py
         schema.py                   # DDL for all three DBs: create_curated_schema(), create_raw_schema(), create_session_schema()
-        connection.py               # Connection factory: get_connection(role, task_id=None), WAL mode
+        connection.py               # Connection factory: get_connection(role, task_id=None, read_only=False), WAL mode
         queries.py                  # Parameterized insert/query helpers for curated DB
         raw_queries.py              # Insert helpers for raw DB (index runs, retrieval decisions, attempts)
         session_queries.py          # Insert/query helpers for session DB (retrieval state, working context)
@@ -114,7 +114,7 @@ clean-room-agent/
 - `pyproject.toml` - hatchling build, dependencies, `[project.scripts] cra = "clean_room.cli:main"`
 - `src/clean_room/__init__.py`, `__main__.py`
 - `src/clean_room/cli.py` - Click group with stub `index` command
-- `src/clean_room/db/connection.py` - Connection factory: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. WAL mode, foreign keys, `sqlite3.Row` factory. Manages DB file paths under `.clean_room/` (curated.sqlite, raw.sqlite, sessions/session_<task_id>.sqlite).
+- `src/clean_room/db/connection.py` - Connection factory: `get_connection(role, task_id=None, read_only=False)` where role is `"curated"`, `"raw"`, or `"session"`. `read_only=True` is required for Phase 2 curated reads. WAL mode, foreign keys, `sqlite3.Row` factory. Manages DB file paths under `.clean_room/` (curated.sqlite, raw.sqlite, sessions/session_<task_id>.sqlite).
 - `src/clean_room/db/schema.py` - Full DDL for all three DBs: `create_curated_schema()`, `create_raw_schema()`, `create_session_schema()`
 - `src/clean_room/db/queries.py` - Curated DB helpers: `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
 - `src/clean_room/db/raw_queries.py` - Raw DB helpers: `insert_index_run`, `insert_retrieval_decision`, `insert_task_run`, `insert_run_attempt`, `insert_validation_result`, `insert_session_archive`
@@ -132,8 +132,8 @@ clean-room-agent/
 **Raw DB schema highlights** (new):
 - `index_runs` - timestamp, repo_path, files_scanned, files_changed, duration_ms, status
 - `retrieval_decisions` - task_id, stage, file_id, score, included, reason, timestamp
-- `task_runs` - task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp
-- `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp
+- `task_runs` - task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp (created at `cra solve` start, finalized at run end)
+- `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp (attempt rows always reference the pre-created `task_runs` row)
 - `validation_results` - attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
 - `session_archives` - task_id, session_blob (full session DB content), archived_at
 
@@ -273,7 +273,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **Git history**: Uses `git log --pretty=format:... --name-status --numstat` via subprocess. Bounded by `--max-commits` (default 5000). `--since` flag for incremental extraction.
 
-**Co-change algorithm**: For each commit, take file pairs changed together, increment co-change count. Skip commits touching more than `--max-commit-files` files (default 50, configurable) — bulk operations pollute the signal.
+**Co-change algorithm**: For each commit, take file pairs changed together, increment co-change count. Skip commits touching more than `--max-commit-files` files (default 50, configurable) - bulk operations pollute the signal.
 
 **Depends on**: Step 1 (DB). Independent of Steps 3-5 (can be built in parallel).
 
@@ -302,7 +302,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 11. Log indexing run metadata (files scanned, changed, duration, status) -> **raw**
 12. Report results
 
-**Error handling**: File parse failures raise immediately by default (fail-fast — a parse failure likely means the parser is broken). Use `--continue-on-error` flag to log failures and continue when deliberately debugging other parts. Each file's data committed atomically.
+**Error handling**: File parse failures raise immediately by default (fail-fast - a parse failure likely means the parser is broken). Use `--continue-on-error` flag to log failures and continue when deliberately debugging other parts. Each file's data committed atomically.
 
 **Depends on**: Steps 1-6 (everything)
 
@@ -326,7 +326,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **`cra enrich` is required** before running `cra solve --mode pipeline`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
 
-**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent — see Phase 3 plan.
+**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent - see Phase 3 plan.
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. JSON parse failure raises with full context (raw response included).
 
@@ -360,7 +360,7 @@ Step 1 (DB + Skeleton)
      -> Step 8 (LLM + Query API) <- Step 7
 ```
 
-Steps 2, 3-5, and 6 are independent tracks off Step 1 — can be built in parallel. Step 7 waits on all three tracks.
+Steps 2, 3-5, and 6 are independent tracks off Step 1 - can be built in parallel. Step 7 waits on all three tracks.
 
 ---
 
@@ -372,20 +372,16 @@ After all 8 steps, run this end-to-end test:
 # Index a real repo (this repo, or any Python/TS/JS project)
 cra index /path/to/repo -v
 
-# Verify curated DB
-sqlite3 .clean_room/curated.sqlite <<'SQL'
-SELECT COUNT(*) as files FROM files;
-SELECT COUNT(*) as symbols FROM symbols;
-SELECT COUNT(*) as deps FROM dependencies;
-SELECT COUNT(*) as commits FROM commits;
-SELECT kind, COUNT(*) FROM symbols GROUP BY kind;
-SELECT language, COUNT(*) FROM files GROUP BY language;
-SQL
+# Verify curated DB (cross-platform: run queries directly)
+sqlite3 .clean_room/curated.sqlite "SELECT COUNT(*) as files FROM files;"
+sqlite3 .clean_room/curated.sqlite "SELECT COUNT(*) as symbols FROM symbols;"
+sqlite3 .clean_room/curated.sqlite "SELECT COUNT(*) as deps FROM dependencies;"
+sqlite3 .clean_room/curated.sqlite "SELECT COUNT(*) as commits FROM commits;"
+sqlite3 .clean_room/curated.sqlite "SELECT kind, COUNT(*) FROM symbols GROUP BY kind;"
+sqlite3 .clean_room/curated.sqlite "SELECT language, COUNT(*) FROM files GROUP BY language;"
 
 # Verify raw DB has indexing run metadata
-sqlite3 .clean_room/raw.sqlite <<'SQL'
-SELECT * FROM index_runs ORDER BY timestamp DESC LIMIT 5;
-SQL
+sqlite3 .clean_room/raw.sqlite "SELECT * FROM index_runs ORDER BY timestamp DESC LIMIT 5;"
 
 # Verify connection factory
 python -c "
@@ -418,5 +414,7 @@ print(f'Subgraph: {len(graph.files)} files, {len(graph.edges)} edges')
 cra enrich /path/to/repo --model <your-loaded-model>
 ```
 
-**Gate criteria**: All curated DB tables populated, queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, connection factory creates all three DB types correctly.
+**Gate criteria**: Retrieval-critical curated tables are populated for the target repo (`files`, `symbols`, `dependencies`, `commits`), queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, and the connection factory creates all three DB types correctly.
+
+
 
