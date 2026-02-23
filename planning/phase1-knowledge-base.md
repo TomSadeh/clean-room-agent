@@ -20,6 +20,7 @@ clean-room-agent/
       __init__.py
       __main__.py
       cli.py                        # Click CLI
+      config.py                     # Config file loader (.clean_room/config.toml)
       db/
         __init__.py
         schema.py                   # DDL for all three DBs: create_curated_schema(), create_raw_schema(), create_session_schema()
@@ -132,11 +133,11 @@ clean-room-agent/
 
 **Raw DB schema highlights** (new):
 - `index_runs` - timestamp, repo_path, files_scanned, files_changed, duration_ms, status
-- `retrieval_decisions` - task_id, stage, file_id, score, included, reason, timestamp
+- `retrieval_decisions` - task_id, stage, file_id, tier, included, reason, timestamp
 - `task_runs` - task_id, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp (created at `cra solve` start, finalized at run end)
 - `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp (attempt rows always reference the pre-created `task_runs` row)
 - `validation_results` - attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
-- `session_archives` - task_id, session_blob (full session DB content), archived_at
+- `session_archives` - task_id, session_blob (BLOB — raw bytes of the session SQLite file, read via `open(path, 'rb').read()`; to restore, write bytes to a temp file and open as SQLite), archived_at
 
 **Session DB schema highlights** (new):
 - `retrieval_state` - key-value store for retrieval pipeline state. Values are JSON-serialized. This is intentionally simple — session is ephemeral and never queried externally. Key examples: `"scope_result"`, `"precision_decisions"`, `"stage_progress"`
@@ -282,11 +283,12 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 ### Step 7: Indexing Orchestrator + CLI Wiring
 
-**Delivers**: `cra index /path/to/repo` produces a fully populated SQLite database.
+**Delivers**: `cra index /path/to/repo` produces a fully populated SQLite database. Also delivers `cra init` for project config setup and shared config loading.
 
 **Files**:
 - `src/clean_room/indexer/orchestrator.py` - `index_repository(repo_path, ...) -> IndexingResult`
-- Update `src/clean_room/cli.py` - Wire `index` command
+- `src/clean_room/config.py` - Config file loader: `load_config(repo_path) -> dict | None`. Reads `.clean_room/config.toml` if it exists, returns flat dict. CLI flags override these values. Missing file returns `None` (not an error — config is optional).
+- Update `src/clean_room/cli.py` - Wire `index` command, add `cra init` command (creates `.clean_room/config.toml` from explicit flags or interactive prompts)
 - `tests/test_orchestrator.py`, `tests/test_cli.py`
 
 **Pipeline sequence** (annotated with DB targets):
@@ -327,7 +329,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **`cra enrich` is required** before running `cra solve`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
 
-**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent - see Phase 3 plan.
+**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. `llm/client.py` is the **provider boundary**: it encapsulates all Ollama-specific HTTP transport (httpx, retry, error handling) behind a stable public API. Phase 3's agent imports and calls the same module. Swapping to a different LLM provider means reimplementing `llm/client.py` internals; no other module changes.
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. JSON parse failure raises with full context (raw response included).
 

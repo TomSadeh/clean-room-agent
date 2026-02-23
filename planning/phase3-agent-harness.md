@@ -60,7 +60,7 @@ tests/
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), imported directly by Phase 3 | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Prompt-format helpers live in `prompt_builder.py`. |
+| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), imported directly by Phase 3 | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. `llm/client.py` is the provider boundary — Ollama-specific for MVP, swappable without changing callers. Prompt-format helpers live in `prompt_builder.py`. |
 | Output format | Search-and-replace blocks (single required format) | Single strict format keeps parser behavior deterministic and fail-fast. |
 | Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. Worktree creation must succeed - if it fails (e.g., Windows long-path issues), error out with diagnostic context. Test worktree lifecycle early on Windows. |
 | Retry strategy | Fresh prompt with structured error context; max attempts provided explicitly by caller config | Bounded retries without hardcoded core defaults. |
@@ -146,7 +146,7 @@ class TaskResult:
 - `src/clean_room/agent/prompt_builder.py` (prompt-format helpers)
 
 **Requirements**:
-- `OllamaConfig` with required `base_url` (no default — user specifies their Ollama URL).
+- `OllamaConfig` with required `base_url` (no default — user specifies their Ollama URL). This is the MVP provider config; the fields (model, temperature, max_tokens, base_url) are specific to the Ollama transport in `llm/client.py`.
 - Prompt-format helpers convert `ContextPackage` + task into model-ready prompt strings.
 - Phase 3 uses `llm/client.py` (shared Ollama transport from Phase 1) directly for LLM calls.
 
@@ -228,6 +228,12 @@ class TaskResult:
 - `insufficient_context` is a first-class terminal for an attempt cycle: emit `RefinementRequest`, call Phase 2 retrieval re-entry, then continue retries on the returned context package.
 - Refinement is bounded by explicit caller config (`max_refinement_loops`) and requires concrete evidence (missing symbol/file/test/error signature).
 
+**Pre-refinement session writes** (Phase 3 writes before calling Phase 2 re-entry):
+- `"refinement_request"` — serialized `RefinementRequest` with `reason`, `missing_files[]`, `missing_symbols[]`, `missing_tests[]`, `error_signatures[]`. This is the key Phase 2 reads on re-entry.
+- `"attempt_summary"` — summary of the attempt(s) that led to the `insufficient_context` classification (attempt number, error type, what was missing). For Phase 2's logging and decision-making.
+
+Phase 2's re-entry contract: it reads `"refinement_request"` and `"final_context"` from session DB, expands context to cover the missing items, and returns an updated `ContextPackage`. See Phase 2 Step 6 for the full re-entry protocol.
+
 **Database writes**:
 - At solve startup, create a `task_runs` row first and keep its `task_run_id` for this run.
 - Each attempt: write `AttemptRecord` (including raw LLM response) to **raw DB** immediately after generation, linked by `task_run_id`.
@@ -253,15 +259,17 @@ cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
 ```
 
 **CLI budget rules (`cra solve`)**:
+- All settings are resolved in precedence order: CLI flags > `.clean_room/config.toml` > hard error.
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
   - `--budget-config <path>`
 - `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
+- If neither CLI flags nor `--budget-config` are provided, values are read from `.clean_room/config.toml` `[budget]` section. `--model` and `--base-url` likewise fall back to `[model]` section. If the config file also lacks required values, it's a hard error.
 - Validation is strict and fail-fast:
   - `context_window > 0`
   - `reserved_tokens >= 0`
   - `reserved_tokens < context_window`
-- No defaults and no inference from `--model`.
+- No inference from `--model`.
 - Effective retrieval budget is computed as: `retrieval_budget = context_window - reserved_tokens`.
 
 **Task ID and handoff**: `cra solve` generates a task ID (UUID4) at startup. This ID is passed to the retrieval pipeline (Phase 2) which creates the session DB, and then used throughout the solve loop. The user never needs to manage task IDs.
@@ -273,7 +281,7 @@ cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
 4. Call `RetrievalPipeline` in-process, passing task ID and `BudgetConfig`. Retrieval performs curated preflight checks (including `file_metadata` presence), creates session DB, and returns `ContextPackage` plus a session handle in-memory.
 5. Run retry loop (each attempt writes to raw DB and session DB). When context is insufficient, emit `RefinementRequest` and call retrieval re-entry for updated context.
 6. Finalize the existing `task_runs` row with success/totals/final diff.
-7. Close session handle. Optionally archive session content to raw DB (`session_archives` table).
+7. Close session handle. Optionally archive session content to raw DB: read the closed session SQLite file as raw bytes (`open(path, 'rb').read()`) and insert into `session_archives` table as a BLOB. To restore an archived session for debugging, write the blob to a temp `.sqlite` file and open it.
 8. Exit with task status and diagnostics.
 
 ---

@@ -1,6 +1,6 @@
 # Clean Room Agent
 
-**Status**: Research and design phase (post-alpha)
+**Status**: Research and design phase
 **Thesis**: The primary bottleneck in LLM application performance is not model capability but context curation.
 
 ## Core Idea
@@ -18,15 +18,17 @@ A custom coding agent harness built around a multi-stage context curation pipeli
 
 **Result**: A 32K context window at nearly 100% signal relevance, versus a 200K window at 10-15% effective utilization.
 
-## MVP: Three-Prompt Strategy
+## N-Prompt Pipeline Design
 
-The initial experiment uses a three-stage pipeline as the minimum viable version:
+The pipeline is a variable-length sequence of retrieval stages followed by a terminal execute stage. The number of retrieval stages adapts to the task and repository:
 
-1. **Scope & Relevance Filter** - Full repository + task description -> manageable scope for a small context window.
-2. **Precision Filter** - Scoped material -> exactly the context needed for the coding task.
-3. **Full Prompt** - Curated context + task description -> code generation.
+- **Simple task, small repo** — [Scope → Execute] (2 prompts)
+- **Typical bug fix** — [Scope → Precision → Execute] (3 prompts, MVP configuration)
+- **Complex feature, large codebase** — [Scope → Dependency Analysis → Impact Assessment → Precision → Execute] (5+ prompts)
 
-Designed to support a fixed-model evaluation setup when needed, while keeping implementation model-agnostic so model choice can evolve without refactoring core architecture.
+Each retrieval stage implements a common protocol (context in → refined context out). The execute stage is always terminal: curated context + task → code generation.
+
+The pipeline architecture is model-agnostic — stages, context curation, and budget management have no provider dependency. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP; swapping providers means reimplementing that module's internals, not changing the pipeline.
 
 ## Prior Art
 

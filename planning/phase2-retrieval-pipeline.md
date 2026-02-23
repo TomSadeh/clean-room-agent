@@ -12,7 +12,7 @@ The gate for Phase 2: `cra retrieve` works end-to-end, reliably produces budget-
 
 ## Scope Boundary
 
-- `In scope`: Task analysis, file scoring/ranking, scope expansion, precision extraction, budget enforcement, context assembly, retrieval CLI.
+- `In scope`: Retrieval stage protocol, pipeline runner, task analysis, MVP stage implementations (Scope, Precision), budget enforcement, context assembly, retrieval CLI.
 - `Out of scope`: Benchmark-grade evaluation/reporting workflows (outside the active plan).
 
 ---
@@ -21,9 +21,9 @@ The gate for Phase 2: `cra retrieve` works end-to-end, reliably produces budget-
 
 | DB | Access | Purpose |
 |----|--------|---------|
-| Curated | **Read-only** | All scoring, scoping, and precision queries go through the Phase 1 Query API |
-| Raw | **Append-only** | Log every retrieval decision: which files scored what, which were included/excluded, and why |
-| Session | **Read/write** | Per-task working state: retrieval stage progress, intermediate scores, staged context fragments |
+| Curated | **Read-only** | All scoping and precision queries go through the Phase 1 Query API |
+| Raw | **Append-only** | Log every retrieval decision: which files were included/excluded per tier, and why |
+| Session | **Read/write** | Per-task working state: retrieval stage progress, staged context fragments |
 
 Phase 2 **creates** the session DB for each task run. Phase 3 inherits it.
 
@@ -36,24 +36,22 @@ src/
   clean_room/
     retrieval/
       __init__.py
-      pipeline.py
+      stage.py                     # RetrievalStage protocol, StageContext dataclass
+      pipeline.py                  # Pipeline runner: sequences stages, threads budget/session
       task_analysis.py
-      scope.py
-      precision.py
       budget.py
       context_assembly.py
-      dataclasses.py
+      dataclasses.py               # BudgetConfig, TaskQuery, RefinementRequest, ContextPackage, etc.
       raw_logger.py                # Convenience wrapper around db/raw_queries.py for retrieval-specific logging. All raw DB inserts go through raw_queries.py.
       session_state.py             # Manages per-task session DB state
-      scoring/
+      stages/
         __init__.py
-        signals.py
-        combiner.py
+        scope.py                   # Scope stage: tiered expansion from seeds
+        precision.py               # Precision stage: symbol-level extraction
 tests/
   test_task_analysis.py
-  test_scoring_signals.py
-  test_scope.py
-  test_precision.py
+  test_scope_stage.py
+  test_precision_stage.py
   test_budget.py
   test_context_assembly.py
   test_pipeline.py
@@ -65,7 +63,8 @@ tests/
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Scoring | Weighted deterministic signals | Interpretable and tunable without model training. |
+| Pipeline | Variable-length stage sequence with common protocol | Pipeline length adapts to task/repo complexity. Need more nuance? Add a stage, don't add knobs. |
+| MVP stages | Scope (tiered expansion) + Precision (symbol extraction) | Minimal viable pipeline. Additional stages (dependency analysis, impact assessment, etc.) are future stage implementations, not structural changes. |
 | Task parsing | Heuristics first, optional local LLM assist | Deterministic by default. LLM path is explicit opt-in (`--llm-assist`), not a silent fallback. |
 | Budget control | Priority-based eviction and demotion | Preserve highest-value context under hard token limits. |
 | Context output | Typed dataclasses + separate renderers | Easier testing and format portability. |
@@ -74,66 +73,72 @@ tests/
 
 ## Core Data Structures
 
-- `BudgetConfig`: shared between Phase 2 and Phase 3. Contains model context window size, reserved tokens for system prompt/retry overhead, and the effective retrieval budget `(window - reserved)`. Defined in `retrieval/dataclasses.py`, imported by Phase 3.
+**Stage protocol** (defined in `retrieval/stage.py`):
+- `StageContext`: the data threaded through the pipeline. Contains the current file set, symbol selections, token estimates, and provenance records. Each stage receives it from the previous stage (or empty for the first stage) and returns a refined version.
+- `RetrievalStage`: protocol with `name: str` and `run(context: StageContext, kb: KnowledgeBase, task: TaskQuery) -> StageContext`. Every retrieval stage implements this. The pipeline runner calls `run()` on each stage in sequence.
+
+**Pipeline data** (defined in `retrieval/dataclasses.py`):
+- `BudgetConfig`: shared between Phase 2 and Phase 3. Contains model context window size, reserved tokens for system prompt/retry overhead, and the effective retrieval budget `(window - reserved)`. Imported by Phase 3.
 - `TaskQuery`: parsed task intent (`task_type`, keywords, file/symbol hints, error patterns, concepts).
 - `RefinementRequest`: structured request from Phase 3 when context is insufficient (`reason`, `missing_files[]`, `missing_symbols[]`, `missing_tests[]`, `error_signatures[]`).
-- `FileScore`: per-file relevance score with signal breakdown.
-- `ScopeResult`: ranked scoped files plus expansion provenance.
 - `SymbolContext`: selected symbol details and relevance tier.
 - `FileContext`: selected context per file.
-- `ContextPackage`: final retrieval output with token/budget metadata.
+- `ContextPackage`: final retrieval output with token/budget metadata. Assembled from the last stage's `StageContext` by the context assembly step.
 
 ---
 
 ## Implementation Steps
 
-### Step 1: Data Structures + Task Analysis
+### Step 1: Stage Protocol + Data Structures + Task Analysis
 
 **Delivers**:
-- Retrieval dataclasses.
+- `RetrievalStage` protocol and `StageContext` dataclass (in `retrieval/stage.py`).
+- All retrieval dataclasses (`BudgetConfig`, `TaskQuery`, `RefinementRequest`, `ContextPackage`, etc.).
 - `analyze_task()` deterministic extraction for files/symbols/errors/keywords/task type.
 - Optional `--llm-assist` for vague tasks. `--llm-assist` requires `--model <model-id>` when used with `cra retrieve` standalone. Missing `--model` with `--llm-assist` is a hard error.
 
----
-
-### Step 2: Scoring Signals
-
-**Delivers**:
-- Signal functions for path match, symbol match, dependency proximity, co-change affinity, recency, metadata concept/domain overlap, and structural centrality.
-
-**Data source**: All signal functions read from the **curated DB** via the Phase 1 Query API.
+**Stage protocol contract**:
+- `RetrievalStage.run(context: StageContext, kb: KnowledgeBase, task: TaskQuery) -> StageContext`
+- Each stage receives the accumulated context from prior stages and returns a refined version.
+- Stages are stateless — all per-task state lives in `StageContext` and session DB.
+- The pipeline runner is responsible for sequencing, budget threading, session writes, and raw DB logging between stages.
 
 ---
 
-### Step 3: Signal Combination + Scope (Stage 1)
+### Step 2: Scope Stage
 
 **Delivers**:
-- Weighted score combination and ranking.
-- Seed-file handling.
-- Dependency and co-change expansion.
+- First `RetrievalStage` implementation: `ScopeStage` (in `retrieval/stages/scope.py`).
+- Seed file identification from `TaskQuery` (explicit file/symbol hints, path matches, symbol-name matches).
+- Tiered expansion outward from seeds, filling budget in priority order.
+- Provenance tracking: every included file records which tier and which relationship caused its inclusion.
 
-**Configuration (explicit, no core hardcoded defaults)**:
-- Signal weights are defined in a `ScoringConfig` dataclass, required by the pipeline caller. `cra retrieve` standalone requires `--scoring-config <path>` or explicit weight flags. `cra solve` constructs `ScoringConfig` from its own config. No hardcoded weight defaults in scoring logic.
-- Scope size target is caller-provided (required in `BudgetConfig`/retrieval config).
-- Task-type weight tweaks (`bug_fix`, `refactor`, `test`).
+**Expansion tiers** (processed in order, each tier adds files until budget is exhausted):
+1. **Seeds** — files directly mentioned in the task, or containing symbols mentioned in the task. Always included.
+2. **Direct dependencies** — imports/imported-by for seed files via the dependency graph.
+3. **Co-change neighbors** — files that historically change with seed files (above a minimum co-change count).
+4. **Metadata matches** — files sharing domain/module/concepts with the task query, discovered via `file_metadata`.
 
-**Session state**: Writes scope results (ranked file list, scores) to **session DB** for downstream stages. Logs all scoring decisions (file scores, inclusion/exclusion reasons) to **raw DB**.
+Within each tier, files are ordered by relevance to seeds (e.g., dependency depth, co-change count, number of matching concepts). This is a tie-breaker within the tier, not a cross-tier score.
+
+**Data source**: All expansion queries read from the **curated DB** via the Phase 1 Query API.
 
 ---
 
-### Step 4: Precision Extraction (Stage 2)
+### Step 3: Precision Stage
 
 **Delivers**:
+- Second `RetrievalStage` implementation: `PrecisionStage` (in `retrieval/stages/precision.py`).
 - Symbol-tier classification: `primary`, `supporting`, `type_context`, `excluded`.
 - Python symbol-edge traversal via `symbol_references`.
 - TS/JS MVP heuristics path (file-level dependencies + symbol-name signals).
 - Test assertion extraction and rationale-comment inclusion.
 
-**Data source**: Reads scoped file list from **session DB**, queries symbol details from **curated DB**. Logs precision decisions to **raw DB**.
+**Data source**: Reads scoped file list from incoming `StageContext`, queries symbol details from **curated DB**.
 
 ---
 
-### Step 5: Token Budget Management
+### Step 4: Token Budget Management
 
 **Delivers**:
 - Token counting and hard budget enforcement.
@@ -148,7 +153,7 @@ tests/
 
 ---
 
-### Step 6: Context Assembly
+### Step 5: Context Assembly
 
 **Delivers**:
 - Ordered, deduplicated `ContextPackage` output.
@@ -157,25 +162,29 @@ tests/
 
 ---
 
-### Step 7: Pipeline Orchestrator + CLI
+### Step 6: Pipeline Runner + CLI
 
 **Delivers**:
+- `RetrievalPipeline` class: takes a list of `RetrievalStage` implementations and runs them in sequence, threading `StageContext` through. Handles budget threading, session state persistence between stages, and raw DB logging of per-stage decisions.
 - `cra retrieve` standalone command (for inspection/debugging; outputs context package as JSON/markdown to stdout).
-- `RetrievalPipeline` class callable in-process by Phase 3's `cra solve` (primary production path).
 - End-to-end retrieval execution with verbose diagnostics.
+
+**Pipeline configuration**: The caller provides the stage list. MVP default: `[ScopeStage(), PrecisionStage()]`. Future configurations add stages to this list — the runner doesn't change. `cra solve` and `cra retrieve` both accept a pipeline configuration (MVP default used when not specified).
 
 **Standalone budget contract**: `cra retrieve` must require explicit `--context-window` and `--reserved-tokens` (or an explicit `--budget-config` path). Missing budget inputs are a hard error.
 
 **CLI budget rules (`cra retrieve`)**:
+- Budget values are resolved in precedence order: CLI flags > `.clean_room/config.toml` > hard error.
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
   - `--budget-config <path>`
 - `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
+- If neither CLI flags nor `--budget-config` are provided, values are read from `.clean_room/config.toml` `[budget]` section. If the config file also lacks them, it's a hard error.
 - Validation is strict and fail-fast:
   - `context_window > 0`
   - `reserved_tokens >= 0`
   - `reserved_tokens < context_window`
-- No defaults and no model-name inference in standalone retrieval.
+- No model-name inference in standalone retrieval.
 - Effective retrieval budget is always computed as: `retrieval_budget = context_window - reserved_tokens`.
 - Persist the effective budget config for the run to raw DB alongside retrieval decisions for reproducibility.
 
@@ -183,12 +192,34 @@ tests/
 
 **Refinement model**: `RetrievalPipeline` supports re-entry from Phase 3 using `RefinementRequest`. The same `task_id` and session handle are reused. Refinement adds/adjusts context and returns a new `ContextPackage` without giving Phase 3 direct curated access.
 
+**Session state contract for refinement re-entry**:
+
+Phase 2 writes these session DB keys during initial retrieval (via `set_retrieval_state`):
+- `"scope_result"` — ScopeStage output (file IDs, tiers, provenance)
+- `"precision_decisions"` — PrecisionStage output (symbol selections, classifications)
+- `"stage_progress"` — list of completed stage names and their status
+- `"final_context"` — serialized final `StageContext` after all stages complete
+
+Phase 2 reads on re-entry:
+- `"final_context"` — to know what was previously selected (base for refinement)
+- `"refinement_request"` — written by Phase 3 before calling re-entry (see Phase 3 Step 6)
+- `"stage_progress"` — to determine which stages ran and can be re-entered
+
+Phase 2 re-entry behavior:
+1. Load `"final_context"` and `"refinement_request"` from session DB.
+2. Apply refinement constraints (missing files/symbols/tests from the request) to expand the existing context.
+3. Re-run stages as needed with the refinement constraints, logging new decisions to raw DB.
+4. Write updated `"final_context"` and `"stage_progress"` back to session DB.
+5. Return a new `ContextPackage`.
+
+**Enrichment preflight**: `RetrievalPipeline` checks that `file_metadata` is populated before running scope expansion. This check runs in both production (`cra solve`) and standalone (`cra retrieve`) paths. Missing enrichment data is a hard error — the user must run `cra enrich` first.
+
 **Database lifecycle**:
 1. Open curated DB connection in read-only mode via connection factory (`get_connection('curated', read_only=True)`).
 2. Open raw DB connection (append) via connection factory.
 3. Create session DB for this task via `get_connection('session', task_id=task_id)`. Task ID is generated by the caller (`cra solve` generates it at startup; `cra retrieve` standalone generates its own).
-4. Run pipeline stages (each reads curated, writes session state, logs decisions to raw).
-5. On refinement re-entry, load prior stage state from session DB, apply refinement constraints, rerun scope/precision/budget deterministically, and log refinement decisions to raw DB.
+4. Run each stage in sequence. Between stages, the runner persists `StageContext` to session DB and logs stage decisions to raw DB. Each stage reads curated via the Query API.
+5. On refinement re-entry, load prior stage context from session DB, apply refinement constraints, rerun stages deterministically, and log refinement decisions to raw DB.
 6. Return `ContextPackage` plus an explicit session handle to the caller. In `cra solve`, Phase 3 takes ownership and closes it. In standalone `cra retrieve`, close it before process exit.
 
 ---
@@ -196,22 +227,17 @@ tests/
 ## Step Dependency Graph
 
 ```
-Step 1 (Task Analysis + Data Structures)
+Step 1 (Stage Protocol + Data Structures + Task Analysis)
   |
-  +--> Step 2 (Scoring Signals)
-         |
-         +--> Step 3 (Scope)
-                |
-                +--> Step 4 (Precision)
-                       |
-                       +--> Step 5 (Budget)
-                              |
-                              +--> Step 6 (Context Assembly)
-                                     |
-                                     +--> Step 7 (Pipeline + CLI)
+  +--> Step 2 (Scope Stage)         --\
+  +--> Step 3 (Precision Stage)     ---+--> Step 6 (Pipeline Runner + CLI)
+  +--> Step 4 (Budget)              --/
+  +--> Step 5 (Context Assembly)    -/
 
 [All steps depend on Phase 1]
 ```
+
+Steps 2, 3, 4, 5 are independent of each other (all depend on Step 1) and can be built in parallel. Step 6 integrates them all.
 
 ---
 
@@ -234,7 +260,7 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --context-windo
 3. Dependency expansion includes direct neighbors of seed files.
 4. Budget is always respected.
 5. Output is coherent and actionable for Phase 3 solve prompts.
-6. Raw DB contains retrieval decision records for every scored file.
+6. Raw DB contains retrieval decision records for every file considered per expansion tier.
 7. Session DB contains retrieval state and working context for the task run.
 8. Refinement re-entry works for the same `task_id` and produces an updated, budget-compliant `ContextPackage`.
 
