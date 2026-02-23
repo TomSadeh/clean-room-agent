@@ -2,9 +2,11 @@
 
 ## Context
 
-This is the foundation layer of the Clean Room Agent. It indexes a codebase into a SQLite database with structured metadata — AST-extracted symbols, dependency graphs, docstrings, comments, git history, and LLM-generated file summaries. No embeddings, no vector search. Everything is structured and queryable with deterministic SQL.
+This is the foundation layer of the Clean Room Agent. It creates all three database schemas (curated, raw, session) and indexes a codebase into the curated DB with structured metadata — AST-extracted symbols, dependency graphs, docstrings, comments, git history, and LLM-generated file summaries. No embeddings, no vector search. Everything is structured and queryable with deterministic SQL.
 
-Phase 2 (retrieval pipeline) consumes this database. The gate for Phase 1: can we index a real repo and query it meaningfully by metadata?
+Phase 1 also establishes the connection factory and raw DB logging infrastructure. Indexing run metadata is logged to raw DB. Session DB schema is created but not populated until Phase 2/3.
+
+Phase 2 (retrieval pipeline) reads from the curated DB. The gate for Phase 1: can we index a real repo, query it meaningfully by metadata, and verify all three DB schemas and the connection factory work correctly?
 
 ---
 
@@ -20,9 +22,11 @@ clean-room-agent/
       cli.py                        # Click CLI
       db/
         __init__.py
-        schema.py                   # DDL, create_schema()
-        connection.py               # Connection factory, WAL mode
-        queries.py                  # Parameterized insert/query helpers
+        schema.py                   # DDL for all three DBs: create_curated_schema(), create_raw_schema(), create_session_schema()
+        connection.py               # Connection factory: get_connection(role, task_id=None), WAL mode
+        queries.py                  # Parameterized insert/query helpers for curated DB
+        raw_queries.py              # Insert helpers for raw DB (index runs, retrieval decisions, attempts)
+        session_queries.py          # Insert/query helpers for session DB (retrieval state, working context)
       indexer/
         __init__.py
         orchestrator.py             # Top-level indexing coordinator
@@ -101,26 +105,41 @@ clean-room-agent/
 
 ## Implementation Steps
 
-### Step 1: Project Skeleton + Database Layer
+### Step 1: Project Skeleton + Three-Database Layer
 
-**Delivers**: Working Python package, `cra` CLI command (help only), SQLite schema creation, basic CRUD helpers.
+**Delivers**: Working Python package, `cra` CLI command (help only), all three SQLite schemas (curated, raw, session), connection factory, basic CRUD helpers for each DB.
 
 **Files**:
 - `pyproject.toml` — hatchling build, dependencies, `[project.scripts] cra = "clean_room.cli:main"`
 - `src/clean_room/__init__.py`, `__main__.py`
 - `src/clean_room/cli.py` — Click group with stub `index` command
-- `src/clean_room/db/connection.py` — Connection factory with WAL mode, foreign keys, `sqlite3.Row` factory
-- `src/clean_room/db/schema.py` — Full DDL for KB tables + indexes (including `symbol_references` for symbol-level edges)
-- `src/clean_room/db/queries.py` — `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
+- `src/clean_room/db/connection.py` — Connection factory: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. WAL mode, foreign keys, `sqlite3.Row` factory. Manages DB file paths under `.clean_room/` (curated.sqlite, raw.sqlite, sessions/session_<task_id>.sqlite).
+- `src/clean_room/db/schema.py` — Full DDL for all three DBs: `create_curated_schema()`, `create_raw_schema()`, `create_session_schema()`
+- `src/clean_room/db/queries.py` — Curated DB helpers: `upsert_repo`, `upsert_file`, `get_file_hash`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
+- `src/clean_room/db/raw_queries.py` — Raw DB helpers: `insert_index_run`, `insert_retrieval_decision`, `insert_task_run`, `insert_run_attempt`, `insert_validation_result`, `insert_session_archive`
+- `src/clean_room/db/session_queries.py` — Session DB helpers: `set_retrieval_state`, `get_retrieval_state`, `set_working_context`, `get_working_context`, `set_scratch_note`, `get_scratch_notes`
 - `tests/conftest.py`, `tests/test_db.py`
 
-**Schema highlights** (from `planning/meta-plan.md`, with refinements):
+**Curated DB schema highlights** (existing tables, unchanged):
 - `INTEGER PRIMARY KEY` for all IDs (SQLite rowid alias)
 - `content_hash` as TEXT (hex SHA-256) on `files`
 - `co_changes` composite PK `(file_a_id, file_b_id)` with CHECK `file_a_id < file_b_id`
 - `symbol_references` for symbol-level edges: `caller_symbol_id`, `callee_symbol_id`, `reference_kind`, `confidence`
 - JSON columns (`concepts`, `parsed_fields`, `files_involved`) as TEXT
 - Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
+
+**Raw DB schema highlights** (new):
+- `index_runs` — timestamp, repo_path, files_scanned, files_changed, duration_ms, status
+- `retrieval_decisions` — task_id, stage, file_id, score, included, reason, timestamp
+- `task_runs` — task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp
+- `run_attempts` — task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp
+- `validation_results` — attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
+- `session_archives` — task_id, session_blob (full session DB content), archived_at
+
+**Session DB schema highlights** (new):
+- `retrieval_state` — key-value store for retrieval pipeline state (stage, scores, decisions)
+- `working_context` — staged context fragments being assembled during retrieval/solve
+- `scratch_notes` — freeform per-task notes (error classifications, retry context)
 
 **Verify**: `pip install -e ".[dev]" && cra --help && pytest tests/test_db.py`
 
@@ -268,18 +287,19 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - Update `src/clean_room/cli.py` — Wire `index` command
 - `tests/test_orchestrator.py`, `tests/test_cli.py`
 
-**Pipeline sequence**:
-1. Open/create DB, apply schema
-2. Register repo (detect git remote URL)
-3. Scan files
-4. Compute incremental diff
-5. Delete data for removed/changed files
-6. Upsert file records
-7. Parse each new/changed file → insert symbols, docstrings, comments, and Python symbol-reference edges
-8. Resolve all imports → insert dependencies
-9. Extract git history → insert commits, file-commits
-10. Compute co-changes → upsert pairs
-11. Report results
+**Pipeline sequence** (annotated with DB targets):
+1. Open/create curated + raw DBs, apply schemas for all three DB types (session schema defined, no per-task session DB created during indexing)
+2. Register repo (detect git remote URL) → **curated**
+3. Scan files → (in-memory)
+4. Compute incremental diff → (in-memory, reads **curated**)
+5. Delete data for removed/changed files → **curated**
+6. Upsert file records → **curated**
+7. Parse each new/changed file → insert symbols, docstrings, comments, and Python symbol-reference edges → **curated**
+8. Resolve all imports → insert dependencies → **curated**
+9. Extract git history → insert commits, file-commits → **curated**
+10. Compute co-changes → upsert pairs → **curated**
+11. Log indexing run metadata (files scanned, changed, duration, status) → **raw**
+12. Report results
 
 **Error handling**: Individual file parse failures caught and logged, indexing continues. Each file's data committed atomically.
 
@@ -306,7 +326,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. Graceful fallback on JSON parse failure.
 
-**Query API** (`KnowledgeBase` class) — the contract Phase 2 depends on:
+**Query API** (`KnowledgeBase` class) — reads exclusively from the **curated DB**. This is the contract Phase 2 depends on:
 - `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`
 - `search_files_by_metadata(repo_id, domain?, module?, concepts?)`
 - `get_symbols_for_file(file_id, kind?)`, `search_symbols_by_name(repo_id, pattern)`
@@ -350,8 +370,8 @@ After all 8 steps, run this end-to-end test:
 # Index a real repo (this repo, or any Python/TS/JS project)
 cra index /path/to/repo -v
 
-# Verify data
-sqlite3 ~/.clean_room/kb.sqlite <<'SQL'
+# Verify curated DB
+sqlite3 .clean_room/curated.sqlite <<'SQL'
 SELECT COUNT(*) as files FROM files;
 SELECT COUNT(*) as symbols FROM symbols;
 SELECT COUNT(*) as deps FROM dependencies;
@@ -360,7 +380,25 @@ SELECT kind, COUNT(*) FROM symbols GROUP BY kind;
 SELECT language, COUNT(*) FROM files GROUP BY language;
 SQL
 
-# Verify queries from Python
+# Verify raw DB has indexing run metadata
+sqlite3 .clean_room/raw.sqlite <<'SQL'
+SELECT * FROM index_runs ORDER BY timestamp DESC LIMIT 5;
+SQL
+
+# Verify connection factory
+python -c "
+from clean_room.db.connection import get_connection
+# All three roles should work
+curated = get_connection('curated')
+raw = get_connection('raw')
+session = get_connection('session', task_id='test_verify')
+print('All three DB connections created successfully')
+curated.close()
+raw.close()
+session.close()
+"
+
+# Verify queries from Python (reads curated DB only)
 python -c "
 from clean_room.query.api import KnowledgeBase
 kb = KnowledgeBase()
@@ -378,5 +416,4 @@ print(f'Subgraph: {len(graph.files)} files, {len(graph.edges)} edges')
 cra enrich /path/to/repo --model <your-loaded-model>
 ```
 
-**Gate criteria**: All tables populated, queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed).
-
+**Gate criteria**: All curated DB tables populated, queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, connection factory creates all three DB types correctly.

@@ -2,11 +2,11 @@
 
 ## Context
 
-This is the retrieval build phase of the Clean Room Agent. Given a task description and a populated knowledge base (Phase 1), it produces a curated context package with minimal noise for code generation.
+This is the retrieval build phase of the Clean Room Agent. Given a task description and the curated DB from Phase 1, it produces a curated context package with minimal noise for code generation.
 
-Phase 1 indexes. Phase 2 retrieves. Phase 3 executes.
+Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated, logs to raw, uses session for working state). Phase 3 executes.
 
-The gate for Phase 2: `cra retrieve` works end-to-end and reliably produces budget-compliant, task-relevant context packages.
+The gate for Phase 2: `cra retrieve` works end-to-end, reliably produces budget-compliant task-relevant context packages, and logs all retrieval decisions to raw DB.
 
 ---
 
@@ -14,6 +14,18 @@ The gate for Phase 2: `cra retrieve` works end-to-end and reliably produces budg
 
 - `In scope`: Task analysis, file scoring/ranking, scope expansion, precision extraction, budget enforcement, context assembly, retrieval CLI.
 - `Out of scope`: Benchmark-grade evaluation/reporting workflows (moved to Phase 4).
+
+---
+
+## Database Interaction Model
+
+| DB | Access | Purpose |
+|----|--------|---------|
+| Curated | **Read-only** | All scoring, scoping, and precision queries go through the Phase 1 Query API |
+| Raw | **Append-only** | Log every retrieval decision: which files scored what, which were included/excluded, and why |
+| Session | **Read/write** | Per-task working state: retrieval stage progress, intermediate scores, staged context fragments |
+
+Phase 2 **creates** the session DB for each task run. Phase 3 inherits it.
 
 ---
 
@@ -31,6 +43,8 @@ src/
       budget.py
       context_assembly.py
       dataclasses.py
+      raw_logger.py                # Logs retrieval decisions to raw DB
+      session_state.py             # Manages per-task session DB state
       scoring/
         __init__.py
         signals.py
@@ -85,6 +99,8 @@ tests/
 **Delivers**:
 - Signal functions for path match, symbol match, dependency proximity, co-change affinity, recency, metadata concept/domain overlap, and structural centrality.
 
+**Data source**: All signal functions read from the **curated DB** via the Phase 1 Query API.
+
 ---
 
 ### Step 3: Signal Combination + Scope (Stage 1)
@@ -98,6 +114,8 @@ tests/
 - Scope size target around 75 files (configurable).
 - Task-type weight tweaks (`bug_fix`, `refactor`, `test`).
 
+**Session state**: Writes scope results (ranked file list, scores) to **session DB** for downstream stages. Logs all scoring decisions (file scores, inclusion/exclusion reasons) to **raw DB**.
+
 ---
 
 ### Step 4: Precision Extraction (Stage 2)
@@ -107,6 +125,8 @@ tests/
 - Python symbol-edge traversal via `symbol_references`.
 - TS/JS MVP fallback heuristics.
 - Test assertion extraction and rationale-comment inclusion.
+
+**Data source**: Reads scoped file list from **session DB**, queries symbol details from **curated DB**. Logs precision decisions to **raw DB**.
 
 ---
 
@@ -135,6 +155,13 @@ tests/
 **Delivers**:
 - `cra retrieve` command.
 - End-to-end retrieval execution with verbose diagnostics.
+
+**Database lifecycle**:
+1. Open curated DB connection (read-only) via connection factory.
+2. Open raw DB connection (append) via connection factory.
+3. Create session DB for this task via `get_connection('session', task_id=task_id)`.
+4. Run pipeline stages (each reads curated, writes session state, logs decisions to raw).
+5. Leave session DB open for Phase 3 handoff (or close if running retrieval standalone).
 
 ---
 
@@ -179,6 +206,8 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --format json >
 3. Dependency expansion includes direct neighbors of seed files.
 4. Budget is always respected.
 5. Output is coherent and actionable for Phase 3 solve prompts.
+6. Raw DB contains retrieval decision records for every scored file.
+7. Session DB contains retrieval state and working context for the task run.
 
 ---
 

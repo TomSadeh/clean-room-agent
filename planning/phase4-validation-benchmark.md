@@ -10,9 +10,21 @@ Phase 4 does not build core solve-path features. It evaluates them.
 
 ## Inputs From Previous Phases
 
-- Phase 1: Indexing + knowledge base.
-- Phase 2: Retrieval pipeline + context package generation.
-- Phase 3: Solve harness (`cra solve`) with pipeline and baseline modes.
+- Phase 1: Curated DB (indexed knowledge base), raw DB (indexing run metadata), connection factory.
+- Phase 2: Retrieval pipeline + context packages. Raw DB retrieval decisions. Session DB retrieval state.
+- Phase 3: Solve harness (`cra solve`). Raw DB attempt records, task results, validation results, LLM outputs.
+
+---
+
+## Database Interaction Model
+
+| DB | Access | Purpose |
+|----|--------|---------|
+| Curated | **Never touches** | Phase 4 does not modify or directly query the curated DB |
+| Raw | **Read-only** | Primary data source for all analysis: retrieval decisions, attempt records, task results, validation results, LLM outputs |
+| Session | **Never touches** | Reads archived session copies from raw DB if needed |
+
+Phase 4 is a **read-only consumer** of raw DB data. It analyzes logged decisions and results from Phases 1-3 to produce metrics and reports. Raw→curated derivation analysis (identifying which raw signals should be promoted) is a key Phase 4 output that informs future automation.
 
 ---
 
@@ -49,6 +61,8 @@ tests/
 **Delivers**:
 - `cra evaluate` wired to Phase 2 retrieval outputs.
 - File/symbol precision/recall, token efficiency, budget utilization metrics.
+
+**Data source**: Reads logged retrieval decisions from **raw DB** (not re-running retrieval). Compares logged decisions against ground truth to compute precision/recall without requiring live retrieval runs.
 
 **Gate**:
 - Evaluation cases run consistently and metrics are emitted per-case and aggregate.
@@ -93,6 +107,11 @@ tests/
   - Official: SWE evaluator pass rate.
 - Comparison tables include exact model IDs and run parameters.
 
+**Raw DB analysis**:
+- Aggregate retrieval decision patterns across runs (which signals drove correct inclusions vs false positives).
+- Identify derivation candidates: raw signals that consistently predict solve success and should be promoted to curated DB.
+- Extract fine-tuning data from raw DB: task descriptions, retrieval decisions, LLM outputs, and success/failure labels for future per-stage LoRA training.
+
 ---
 
 ## Stress Test Matrix
@@ -131,3 +150,6 @@ cra report results/pilot/
 
 - Phase 4 owns thesis validation.
 - Phase 3 completion is a prerequisite, not evidence of benchmark superiority.
+- Phase 4 is a **read-only consumer** — it never writes to any DB. All data comes from raw DB records logged by Phases 1-3.
+- Raw→curated derivation is analyzed but **not automated** in Phase 4. Phase 4 identifies what should be promoted; the promotion mechanism is a post-Phase 4 decision.
+- Fine-tuning data extraction from raw DB is a Phase 4 deliverable, feeding into the long-term per-stage LoRA adapter goal.

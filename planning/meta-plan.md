@@ -9,8 +9,9 @@ This document defines the top-level execution order and ownership boundaries acr
 ## Phase Split
 
 1. **Phase 1: Knowledge Base + Indexer Build**
-- Build deterministic indexing, schema, parsers, dependency graph, git metadata, and query API.
-- Gate: `cra index` and data/query integrity are stable.
+- Build deterministic indexing, all three DB schemas (curated, raw, session), parsers, dependency graph, git metadata, and query API.
+- Creates the connection factory and all schema definitions. Populates curated DB via indexing; logs indexing run metadata to raw DB.
+- Gate: `cra index` and data/query integrity are stable across all three DB schemas.
 
 2. **Phase 2: Retrieval Pipeline Build**
 - Build task analysis, scoring, scoping, precision extraction, budget enforcement, and `cra retrieve`.
@@ -39,3 +40,30 @@ This document defines the top-level execution order and ownership boundaries acr
 Phase 1 -> Phase 2 -> Phase 3 -> Phase 4
 
 No phase should pull validation gates from a later phase.
+
+---
+
+## Cross-Cutting: Three-Database Architecture
+
+Three separate SQLite files with independent WAL journals, backups, and lifecycles:
+
+- **Curated DB** (`curated.sqlite`) — the "clean room" the model reads from. Verified signals only.
+- **Raw DB** (`raw.sqlite`) — append-only log of all activity. Training corpus and analysis source.
+- **Session DB** (`session_<task_id>.sqlite`) — ephemeral per-task working memory. Created per run, discarded after.
+
+### Ownership Table
+
+| Phase | Curated DB | Raw DB | Session DB |
+|-------|-----------|--------|------------|
+| Phase 1 | **Creates schema + populates** (indexing) | **Creates schema** + logs index run metadata | **Defines schema only** (no per-task DB files created) |
+| Phase 2 | Read-only (query API) | Append retrieval decisions | **Creates** per-task, writes retrieval state |
+| Phase 3 | Never touches | Append all attempts, results, LLM outputs | Inherits from Phase 2, writes retry context, **closes** |
+| Phase 4 | Never touches | Read-only (analysis, fine-tuning data extraction) | Never touches (reads archived copies from raw if needed) |
+
+### Key Constraints
+
+- Phases 2 and 3 never write to curated DB.
+- Phase 4 never writes to any DB.
+- Raw→curated derivation is explicitly not automated in any phase. Phase 4 analysis informs what to automate.
+- Phase 2 and Phase 3 share one session DB per task run. Phase 2 creates it, Phase 3 inherits it, Phase 3 closes it.
+- Connection factory: `get_connection(role, task_id=None)` is the single point of DB management.

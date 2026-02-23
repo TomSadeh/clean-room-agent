@@ -10,12 +10,28 @@ This is a standalone Python coding agent. No external platform dependency — th
 
 Instead of stuffing a 200K context window and hoping the model finds what matters, use a multi-stage pipeline where each prompt starts clean with curated context:
 
-1. **Centralized Knowledge Base** — structured, indexed, self-maintaining. Grows from agent activity. Cold-startable from git history.
+1. **Three-Database Architecture** — raw (append-only log of all activity), curated (verified signals the model reads from), and session (ephemeral per-task working memory). Cold-startable from git history.
 2. **Deterministic Retrieval** — metadata extraction first, AI-assisted only for ambiguous items. Not embedding similarity.
 3. **N-Stage Prompt Pipeline** — early stages filter and ground, later stages reason and execute. No conversation accumulation, no compaction.
 4. **Per-Stage LoRA Adapters** (long-term) — one per pipeline stage, fine-tuned for that stage's job.
 
 Target: a 32K window at ~100% signal relevance, beating a 200K window at 10-15% utilization.
+
+## Data Architecture: Three-Database Model
+
+Three separate SQLite files, not three schemas in one file. Independent WAL journals, backups, and lifecycles.
+
+1. **Raw DB** (`raw.sqlite`) — append-only log of everything: indexing runs, retrieval decisions, solve attempts, LLM outputs, validation results. Training corpus and source of truth for analysis. Writers: all phases. Readers: Phase 4 analysis, future fine-tuning pipelines.
+
+2. **Curated DB** (`curated.sqlite`) — derived from raw, contains only verified/promoted signals. This is the "clean room" the model reads from. Phase 1 indexing populates it directly (AST, deps, git metadata). Phase 2 and Phase 3 read from it but never write to it. Cold-startable from `cra index` alone.
+
+3. **Session DB** (`session_<task_id>.sqlite`) — ephemeral per-task working memory. Created per solve run, discarded after (optionally archived to raw). Intentionally minimal: key-value retrieval state, staged working context, scratch notes. Phase 2 creates it, Phase 3 inherits and closes it.
+
+**Connection factory**: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. Single point of DB management.
+
+**Cold start**: `cra index` populates curated DB. Raw DB gets first real data from indexing run metadata. Session DB gets first real data in Phase 2/3.
+
+**Raw→curated derivation**: Starts manual/scripted. Phase 4 analysis informs what to automate. No premature automation.
 
 ## MVP: Three-Prompt Strategy
 
@@ -31,13 +47,23 @@ Stress-tested with a deliberately small local model (default benchmark profile: 
 
 ```
 planning/
-  meta-plan.md                   � Top-level phase boundaries and gates
-  phase1-knowledge-base.md       � Knowledge Base + Indexer (8 steps)
-  phase2-retrieval-pipeline.md   � Retrieval pipeline build (7 steps)
-  phase3-agent-harness.md        � Agent harness build (8 steps)
-  phase4-validation-benchmark.md � Validation + benchmark plan (4 steps)
+  meta-plan.md                   - Top-level phase boundaries and gates
+  phase1-knowledge-base.md       - Knowledge Base + Indexer (8 steps)
+  phase2-retrieval-pipeline.md   - Retrieval pipeline build (7 steps)
+  phase3-agent-harness.md        - Agent harness build (8 steps)
+  phase4-validation-benchmark.md - Validation + benchmark plan (4 steps)
 archive/
   (archived notes and superseded research/context documents)
+```
+
+### Runtime Data Layout
+
+```
+.clean_room/
+  curated.sqlite                 — indexed knowledge base (Phase 1 writes, Phase 2/3 read)
+  raw.sqlite                     — append-only activity log (all phases write)
+  sessions/
+    session_<task_id>.sqlite     — ephemeral per-task working memory (created/destroyed per run)
 ```
 
 ## Prior Art
@@ -59,6 +85,7 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system: 
 - **Results and capabilities, never mechanisms** — show what the system does, never explain how (competitive advantage)
 - **Deterministic first, AI second** — metadata extraction before semantic search
 - **Each token earns its place** — default-deny context architecture, not additive stuffing
+- **Log everything, curate deliberately** — raw DB captures all activity; promotion to curated is an explicit, reviewed act
 
 ## Benchmarking Strategy
 
@@ -101,7 +128,6 @@ Research and design phase. Next steps:
 4. Validate with Phase 4 benchmark plan (A/B comparison: pipeline on/off, same model, same tasks)
 5. Measure against SWE-bench Verified first, then SWE-ContextBench for thesis validation
 6. Graduate to SWE-bench Pro and SWE-EVO once Verified baseline is established
-
 
 
 

@@ -4,9 +4,9 @@
 
 This is the execution build phase of the Clean Room Agent. It takes the curated context package from Phase 2 and uses an LLM to generate and apply code changes with a retry loop and local validation.
 
-Phase 1 indexes. Phase 2 retrieves. Phase 3 executes.
+Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated). Phase 3 executes (never touches curated DB). Phase 3 logs all attempts, results, and LLM outputs to raw DB and uses session DB for retry working memory.
 
-The gate for Phase 3: `cra solve` works end-to-end in both pipeline and baseline context modes, produces valid patches, and is operationally stable.
+The gate for Phase 3: `cra solve` works end-to-end in both pipeline and baseline context modes, produces valid patches, logs all activity to raw DB, and is operationally stable.
 
 ---
 
@@ -16,6 +16,18 @@ The gate for Phase 3: `cra solve` works end-to-end in both pipeline and baseline
 - `In scope`: Baseline context construction as an alternate solve mode.
 - `Out of scope`: SWE-bench loading, benchmark runner, pass-rate reporting, config matrix comparison.
 - `Out of scope`: Thesis validation (moved to Phase 4).
+
+---
+
+## Database Interaction Model
+
+| DB | Access | Purpose |
+|----|--------|---------|
+| Curated | **Never touches** | Phase 3 has no curated DB access — all context comes via the context package from Phase 2 |
+| Raw | **Append-only** | Log all attempts (`AttemptRecord`→`run_attempts`), task results (`TaskResult`→`task_runs`), validation results (`ValidationResult`→`validation_results`), and raw LLM outputs |
+| Session | **Read/write** | Inherits session DB from Phase 2, writes retry context (error classifications, attempt history), closes session on task completion |
+
+Phase 3 **inherits** the session DB created by Phase 2 and **closes** it after the task run completes. Optionally archives session content to raw DB.
 
 ---
 
@@ -116,6 +128,8 @@ class TaskResult:
     final_diff: str | None
 ```
 
+**Database mapping**: These dataclasses map directly to raw DB tables — `AttemptRecord`→`run_attempts`, `TaskResult`→`task_runs`, `ValidationResult`→`validation_results`. All instances are persisted to raw DB as they are created.
+
 ---
 
 ## Implementation Steps
@@ -210,6 +224,11 @@ class TaskResult:
 - Structured error classification for retry prompts.
 - Clear terminal states for no-edits, apply-failure, validation-failure.
 
+**Database writes**:
+- Each attempt: write `AttemptRecord` (including raw LLM response) to **raw DB** immediately after generation.
+- Each validation: write `ValidationResult` to **raw DB** immediately after validation completes.
+- Retry context (error classifications, attempt summaries): write to **session DB** for prompt builder to consume on next attempt.
+
 ---
 
 ### Step 7: Baseline Context Mode
@@ -242,6 +261,14 @@ cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-co
 cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b --mode baseline
 cra solve "fix the login validation bug" --repo /path/to/repo --dry-run
 ```
+
+**Database lifecycle**:
+1. In pipeline mode: inherit session DB from Phase 2 retrieval run.
+2. In baseline mode: create a new session DB for this task.
+3. Open raw DB connection (append) via connection factory.
+4. Run retry loop (each attempt writes to raw DB and session DB).
+5. Write final `TaskResult` to raw DB.
+6. Close session DB. Optionally archive session content to raw DB (`session_archives` table).
 
 ---
 
@@ -288,6 +315,8 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwe
 3. Retry loop handles parse failures and patch failures gracefully.
 4. Local validation output is structured and actionable.
 5. Logs are sufficient to debug failed attempts.
+6. Raw DB contains complete attempt records (including raw LLM responses) for every solve run.
+7. Session DB lifecycle is correct: created/inherited at start, closed at end, optionally archived.
 
 ---
 

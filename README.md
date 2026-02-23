@@ -11,7 +11,7 @@ LLM agent performance is bottlenecked by context management, not model capabilit
 
 A custom coding agent harness built around a multi-stage context curation pipeline:
 
-1. **Centralized Knowledge Base** - Everything the system has ever done, learned, or encountered, structured and indexed. Self-maintaining: grows automatically with every task. Cold-startable from git history.
+1. **Three-Database Architecture** - Raw DB (append-only log of all activity), Curated DB (verified signals the model reads from), and Session DB (ephemeral per-task working memory). Three separate SQLite files with independent lifecycles. Cold-startable from git history.
 2. **Deterministic Retrieval** - Not embedding similarity hoping to capture relevance. Deterministic metadata extraction first, AI-assisted only for ambiguous items, grounded with confirmed metadata.
 3. **N-Stage Prompt Pipeline** - Early stages filter and ground. Later stages reason and execute. Each prompt starts clean with curated context. No conversation accumulation, no compaction, no degradation.
 4. **Per-Stage LoRA Adapters** (long-term) - One per pipeline stage, fine-tuned for that stage's specific job. Same base model, tiny adapter swap between stages.
