@@ -73,6 +73,14 @@ archive/
 - **Each token earns its place** - default-deny context architecture, not additive stuffing
 - **Log everything, curate deliberately** - raw DB captures all activity; promotion to curated is an explicit, reviewed act
 
+### Coding Style (Development Mode)
+
+- We are developing, not maintaining a product: optimize for fast debugging, not graceful degradation.
+- No fallbacks and no hardcoded defaults in core logic.
+- Keep `try/except` blocks minimal and intentional.
+- When catching errors, add context and re-raise; do not silently recover.
+- Prefer fail-fast behavior so incorrect assumptions break hard and early.
+
 ## Validation Note
 
 Formal benchmarking and thesis validation are intentionally outside the active Phase 1-3 plan and can be redesigned later without constraining implementation.
