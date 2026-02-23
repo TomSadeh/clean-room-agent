@@ -1,4 +1,4 @@
-# Conversation Summary — MapGen V3 Review, Auto-GM Vision, and the N-Prompt Context Architecture
+# [ARCHIVED] Conversation Summary — MapGen V3 Review, Auto-GM Vision, and the N-Prompt Context Architecture
 
 **Date**: 2026-02-22
 **Participants**: Tom (Aaron Institute / Auto-GM co-founder) and Claude (Opus 4.6)
@@ -210,3 +210,5 @@ If this architecture works as theorized, it provides a general solution to LLM p
 - **The room, not the model** — Performance comes from what's in the context window, not the model's capability
 - **Results and capabilities, never mechanisms** — Show what the system does, never explain how
 - **The model's job is reasoning, not retrieval** — Separate the two and both get better
+
+

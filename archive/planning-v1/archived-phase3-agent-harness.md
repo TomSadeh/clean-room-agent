@@ -1,4 +1,4 @@
-# Phase 3: Agent Harness Build
+# [ARCHIVED] Phase 3: Agent Harness Build
 
 ## Context
 
@@ -110,7 +110,7 @@ class AttemptRecord:
     unified_diff: str
 
 # RefinementRequest is defined in retrieval/dataclasses.py (Phase 2 owns the contract).
-# Phase 3 imports it: from clean_room.retrieval.dataclasses import RefinementRequest
+# [ARCHIVED] Phase 3 imports it: from clean_room.retrieval.dataclasses import RefinementRequest
 
 @dataclass
 class TaskResult:
@@ -310,13 +310,13 @@ Step 0 is a blocking prerequisite (worktree lifecycle verification). Steps 2, 3,
 ## Verification (Phase 3 Gate)
 
 ```bash
-# Prerequisite: repo is indexed
+# [ARCHIVED] Prerequisite: repo is indexed
 cra index /path/to/repo -v
 
-# Optional: enrich with LLM metadata (improves retrieval signals)
+# [ARCHIVED] Optional: enrich with LLM metadata (improves retrieval signals)
 cra enrich /path/to/repo --model <your-loaded-model> --promote
 
-# Solve
+# [ARCHIVED] Solve
 cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 --max-attempts 3 --max-refinement-loops 2 -v
 ```
 
@@ -337,3 +337,4 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <mo
 ## Future Handoff
 
 External benchmark validation and reporting consume Phase 3 outputs (`TaskResult`, unified diffs, logs) outside the active plan.
+

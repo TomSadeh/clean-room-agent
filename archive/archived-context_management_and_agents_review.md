@@ -1,4 +1,4 @@
-# The state of coding agents and context management in early 2026
+# [ARCHIVED] The state of coding agents and context management in early 2026
 
 **Context curation — not model capability — is the binding constraint for most production LLM applications, and this is especially visible in coding agents where the gap between benchmark performance and real-world utility remains stubbornly wide.** This survey covers two interrelated fronts: the architecture of every major open-source coding agent harness, and the research landscape on LLM context management. The findings converge on a single insight: every successful coding agent is fundamentally a context engineering system that happens to call an LLM, and the harnesses that perform best are those that most carefully control what enters and exits the context window. The white space — what nobody is building — centers on principled context curation pipelines, "default-deny" context architectures, and formal frameworks for measuring the marginal value of each token in context.
 

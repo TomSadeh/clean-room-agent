@@ -1,4 +1,4 @@
-# Phase 2: Retrieval Pipeline Build
+# [ARCHIVED] Phase 2: Retrieval Pipeline Build
 
 ## Context
 
@@ -245,16 +245,16 @@ Steps 2, 3, 4, 5 are independent of each other (all depend on Step 1) and can be
 ## Verification (Phase 2 Gate)
 
 ```bash
-# Prerequisite: repo is indexed
+# [ARCHIVED] Prerequisite: repo is indexed
 cra index /path/to/repo -v
 
-# Optional: enrich with LLM metadata (improves Tier 4 signals)
+# [ARCHIVED] Optional: enrich with LLM metadata (improves Tier 4 signals)
 cra enrich /path/to/repo --model <your-loaded-model> --promote
 
 # Retrieval (--model and --base-url required for stage LLM calls)
 cra retrieve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
 
-# JSON output
+# [ARCHIVED] JSON output
 cra retrieve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 --format json > context.json
 ```
 
@@ -273,3 +273,4 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --model <model-
 ## Future Handoff
 
 Formal retrieval quality evaluation and benchmark reporting are handled outside the active plan.
+

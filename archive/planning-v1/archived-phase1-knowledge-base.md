@@ -1,4 +1,4 @@
-# Phase 1: Knowledge Base + Indexer
+# [ARCHIVED] Phase 1: Knowledge Base + Indexer
 
 ## Context
 
@@ -189,7 +189,7 @@ clean-room-agent/
 
 **Key tree-sitter queries** (py-tree-sitter 0.25.x API):
 ```python
-# Symbols
+# [ARCHIVED] Symbols
 "(function_definition name: (identifier) @name) @def"
 "(class_definition name: (identifier) @name) @def"
 
@@ -410,19 +410,20 @@ conn = get_connection('curated', read_only=True)
 kb = KnowledgeBase(conn)
 overview = kb.get_repo_overview(1)
 print(overview)
-# Pick a file and get its full context
+# [ARCHIVED] Pick a file and get its full context
 ctx = kb.get_file_context(1)
 print(f'{ctx.file.path}: {len(ctx.symbols)} symbols, {len(ctx.outgoing_deps)} deps')
-# Traverse dependency graph
+# [ARCHIVED] Traverse dependency graph
 graph = kb.get_dependency_subgraph([1], depth=2)
 print(f'Subgraph: {len(graph.files)} files, {len(graph.edges)} edges')
 "
 
-# Optional: enrich with LLM metadata (local Ollama, no data leaves machine)
-# Writes to raw DB; --promote copies to curated file_metadata
+# [ARCHIVED] Optional: enrich with LLM metadata (local Ollama, no data leaves machine)
+# [ARCHIVED] Writes to raw DB; --promote copies to curated file_metadata
 cra enrich /path/to/repo --model <your-loaded-model> --promote
 ```
 
 **Gate criteria**: Retrieval-critical curated tables are populated for the target repo (`files`, `symbols`, `dependencies`, `commits`), queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, and the connection factory creates all three DB types correctly.
+
 
 

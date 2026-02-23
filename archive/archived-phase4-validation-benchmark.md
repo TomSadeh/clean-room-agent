@@ -1,4 +1,4 @@
-# Phase 4: Validation + Benchmarking
+# [ARCHIVED] Phase 4: Validation + Benchmarking
 
 ## Context
 
@@ -131,7 +131,7 @@ All comparisons must keep temperature, retry limit, and output format aligned.
 # Retrieval evaluation (explicit run scope required)
 cra evaluate --cases eval_cases.json --repo /path/to/repo --run-tag pilot_2026_02_23
 
-# Pilot benchmark run
+# [ARCHIVED] Pilot benchmark run
 cra bench --configs A,B,C,D --instances 10 --model Qwen3-4B-Instruct-2507 --run-tag pilot_2026_02_23 --output results/pilot/
 
 # Report generation
@@ -153,4 +153,5 @@ cra report results/pilot/
 - Phase 4 analysis/reporting is read-only. Phase 4 benchmark execution may trigger Phase 2/3 runtime paths that append run data.
 - Raw->curated derivation is analyzed but **not automated** in Phase 4. Phase 4 identifies what should be promoted; the promotion mechanism is a post-Phase 4 decision.
 - Fine-tuning data extraction from raw DB is a Phase 4 deliverable, feeding into the long-term per-stage LoRA adapter goal.
+
 

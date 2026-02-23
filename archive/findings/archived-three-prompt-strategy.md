@@ -1,4 +1,4 @@
-# Three-Prompt Retrieval Strategy
+# [ARCHIVED] Three-Prompt Retrieval Strategy
 
 **Date**: 2026-02-22
 **Status**: Design concept - not implemented. Superseded by the repository's N-prompt architecture (see `CLAUDE.md` and `planning/`).
@@ -97,5 +97,6 @@ This strategy mirrors the knowledge curation approach in Auto-GM:
 - This experiment: repo-level scoping → precision context extraction → grounded code generation
 
 The principle is the same: the model's job is reasoning, not filtering. Separate the responsibilities.
+
 
 
