@@ -163,7 +163,7 @@ class TaskResult:
 **Requirements**:
 - Shared system prompt with strict edit output contract.
 - Token-aware retry prompts with bounded error output.
-- Hard prompt token gate before LLM call: verifies the assembled prompt fits within the `BudgetConfig` context window. Phase 2 does the heavy lifting (context package is already budget-compliant), but this gate catches overflow from system prompt + retry context additions. Overflow is trimmed deterministically by dropping lowest-priority retry details.
+- Hard prompt token gate before LLM call: verifies the assembled prompt fits within the `BudgetConfig` context window. Phase 2 does the heavy lifting (context package is already budget-compliant), but this gate catches overflow from system prompt + retry context additions. Note that `reserved_tokens` must cover: system prompt + task description + retry context + generation overhead. The example `--reserved-tokens 4096` may be tight for multi-attempt runs. Overflow is trimmed deterministically by dropping lowest-priority retry details.
 - Retry wording must assume fresh worktree application per attempt.
 
 ---
@@ -254,16 +254,18 @@ Phase 2's re-entry contract: it reads `"refinement_request"` and `"final_context
 
 **CLI interface**:
 ```bash
-cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window <int> --reserved-tokens <int>
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window <int> --reserved-tokens <int> --max-attempts <int> --max-refinement-loops <int>
 cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --budget-config <path> --dry-run
 ```
 
-**CLI budget rules (`cra solve`)**:
+**CLI rules (`cra solve`)**:
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
   - `--budget-config <path>`
 - `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
 - Required runtime inputs are explicit in active development mode: `--model`, `--base-url`, and `--stages` are mandatory. Budget values are also mandatory via explicit pair or `--budget-config`.
+- `--max-attempts <int>` — maximum number of generate/apply/validate attempts per solve run. Required (no hardcoded default).
+- `--max-refinement-loops <int>` — maximum number of Phase 2 re-entry loops for context expansion. Required (no hardcoded default).
 - If required values are missing, fail fast with a hard error.
 - Validation is strict and fail-fast:
   - `context_window > 0`
@@ -308,12 +310,14 @@ Step 0 is a blocking prerequisite (worktree lifecycle verification). Steps 2, 3,
 ## Verification (Phase 3 Gate)
 
 ```bash
-# Prerequisite: repo is indexed and enriched
+# Prerequisite: repo is indexed
 cra index /path/to/repo -v
-cra enrich /path/to/repo --model <your-loaded-model>
+
+# Optional: enrich with LLM metadata (improves retrieval signals)
+cra enrich /path/to/repo --model <your-loaded-model> --promote
 
 # Solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
+cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 --max-attempts 3 --max-refinement-loops 2 -v
 ```
 
 **Gate criteria**:
@@ -325,7 +329,7 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <mo
 6. Raw DB contains complete attempt records (including raw LLM responses) for every solve run.
 7. Session DB lifecycle is correct: created at retrieval start, inherited by solve, closed at end, optionally archived.
 8. Final model-bound prompt never exceeds `BudgetConfig` context limits.
-9. `cra solve` errors clearly if `cra index` or `cra enrich` haven't been run.
+9. `cra solve` errors clearly if `cra index` hasn't been run. Missing enrichment logs info and skips Tier 4 (not an error).
 10. Refinement handoff works end-to-end without Phase 3 opening curated DB connections.
 
 ---

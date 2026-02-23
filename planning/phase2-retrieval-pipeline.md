@@ -65,7 +65,7 @@ tests/
 |----------|--------|-----------|
 | Pipeline | Variable-length stage sequence with common protocol | Pipeline length adapts to task/repo complexity. Need more nuance? Add a stage, don't add knobs. |
 | MVP stages | Scope (tiered expansion) + Precision (symbol extraction) | Minimal viable pipeline. Additional stages (dependency analysis, impact assessment, etc.) are future stage implementations, not structural changes. |
-| Task parsing | Heuristics first, optional local LLM assist | Deterministic by default. LLM path is explicit opt-in (`--llm-assist`), not a silent fallback. |
+| Task parsing | Deterministic extraction + LLM enrichment (always) | Deterministic extraction runs first (file/symbol mentions, error patterns), LLM enriches with intent analysis. Every stage uses an LLM call. |
 | Budget control | Priority-based eviction and demotion | Preserve highest-value context under hard token limits. |
 | Context output | Typed dataclasses + separate renderers | Easier testing and format portability. |
 
@@ -75,7 +75,7 @@ tests/
 
 **Stage protocol** (defined in `retrieval/stage.py`):
 - `StageContext`: the data threaded through the pipeline. Contains the current file set, symbol selections, token estimates, and provenance records. Each stage receives it from the previous stage (or empty for the first stage) and returns a refined version.
-- `RetrievalStage`: protocol with `name: str` and `run(context: StageContext, kb: KnowledgeBase, task: TaskQuery) -> StageContext`. Every retrieval stage implements this. The pipeline runner calls `run()` on each stage in sequence.
+- `RetrievalStage`: protocol with `name: str` and `run(context: StageContext, kb: KnowledgeBase, task: TaskQuery, llm: LLMClient) -> StageContext`. Every retrieval stage implements this. Each stage receives the LLM client and is responsible for constructing its own focused prompt from the StageContext. Stage LLM call inputs/outputs are logged to raw DB. The pipeline runner calls `run()` on each stage in sequence.
 
 **Pipeline data** (defined in `retrieval/dataclasses.py`):
 - `BudgetConfig`: shared between Phase 2 and Phase 3. Contains model context window size, reserved tokens for system prompt/retry overhead, and the effective retrieval budget `(window - reserved)`. Imported by Phase 3.
@@ -94,14 +94,15 @@ tests/
 **Delivers**:
 - `RetrievalStage` protocol and `StageContext` dataclass (in `retrieval/stage.py`).
 - All retrieval dataclasses (`BudgetConfig`, `TaskQuery`, `RefinementRequest`, `ContextPackage`, etc.).
-- `analyze_task()` deterministic extraction for files/symbols/errors/keywords/task type.
-- Optional `--llm-assist` for vague tasks. `--llm-assist` requires `--model <model-id>` when used with `cra retrieve` standalone. Missing `--model` with `--llm-assist` is a hard error.
+- `analyze_task()` deterministic extraction runs first (file/symbol mentions, error patterns, keyword extraction, task type classification), then LLM enriches with intent analysis ("What does this task need? Which files/symbols/domains?").
+- Task analysis ALWAYS uses LLM. `--model` and `--base-url` are required for `cra retrieve`.
 
 **Stage protocol contract**:
-- `RetrievalStage.run(context: StageContext, kb: KnowledgeBase, task: TaskQuery) -> StageContext`
-- Each stage receives the accumulated context from prior stages and returns a refined version.
+- `RetrievalStage.run(context: StageContext, kb: KnowledgeBase, task: TaskQuery, llm: LLMClient) -> StageContext`
+- Each stage receives the accumulated context from prior stages, the LLM client, and returns a refined version.
+- Each stage performs deterministic pre-filtering followed by an LLM judgment call. The LLM evaluates candidates against the task, making the judgment call that code alone can't make.
 - Stages are stateless — all per-task state lives in `StageContext` and session DB.
-- The pipeline runner is responsible for sequencing, budget threading, session writes, and raw DB logging between stages.
+- The pipeline runner is responsible for sequencing, budget threading, session writes, and raw DB logging (including stage LLM call inputs, outputs, latency, and token counts) between stages.
 
 ---
 
@@ -117,9 +118,11 @@ tests/
 1. **Seeds** — files directly mentioned in the task, or containing symbols mentioned in the task. Always included.
 2. **Direct dependencies** — imports/imported-by for seed files via the dependency graph.
 3. **Co-change neighbors** — files that historically change with seed files (above a minimum co-change count).
-4. **Metadata matches** — files sharing domain/module/concepts with the task query, discovered via `file_metadata`.
+4. **Metadata matches** — files sharing domain/module/concepts with the task query, discovered via `file_metadata`. Skipped when `file_metadata` is absent (enrichment not promoted); stages rely on LLM evaluation from tiers 1-3.
 
 Within each tier, files are ordered by relevance to seeds (e.g., dependency depth, co-change count, number of matching concepts). This is a tie-breaker within the tier, not a cross-tier score.
+
+**LLM evaluation step**: After deterministic tiered expansion, the scope stage makes an LLM call: given the task and candidate files (with summaries), classify each as relevant/irrelevant. The scope prompt: task + candidate files with summaries → relevance classification. LLM output is logged to raw DB.
 
 **Data source**: All expansion queries read from the **curated DB** via the Phase 1 Query API.
 
@@ -129,10 +132,8 @@ Within each tier, files are ordered by relevance to seeds (e.g., dependency dept
 
 **Delivers**:
 - Second `RetrievalStage` implementation: `PrecisionStage` (in `retrieval/stages/precision.py`).
-- Symbol-tier classification: `primary`, `supporting`, `type_context`, `excluded`.
-- Python symbol-edge traversal via `symbol_references`.
-- TS/JS MVP heuristics path (file-level dependencies + symbol-name signals).
-- Test assertion extraction and rationale-comment inclusion.
+- Deterministic symbol extraction: Python symbol-edge traversal via `symbol_references`, TS/JS MVP heuristics path (file-level dependencies + symbol-name signals), test assertion extraction, rationale-comment inclusion.
+- LLM classification step: after deterministic symbol extraction, the precision stage makes an LLM call: given the task and extracted symbols, classify each into tiers (`primary`, `supporting`, `type_context`, `excluded`). The precision prompt: task + symbols → tier classification. LLM output is logged to raw DB.
 
 **Data source**: Reads scoped file list from incoming `StageContext`, queries symbol details from **curated DB**.
 
@@ -173,7 +174,8 @@ Within each tier, files are ordered by relevance to seeds (e.g., dependency dept
 
 **Standalone budget contract**: `cra retrieve` requires explicit budget input: either `--context-window` plus `--reserved-tokens`, or `--budget-config <path>`. Missing budget inputs are a hard error.
 
-**CLI budget rules (`cra retrieve`)**:
+**CLI rules (`cra retrieve`)**:
+- `--model <model-id>` and `--base-url <ollama-url>` are required (every retrieval stage uses LLM calls).
 - `--stages <csv>` is required (example: `--stages scope,precision`). Empty stage lists are invalid.
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
@@ -211,13 +213,13 @@ Phase 2 re-entry behavior:
 4. Write updated `"final_context"` and `"stage_progress"` back to session DB.
 5. Return a new `ContextPackage`.
 
-**Enrichment preflight**: `RetrievalPipeline` checks that `file_metadata` is populated before running stage expansion. This check runs in both production (`cra solve`) and standalone (`cra retrieve`) paths. Missing enrichment data is a hard error — the user must run `cra enrich` first.
+**Enrichment preflight**: `RetrievalPipeline` checks whether `file_metadata` is populated before running stage expansion. This check runs in both production (`cra solve`) and standalone (`cra retrieve`) paths. Missing enrichment data is an **info log** ("enrichment not found, Tier 4 skipped"), not a hard error. When `file_metadata` is absent, Scope Tier 4 (metadata matches) is skipped and stages rely on their own LLM judgment from deterministic signals (AST, deps, git, file content samples).
 
 **Database lifecycle**:
 1. Open curated DB connection in read-only mode via connection factory (`get_connection('curated', read_only=True)`).
 2. Open raw DB connection (append) via connection factory.
 3. Create session DB for this task via `get_connection('session', task_id=task_id)`. Task ID is generated by the caller (`cra solve` generates it at startup; `cra retrieve` standalone generates its own).
-4. Run each stage in sequence. Between stages, the runner persists `StageContext` to session DB and logs stage decisions to raw DB. Each stage reads curated via the Query API.
+4. Run each stage in sequence. Between stages, the runner persists `StageContext` to session DB and logs stage decisions to raw DB (including stage LLM call inputs, outputs, latency, and token counts). Each stage reads curated via the Query API.
 5. On refinement re-entry, load prior stage context from session DB, apply refinement constraints, rerun stages deterministically, and log refinement decisions to raw DB.
 6. Return `ContextPackage` plus an explicit session handle to the caller. In `cra solve`, Phase 3 takes ownership and closes it. In standalone `cra retrieve`, close it before process exit.
 
@@ -243,15 +245,17 @@ Steps 2, 3, 4, 5 are independent of each other (all depend on Step 1) and can be
 ## Verification (Phase 2 Gate)
 
 ```bash
-# Prerequisite: repo is indexed and enriched
+# Prerequisite: repo is indexed
 cra index /path/to/repo -v
-cra enrich /path/to/repo --model <your-loaded-model>
 
-# Retrieval
-cra retrieve "fix the login validation bug" --repo /path/to/repo --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
+# Optional: enrich with LLM metadata (improves Tier 4 signals)
+cra enrich /path/to/repo --model <your-loaded-model> --promote
+
+# Retrieval (--model and --base-url required for stage LLM calls)
+cra retrieve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
 
 # JSON output
-cra retrieve "fix the login validation bug" --repo /path/to/repo --stages scope,precision --context-window 32768 --reserved-tokens 4096 --format json > context.json
+cra retrieve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 --format json > context.json
 ```
 
 **Gate criteria**:

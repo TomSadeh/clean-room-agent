@@ -127,12 +127,13 @@ clean-room-agent/
 - `content_hash` as TEXT (hex SHA-256) on `files`
 - `co_changes` composite PK `(file_a_id, file_b_id)` with CHECK `file_a_id < file_b_id`
 - `symbol_references` for symbol-level edges: `caller_symbol_id`, `callee_symbol_id`, `reference_kind`, `confidence`
-- `file_metadata` table: `file_id` (FK to `files`), `purpose`, `module`, `domain`, `concepts` (JSON), `public_api_surface` (JSON), `complexity_notes` — populated by `cra enrich`, fields match the LLM enrichment prompt output
+- `file_metadata` table: `file_id` (FK to `files`), `purpose`, `module`, `domain`, `concepts` (JSON), `public_api_surface` (JSON), `complexity_notes` — populated by `cra enrich --promote`, fields match the LLM enrichment prompt output. `search_files_by_metadata` returns empty when enrichment hasn't been promoted (not an error).
 - JSON columns (`concepts`, `parsed_fields`, `files_involved`, `public_api_surface`) as TEXT
 - Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
 
 **Raw DB schema highlights** (new):
 - `index_runs` - timestamp, repo_path, files_scanned, files_changed, duration_ms, status
+- `enrichment_outputs` - id, file_id, model, purpose, module, domain, concepts (JSON), public_api_surface (JSON), complexity_notes, raw_prompt, raw_response, promoted (boolean), timestamp. Stores the full enrichment record including the prompt and response that generated it. `promoted` tracks whether the entry has been copied to curated `file_metadata`.
 - `retrieval_decisions` - task_id, stage, file_id, tier, included, reason, timestamp
 - `task_runs` - task_id, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp (created at `cra solve` start, finalized at run end)
 - `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp (attempt rows always reference the pre-created `task_runs` row)
@@ -327,7 +328,9 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - LLM generation is seconds/file vs milliseconds/file for parsing
 - Users may re-enrich with different models without re-indexing
 
-**`cra enrich` is required** before running `cra retrieve` or `cra solve`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. Retrieval preflight will verify metadata exists and error if enrichment has not been run.
+**`cra enrich` is optional.** Retrieval works without enrichment — Scope Tier 4 (metadata matches) is skipped when `file_metadata` is absent, and each retrieval stage compensates via its own LLM judgment call. When enrichment IS present (promoted to curated), stages get richer signals and LLM calls are faster/cheaper.
+
+**`cra enrich` data flow**: Writes to raw DB `enrichment_outputs` table (not curated directly). The `--promote` flag triggers a copy from raw to curated `file_metadata`. Without `--promote`, enrichment stays raw-only (audit trail, available for later promotion). The raw entry is the permanent record including the prompt and response that generated it.
 
 **All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. `llm/client.py` is the **provider boundary**: it encapsulates all Ollama-specific HTTP transport (httpx, retry, error handling) behind a stable public API. Phase 3's agent imports and calls the same module. Swapping to a different LLM provider means reimplementing `llm/client.py` internals; no other module changes.
 
@@ -416,7 +419,8 @@ print(f'Subgraph: {len(graph.files)} files, {len(graph.edges)} edges')
 "
 
 # Optional: enrich with LLM metadata (local Ollama, no data leaves machine)
-cra enrich /path/to/repo --model <your-loaded-model>
+# Writes to raw DB; --promote copies to curated file_metadata
+cra enrich /path/to/repo --model <your-loaded-model> --promote
 ```
 
 **Gate criteria**: Retrieval-critical curated tables are populated for the target repo (`files`, `symbols`, `dependencies`, `commits`), queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, and the connection factory creates all three DB types correctly.
