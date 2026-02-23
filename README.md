@@ -37,7 +37,7 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, 
 
 ## Repository Contents
 
-- `findings/architecture-sweep.md` — OpenClaw architecture reconnaissance (intervention surfaces, context management layers)
 - `findings/three-prompt-strategy.md` — Detailed three-prompt MVP design and stress test matrix
+- `planning/` — Implementation plans for all three phases (knowledge base, retrieval, agent harness)
 - `context_management_and_agents_review.md` — Survey of 12 open-source coding agent harnesses and LLM context management research
 - `conversation_summary_2026_02_22.md` — Full N-Prompt architecture design, Auto-GM vision, and MapGen V3 review notes

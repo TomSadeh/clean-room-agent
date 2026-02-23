@@ -90,19 +90,6 @@ Use a deliberately small model (7B class or smaller, e.g., Qwen-2.5-Coder-7B) fo
 
 ---
 
-## Integration with OpenClaw
-
-### Option 1: `transformContext` Hook
-Install as a custom `transformContext` in the agent runtime. Stages 1-2 run inside the hook before the main LLM call. Clean, composable, no core changes needed.
-
-### Option 2: Memory System Augmentation
-Upgrade the existing hybrid search (BM25 + vector + MMR) to be task-aware. Instead of searching personal memory, search the codebase with the same infrastructure. Stages 1-2 become retrieval queries against an enhanced memory index.
-
-### Option 3: Both (Recommended)
-Use the memory system for Stage 1 (coarse retrieval with enhanced indexing) and `transformContext` for Stage 2 (precision filtering of what's about to enter the context window). The pipeline composes naturally with OpenClaw's existing architecture.
-
----
-
 ## Relationship to Auto-GM
 
 This strategy mirrors the knowledge curation approach in Auto-GM:
