@@ -21,10 +21,10 @@ Phase 4 does not build core solve-path features. It evaluates them.
 | DB | Access | Purpose |
 |----|--------|---------|
 | Curated | **Never touches** | Phase 4 does not modify or directly query the curated DB |
-| Raw | **Read-only** | Primary data source for all analysis: retrieval decisions, attempt records, task results, validation results, LLM outputs |
+| Raw | **Read-only for analysis** | Primary data source for all analysis: retrieval decisions, attempt records, task results, validation results, LLM outputs |
 | Session | **Never touches** | Reads archived session copies from raw DB if needed |
 
-Phase 4 is a **read-only consumer** of raw DB data. It analyzes logged decisions and results from Phases 1-3 to produce metrics and reports. Raw->curated derivation analysis (identifying which raw signals should be promoted) is a key Phase 4 output that informs future automation.
+Phase 4 analysis/reporting is a **read-only consumer** of raw DB data. When Phase 4 runs live benchmarks (`cra bench`), runtime components from Phases 2/3 may append fresh run logs to raw/session. Raw->curated derivation analysis (identifying which raw signals should be promoted) is a key Phase 4 output that informs future automation.
 
 ---
 
@@ -62,7 +62,7 @@ tests/
 - `cra evaluate` wired to Phase 2 retrieval outputs.
 - File/symbol precision/recall, token efficiency, budget utilization metrics.
 
-**Data source**: Reads logged retrieval decisions from **raw DB** (not re-running retrieval). Compares logged decisions against ground truth to compute precision/recall without requiring live retrieval runs.
+**Data source**: Reads logged retrieval decisions from **raw DB** (not re-running retrieval). Evaluation must be scoped to explicit run IDs/tags to avoid mixing runs.
 
 **Gate**:
 - Evaluation cases run consistently and metrics are emitted per-case and aggregate.
@@ -128,11 +128,11 @@ All comparisons must keep temperature, retry limit, and output format aligned.
 ## Verification (Phase 4 Gate)
 
 ```bash
-# Retrieval evaluation
-cra evaluate --cases eval_cases.json --repo /path/to/repo
+# Retrieval evaluation (explicit run scope required)
+cra evaluate --cases eval_cases.json --repo /path/to/repo --run-tag pilot_2026_02_23
 
 # Pilot benchmark run
-cra bench --configs A,B,C,D --instances 10 --output results/pilot/
+cra bench --configs A,B,C,D --instances 10 --model Qwen3-4B-Instruct-2507 --run-tag pilot_2026_02_23 --output results/pilot/
 
 # Report generation
 cra report results/pilot/
@@ -150,7 +150,7 @@ cra report results/pilot/
 
 - Phase 4 owns thesis validation.
 - Phase 3 completion is a prerequisite, not evidence of benchmark superiority.
-- Phase 4 is a **read-only consumer** - it never writes to any DB. All data comes from raw DB records logged by Phases 1-3.
+- Phase 4 analysis/reporting is read-only. Phase 4 benchmark execution may trigger Phase 2/3 runtime paths that append run data.
 - Raw->curated derivation is analyzed but **not automated** in Phase 4. Phase 4 identifies what should be promoted; the promotion mechanism is a post-Phase 4 decision.
 - Fine-tuning data extraction from raw DB is a Phase 4 deliverable, feeding into the long-term per-stage LoRA adapter goal.
 

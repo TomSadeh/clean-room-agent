@@ -26,11 +26,11 @@ The initial experiment uses a three-stage pipeline as the minimum viable version
 2. **Precision Filter** - Scoped material -> exactly the context needed for the coding task.
 3. **Full Prompt** - Curated context + task description -> code generation.
 
-Stress-tested with a deliberately small local model (default benchmark profile: Qwen 3B class) to prove context curation, not model scale, is the primary driver of agent quality.
+Designed to support a fixed-model evaluation setup when needed, while keeping implementation model-agnostic so model choice can evolve without refactoring core architecture.
 
 ## Prior Art
 
-Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, where a 4B local model with curated retrieval outperforms much larger models with full context.
+Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, where curated retrieval can outperform much larger models using naive full-context approaches.
 
 ## Repository Contents
 

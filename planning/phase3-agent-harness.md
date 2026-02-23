@@ -13,9 +13,9 @@ The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces va
 ## Scope Boundary
 
 - `In scope`: LLM client, prompt builder, response parser, patch application, validation, retry loop, solve orchestration.
-- `Deferred to Phase 4`: Baseline context construction (validation/benchmarking concern).
-- `Out of scope`: SWE-bench loading, benchmark runner, pass-rate reporting, config matrix comparison.
-- `Out of scope`: Thesis validation (moved to Phase 4).
+- `Deferred`: Baseline context construction (validation/benchmarking concern, outside active plan).
+- `Out of scope`: External benchmark-suite loading, benchmark runner, pass-rate reporting, config matrix comparison.
+- `Out of scope`: Thesis validation.
 
 ---
 
@@ -44,7 +44,6 @@ src/
       response_parser.py          # LLM output -> structured edits
       patch.py                    # Apply edits to files
       validation.py               # Run tests, lint, type check
-      baseline.py                 # Naive full-context construction
       retry.py                    # Retry logic with error feedback
       dataclasses.py              # Phase 3 data structures
 tests/
@@ -57,7 +56,6 @@ tests/
   test_patch.py
   test_validation.py
   test_harness.py
-  test_baseline.py
 ```
 
 ---
@@ -70,7 +68,7 @@ tests/
 | Output format | Search-and-replace blocks (primary), unified diff (fallback) | S&R blocks are easier for small models and easier to validate. |
 | Patch isolation | `git worktree` per attempt, with fallback | Clean rollback on failure and isolated retries. Fallback to git stash/rollback or temp directory copy if worktree creation fails (Windows long-path issues). Test worktree lifecycle early on Windows. |
 | Retry strategy | Fresh prompt with structured error context, max 3 attempts | Bounded retries and deterministic behavior. |
-| Baseline approach | **Deferred to Phase 4** | Baseline context mode design is a validation concern. Phase 3 builds the pipeline solve path only. Baseline module placeholder kept but not implemented until Phase 4 validation design. |
+| Baseline approach | **Deferred** | Baseline context mode design is a validation concern outside the active plan. Phase 3 builds the pipeline solve path only. No baseline implementation files are created in Phase 3. |
 
 ---
 
@@ -232,13 +230,11 @@ class TaskResult:
 
 ---
 
-### Step 7: Baseline Context Mode (Deferred to Phase 4)
+### Step 7: Baseline Context Mode (Deferred)
 
-**Status**: Deferred. Baseline context mode is a validation/benchmarking concern. Its design (how naive, what it reads, filesystem vs curated DB) will be decided during Phase 4 validation planning.
+**Status**: Deferred. Baseline context mode is a validation/benchmarking concern outside the active plan. Its design (how naive, what it reads, filesystem vs curated DB) is intentionally postponed.
 
-**Placeholder files** (created but not implemented in Phase 3):
-- `src/clean_room/agent/baseline.py`
-- `tests/test_baseline.py`
+**Implementation rule**: Do not create `baseline.py` or baseline tests in Phase 3.
 
 ---
 
@@ -253,8 +249,8 @@ class TaskResult:
 
 **CLI interface**:
 ```bash
-cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b
-cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b --dry-run
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --dry-run
 ```
 
 **Task ID and handoff**: `cra solve` generates a task ID (UUID4) at startup. This ID is passed to the retrieval pipeline (Phase 2) which creates the session DB, and then used throughout the solve loop. The user never needs to manage task IDs.
@@ -281,7 +277,7 @@ Step 1 (LLM Client)
   +--> Step 4 (Patch Application) --|        |
   +--> Step 5 (Validation)        --|        +--> Step 8 (Agent Harness + CLI)
 
-Step 7 (Baseline Context Mode) - deferred to Phase 4
+Step 7 (Baseline Context Mode) - deferred
 
 [All steps depend on Phases 1 + 2]
 ```
@@ -298,7 +294,7 @@ cra index /path/to/repo -v
 cra enrich /path/to/repo --model <your-loaded-model>
 
 # Pipeline solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwen2.5-coder:3b -v
+cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> -v
 ```
 
 **Gate criteria**:
@@ -314,7 +310,6 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwe
 
 ---
 
-## Handoff to Phase 4
+## Future Handoff
 
-Phase 4 consumes Phase 3 outputs (`TaskResult`, unified diffs, logs) to run external benchmark validation and reporting.
-
+External benchmark validation and reporting consume Phase 3 outputs (`TaskResult`, unified diffs, logs) outside the active plan.

@@ -13,7 +13,7 @@ The gate for Phase 2: `cra retrieve` works end-to-end, reliably produces budget-
 ## Scope Boundary
 
 - `In scope`: Task analysis, file scoring/ranking, scope expansion, precision extraction, budget enforcement, context assembly, retrieval CLI.
-- `Out of scope`: Benchmark-grade evaluation/reporting workflows (moved to Phase 4).
+- `Out of scope`: Benchmark-grade evaluation/reporting workflows (outside the active plan).
 
 ---
 
@@ -217,7 +217,6 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --format json >
 
 ---
 
-## Handoff to Phase 4
+## Future Handoff
 
-Phase 4 owns formal retrieval quality evaluation and benchmark reporting.
-
+Formal retrieval quality evaluation and benchmark reporting are handled outside the active plan.
