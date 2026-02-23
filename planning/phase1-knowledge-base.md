@@ -51,7 +51,8 @@ clean-room-agent/
         cochange.py                 # Co-change analysis
       llm/
         __init__.py
-        metadata.py                 # Ollama-based file metadata generation
+        client.py                   # Shared Ollama transport (httpx, retry, error handling) - used by Phase 1 + Phase 3
+        metadata.py                 # Enrichment logic using shared LLM client
       query/
         __init__.py
         api.py                      # Public query interface for Phase 2
@@ -85,7 +86,7 @@ clean-room-agent/
 | Layout | `src/` layout | Prevents import shadowing, industry consensus |
 | Python floor | 3.11+ | tree-sitter requires >=3.10, 3.11 adds tomllib |
 | CLI | Click | Mature, battle-tested |
-| Tree-sitter | Individual packages (`tree-sitter-python`, `-typescript`, `-javascript`) | Minimal deps, latest grammar versions, only 3 languages needed |
+| Tree-sitter | Individual packages (`tree-sitter-python`, `-typescript`, `-javascript`), pinned `tree-sitter>=0.25,<0.26` | Minimal deps, latest grammar versions, only 3 languages needed. Pin minor version to avoid breaking API changes. |
 | DB | Raw SQL + helper functions | No ORM overhead, full control over queries |
 | LLM client | `httpx` to local Ollama | 100% local inference, no data leaves the machine. Model is configurable - use whatever's loaded in Ollama |
 | Linter | Ruff | Replaces flake8+isort+black in one tool |
@@ -253,7 +254,7 @@ clean-room-agent/
 2. Simple `tsconfig.json` `baseUrl` + `paths` mapping (best-effort, no `extends` chains)
 3. Non-relative, non-mapped imports: assumed external, discarded
 
-**Dependency kinds**: `"import"` (standard), `"type_ref"` (TypeScript `import type`). `"call"` and `"inheritance"` defined in schema but not populated in Phase 1.
+**Dependency kinds**: `"import"` (standard), `"type_ref"` (TypeScript `import type`). `"call"` and `"inheritance"` reserved in schema for post-MVP enhancement — not populated in Phase 1 and no phase currently writes them. Kept to avoid a schema migration later.
 
 Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs) to avoid filesystem lookups during resolution.
 
@@ -272,7 +273,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **Git history**: Uses `git log --pretty=format:... --name-status --numstat` via subprocess. Bounded by `--max-commits` (default 5000). `--since` flag for incremental extraction.
 
-**Co-change algorithm**: For each commit, take file pairs changed together, increment co-change count. Skip commits touching >50 files (bulk operations pollute the signal).
+**Co-change algorithm**: For each commit, take file pairs changed together, increment co-change count. Skip commits touching more than `--max-commit-files` files (default 50, configurable) — bulk operations pollute the signal.
 
 **Depends on**: Step 1 (DB). Independent of Steps 3-5 (can be built in parallel).
 
@@ -312,7 +313,8 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 **Delivers**: `cra enrich` command for LLM metadata generation (separate from indexing, optional), and the `KnowledgeBase` query class that Phase 2 will consume.
 
 **Files**:
-- `src/clean_room/llm/metadata.py` - Ollama `/api/generate` via httpx, structured prompt, JSON output parsing
+- `src/clean_room/llm/client.py` - Shared Ollama transport layer (httpx, retry, error handling). Used by both Phase 1 enrichment and Phase 3 agent.
+- `src/clean_room/llm/metadata.py` - Enrichment logic using shared LLM client, structured prompt, JSON output parsing
 - `src/clean_room/query/api.py` - `KnowledgeBase` class with query methods
 - Update `src/clean_room/cli.py` - Add `enrich` command
 - `tests/test_llm_metadata.py`, `tests/test_query_api.py`
@@ -322,7 +324,9 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - LLM generation is seconds/file vs milliseconds/file for parsing
 - Users may re-enrich with different models without re-indexing
 
-**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded.
+**`cra enrich` is required** before running `cra solve --mode pipeline`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
+
+**All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent — see Phase 3 plan.
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. Graceful fallback on JSON parse failure.
 
@@ -346,16 +350,17 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 ```
 Step 1 (DB + Skeleton)
-  -> Step 2 (File Scanner)
-     -> Step 3 (Python Parser)
-        -> Step 4 (TS + JS Parsers)
-        -> Step 5 (Import Resolution) <- Step 4
-  -> Step 6 (Git) [parallel track]
-  -> Step 7 (Orchestrator) <- Steps 5, 6
-  -> Step 8 (LLM + Query API)
+  +--> Step 2 (File Scanner)                    [parallel track A]
+  +--> Step 3 (Python Parser)                   [parallel track B]
+  |      +--> Step 4 (TS + JS Parsers)
+  |      +--> Step 5 (Import Resolution) <- Step 4
+  +--> Step 6 (Git)                             [parallel track C]
+  |
+  Step 7 (Orchestrator) <- Steps 2, 5, 6
+     -> Step 8 (LLM + Query API) <- Step 7
 ```
 
-Steps 3-5 and Step 6 are independent tracks - can be built in parallel.
+Steps 2, 3-5, and 6 are independent tracks off Step 1 — can be built in parallel. Step 7 waits on all three tracks.
 
 ---
 

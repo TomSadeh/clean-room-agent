@@ -6,14 +6,14 @@ This is the execution build phase of the Clean Room Agent. It takes the curated 
 
 Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated). Phase 3 executes (never touches curated DB). Phase 3 logs all attempts, results, and LLM outputs to raw DB and uses session DB for retry working memory.
 
-The gate for Phase 3: `cra solve` works end-to-end in both pipeline and baseline context modes, produces valid patches, logs all activity to raw DB, and is operationally stable.
+The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces valid patches, logs all activity to raw DB, and is operationally stable.
 
 ---
 
 ## Scope Boundary
 
 - `In scope`: LLM client, prompt builder, response parser, patch application, validation, retry loop, solve orchestration.
-- `In scope`: Baseline context construction as an alternate solve mode.
+- `Deferred to Phase 4`: Baseline context construction (validation/benchmarking concern).
 - `Out of scope`: SWE-bench loading, benchmark runner, pass-rate reporting, config matrix comparison.
 - `Out of scope`: Thesis validation (moved to Phase 4).
 
@@ -66,11 +66,11 @@ tests/
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| LLM client | `httpx` for Ollama, optional SDK adapters for API providers | Local path must work with zero API keys; adapters keep interface extensible. |
+| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), plus optional SDK adapters for API providers in `agent/llm_client.py` | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Adapters keep interface extensible. |
 | Output format | Search-and-replace blocks (primary), unified diff (fallback) | S&R blocks are easier for small models and easier to validate. |
-| Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. |
+| Patch isolation | `git worktree` per attempt, with fallback | Clean rollback on failure and isolated retries. Fallback to git stash/rollback or temp directory copy if worktree creation fails (Windows long-path issues). Test worktree lifecycle early on Windows. |
 | Retry strategy | Fresh prompt with structured error context, max 3 attempts | Bounded retries and deterministic behavior. |
-| Baseline approach | Structured naive context mode | Provides a build-time alternate solve path without retrieval dependency. |
+| Baseline approach | **Deferred to Phase 4** | Baseline context mode design is a validation concern. Phase 3 builds the pipeline solve path only. Baseline module placeholder kept but not implemented until Phase 4 validation design. |
 
 ---
 
@@ -152,7 +152,7 @@ class TaskResult:
 
 ### Step 2: Prompt Builder
 
-**Delivers**: Prompt construction for pipeline, baseline, and retry attempts.
+**Delivers**: Prompt construction for pipeline and retry attempts.
 
 **Files**:
 - `src/clean_room/agent/prompt_builder.py`
@@ -161,7 +161,7 @@ class TaskResult:
 **Requirements**:
 - Shared system prompt with strict edit output contract.
 - Token-aware retry prompts with bounded error output.
-- Hard prompt token gate before LLM call: assembled prompt must fit the active model context window; overflow is trimmed deterministically by dropping lowest-priority context/retry details.
+- Hard prompt token gate before LLM call: verifies the assembled prompt fits within the `BudgetConfig` context window. Phase 2 does the heavy lifting (context package is already budget-compliant), but this gate catches overflow from system prompt + retry context additions. Overflow is trimmed deterministically by dropping lowest-priority retry details.
 - Retry wording must assume fresh worktree application per attempt.
 
 ---
@@ -232,18 +232,13 @@ class TaskResult:
 
 ---
 
-### Step 7: Baseline Context Mode
+### Step 7: Baseline Context Mode (Deferred to Phase 4)
 
-**Delivers**: Naive context builder for `solve --mode baseline`.
+**Status**: Deferred. Baseline context mode is a validation/benchmarking concern. Its design (how naive, what it reads, filesystem vs curated DB) will be decided during Phase 4 validation planning.
 
-**Files**:
+**Placeholder files** (created but not implemented in Phase 3):
 - `src/clean_room/agent/baseline.py`
 - `tests/test_baseline.py`
-
-**Requirements**:
-- Budget-aware packing of raw files.
-- Mentioned files and nearby files prioritized.
-- Safe handling of binary/non-UTF-8 files.
 
 ---
 
@@ -258,18 +253,21 @@ class TaskResult:
 
 **CLI interface**:
 ```bash
-cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b --mode pipeline
-cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b --mode baseline
-cra solve "fix the login validation bug" --repo /path/to/repo --dry-run
+cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b
+cra solve "fix the login validation bug" --repo /path/to/repo --model qwen2.5-coder:3b --dry-run
 ```
 
-**Database lifecycle**:
-1. In pipeline mode: inherit session DB from Phase 2 retrieval run.
-2. In baseline mode: create a new session DB for this task.
-3. Open raw DB connection (append) via connection factory.
-4. Run retry loop (each attempt writes to raw DB and session DB).
-5. Write final `TaskResult` to raw DB.
-6. Close session DB. Optionally archive session content to raw DB (`session_archives` table).
+**Task ID and handoff**: `cra solve` generates a task ID (UUID4) at startup. This ID is passed to the retrieval pipeline (Phase 2) which creates the session DB, and then used throughout the solve loop. The user never needs to manage task IDs.
+
+**Startup sequence**:
+1. Generate task ID.
+2. Verify curated DB exists and `file_metadata` is populated (i.e., `cra index` and `cra enrich` have been run). Error if not.
+3. Create `BudgetConfig` from model parameters (context window size, reserved tokens for system prompt/retry overhead).
+4. Call `RetrievalPipeline` in-process, passing task ID and `BudgetConfig`. Retrieval creates the session DB and returns `ContextPackage` in-memory.
+5. Open raw DB connection (append) via connection factory.
+6. Run retry loop (each attempt writes to raw DB and session DB).
+7. Write final `TaskResult` to raw DB.
+8. Close session DB. Optionally archive session content to raw DB (`session_archives` table).
 
 ---
 
@@ -278,47 +276,41 @@ cra solve "fix the login validation bug" --repo /path/to/repo --dry-run
 ```
 Step 1 (LLM Client)
   |
-  +--> Step 2 (Prompt Builder)
-  |      |
-  |      +--> Step 3 (Response Parser)
-  |             |
-  |             +--> Step 4 (Patch Application)
-  |                    |
-  |                    +--> Step 5 (Validation)
-  |                           |
-  |                           +--> Step 6 (Retry Loop)
-  |
-  +--> Step 7 (Baseline Context Mode)
-          |
-          +--> Step 8 (Agent Harness + CLI) <-- Step 6
+  +--> Step 2 (Prompt Builder)    --|
+  +--> Step 3 (Response Parser)   --|--> Step 6 (Retry Loop)
+  +--> Step 4 (Patch Application) --|        |
+  +--> Step 5 (Validation)        --|        +--> Step 8 (Agent Harness + CLI)
+
+Step 7 (Baseline Context Mode) - deferred to Phase 4
 
 [All steps depend on Phases 1 + 2]
 ```
+
+Steps 2, 3, 4, 5 are independent of each other — they are all consumed by Step 6 (Retry Loop) and can be built in parallel.
 
 ---
 
 ## Verification (Phase 3 Gate)
 
 ```bash
-# Prerequisite: repo is indexed for pipeline mode
+# Prerequisite: repo is indexed and enriched
 cra index /path/to/repo -v
+cra enrich /path/to/repo --model <your-loaded-model>
 
 # Pipeline solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwen2.5-coder:3b --mode pipeline -v
-
-# Baseline solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwen2.5-coder:3b --mode baseline -v
+cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model qwen2.5-coder:3b -v
 ```
 
 **Gate criteria**:
-1. `cra solve` runs end-to-end in both modes without crashes.
+1. `cra solve` runs end-to-end without crashes.
 2. At least one retry path succeeds on a real task and emits a valid unified diff.
 3. Retry loop handles parse failures and patch failures gracefully.
 4. Local validation output is structured and actionable.
 5. Logs are sufficient to debug failed attempts.
 6. Raw DB contains complete attempt records (including raw LLM responses) for every solve run.
-7. Session DB lifecycle is correct: created/inherited at start, closed at end, optionally archived.
-8. Final model-bound prompt never exceeds configured model context limits in either mode.
+7. Session DB lifecycle is correct: created at retrieval start, inherited by solve, closed at end, optionally archived.
+8. Final model-bound prompt never exceeds `BudgetConfig` context limits.
+9. `cra solve` errors clearly if `cra index` or `cra enrich` haven't been run.
 
 ---
 
