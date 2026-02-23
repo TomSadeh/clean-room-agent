@@ -140,7 +140,7 @@ clean-room-agent/
 - `session_archives` - task_id, session_blob (BLOB — raw bytes of the session SQLite file, read via `open(path, 'rb').read()`; to restore, write bytes to a temp file and open as SQLite), archived_at
 
 **Session DB schema highlights** (new):
-- `retrieval_state` - key-value store for retrieval pipeline state. Values are JSON-serialized. This is intentionally simple — session is ephemeral and never queried externally. Key examples: `"scope_result"`, `"precision_decisions"`, `"stage_progress"`
+- `retrieval_state` - key-value store for retrieval pipeline state. Values are JSON-serialized. This is intentionally simple — session is ephemeral and never queried externally. Key examples: `"stage_outputs"`, `"stage_progress"`, `"final_context"`
 - `working_context` - staged context fragments being assembled during retrieval/solve
 - `scratch_notes` - freeform per-task notes (error classifications, retry context)
 
@@ -287,7 +287,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 
 **Files**:
 - `src/clean_room/indexer/orchestrator.py` - `index_repository(repo_path, ...) -> IndexingResult`
-- `src/clean_room/config.py` - Config file loader: `load_config(repo_path) -> dict | None`. Reads `.clean_room/config.toml` if it exists, returns flat dict. CLI flags override these values. Missing file returns `None` (not an error — config is optional).
+- `src/clean_room/config.py` - Config file loader: `load_config(repo_path) -> dict | None`. Reads `.clean_room/config.toml` if it exists and returns a flat dict. Missing file returns `None` (not an error — config is optional).
 - Update `src/clean_room/cli.py` - Wire `index` command, add `cra init` command (creates `.clean_room/config.toml` from explicit flags or interactive prompts)
 - `tests/test_orchestrator.py`, `tests/test_cli.py`
 
@@ -327,7 +327,7 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - LLM generation is seconds/file vs milliseconds/file for parsing
 - Users may re-enrich with different models without re-indexing
 
-**`cra enrich` is required** before running `cra solve`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
+**`cra enrich` is required** before running `cra retrieve` or `cra solve`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. Retrieval preflight will verify metadata exists and error if enrichment has not been run.
 
 **All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. `llm/client.py` is the **provider boundary**: it encapsulates all Ollama-specific HTTP transport (httpx, retry, error handling) behind a stable public API. Phase 3's agent imports and calls the same module. Swapping to a different LLM provider means reimplementing `llm/client.py` internals; no other module changes.
 
@@ -420,6 +420,5 @@ cra enrich /path/to/repo --model <your-loaded-model>
 ```
 
 **Gate criteria**: Retrieval-critical curated tables are populated for the target repo (`files`, `symbols`, `dependencies`, `commits`), queries return meaningful results, incremental re-index works (modify a file, re-run, only changed file re-parsed), raw DB logs indexing runs, and the connection factory creates all three DB types correctly.
-
 
 

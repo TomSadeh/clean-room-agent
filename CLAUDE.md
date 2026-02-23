@@ -68,7 +68,7 @@ archive/
     session_<task_id>.sqlite     - ephemeral per-task working memory (created/destroyed per run)
 ```
 
-**Config file** (`.clean_room/config.toml`): Optional project-level settings. CLI flags override config values. Missing required values with no CLI flag are hard errors — the config file is a convenience, not a silent default source. Created by `cra init`.
+**Config file** (`.clean_room/config.toml`): Optional project-level settings created by `cra init`. In active development mode, required runtime inputs stay explicit at call sites (no fallback loading for missing required values).
 
 ## Development Principles
 
@@ -97,4 +97,3 @@ Research and design phase. Next steps:
 2. Build the retrieval pipeline (Phase 2)
 3. Build the standalone agent harness (Phase 3)
 4. Revisit validation and benchmark planning after Phases 1-3 are stable
-

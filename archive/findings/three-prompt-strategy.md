@@ -1,7 +1,7 @@
 # Three-Prompt Retrieval Strategy
 
 **Date**: 2026-02-22
-**Status**: Design concept — not implemented
+**Status**: Design concept - not implemented. Superseded by the repository's N-prompt architecture (see `CLAUDE.md` and `planning/`).
 
 ---
 

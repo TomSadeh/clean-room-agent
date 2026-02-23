@@ -30,6 +30,14 @@ Each retrieval stage implements a common protocol (context in → refined contex
 
 The pipeline architecture is model-agnostic — stages, context curation, and budget management have no provider dependency. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP; swapping providers means reimplementing that module's internals, not changing the pipeline.
 
+## Development-Mode Runtime Contract
+
+- Required runtime inputs are explicit (fail-fast on missing required values).
+- No fallback loading of required values from `.clean_room/config.toml` during active development.
+- `cra retrieve` and `cra solve` both require explicit stage selection (for example: `--stages scope,precision`).
+- Budget input is explicit: either `--context-window` + `--reserved-tokens`, or `--budget-config <path>`.
+- `cra enrich` must be run before `cra retrieve` and `cra solve` (retrieval preflight enforces `file_metadata` presence).
+
 ## Prior Art
 
 Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, where curated retrieval can outperform much larger models using naive full-context approaches.
@@ -38,5 +46,7 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, 
 
 - `planning/` - Active plans and phase documents (source of truth for current work)
 - `archive/` - Archived notes and superseded research/context documents
+
+
 
 

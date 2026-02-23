@@ -169,17 +169,17 @@ Within each tier, files are ordered by relevance to seeds (e.g., dependency dept
 - `cra retrieve` standalone command (for inspection/debugging; outputs context package as JSON/markdown to stdout).
 - End-to-end retrieval execution with verbose diagnostics.
 
-**Pipeline configuration**: The caller provides the stage list. MVP default: `[ScopeStage(), PrecisionStage()]`. Future configurations add stages to this list — the runner doesn't change. `cra solve` and `cra retrieve` both accept a pipeline configuration (MVP default used when not specified).
+**Pipeline configuration**: The caller provides the stage list explicitly. No implicit default stage list in active development mode. `cra solve` and `cra retrieve` must both receive a stage list (for example: `--stages scope,precision`). Future configurations add stage names to this list — the runner does not change.
 
-**Standalone budget contract**: `cra retrieve` must require explicit `--context-window` and `--reserved-tokens` (or an explicit `--budget-config` path). Missing budget inputs are a hard error.
+**Standalone budget contract**: `cra retrieve` requires explicit budget input: either `--context-window` plus `--reserved-tokens`, or `--budget-config <path>`. Missing budget inputs are a hard error.
 
 **CLI budget rules (`cra retrieve`)**:
-- Budget values are resolved in precedence order: CLI flags > `.clean_room/config.toml` > hard error.
+- `--stages <csv>` is required (example: `--stages scope,precision`). Empty stage lists are invalid.
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
   - `--budget-config <path>`
 - `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
-- If neither CLI flags nor `--budget-config` are provided, values are read from `.clean_room/config.toml` `[budget]` section. If the config file also lacks them, it's a hard error.
+- If neither pair nor `--budget-config` is provided, fail fast with a hard error.
 - Validation is strict and fail-fast:
   - `context_window > 0`
   - `reserved_tokens >= 0`
@@ -195,9 +195,8 @@ Within each tier, files are ordered by relevance to seeds (e.g., dependency dept
 **Session state contract for refinement re-entry**:
 
 Phase 2 writes these session DB keys during initial retrieval (via `set_retrieval_state`):
-- `"scope_result"` — ScopeStage output (file IDs, tiers, provenance)
-- `"precision_decisions"` — PrecisionStage output (symbol selections, classifications)
-- `"stage_progress"` — list of completed stage names and their status
+- `"stage_outputs"` — map of `stage_name -> serialized stage output`
+- `"stage_progress"` — ordered list of completed stage names and their status
 - `"final_context"` — serialized final `StageContext` after all stages complete
 
 Phase 2 reads on re-entry:
@@ -212,7 +211,7 @@ Phase 2 re-entry behavior:
 4. Write updated `"final_context"` and `"stage_progress"` back to session DB.
 5. Return a new `ContextPackage`.
 
-**Enrichment preflight**: `RetrievalPipeline` checks that `file_metadata` is populated before running scope expansion. This check runs in both production (`cra solve`) and standalone (`cra retrieve`) paths. Missing enrichment data is a hard error — the user must run `cra enrich` first.
+**Enrichment preflight**: `RetrievalPipeline` checks that `file_metadata` is populated before running stage expansion. This check runs in both production (`cra solve`) and standalone (`cra retrieve`) paths. Missing enrichment data is a hard error — the user must run `cra enrich` first.
 
 **Database lifecycle**:
 1. Open curated DB connection in read-only mode via connection factory (`get_connection('curated', read_only=True)`).
@@ -244,14 +243,15 @@ Steps 2, 3, 4, 5 are independent of each other (all depend on Step 1) and can be
 ## Verification (Phase 2 Gate)
 
 ```bash
-# Prerequisite: repo is indexed
+# Prerequisite: repo is indexed and enriched
 cra index /path/to/repo -v
+cra enrich /path/to/repo --model <your-loaded-model>
 
 # Retrieval
-cra retrieve "fix the login validation bug" --repo /path/to/repo --context-window 32768 --reserved-tokens 4096 -v
+cra retrieve "fix the login validation bug" --repo /path/to/repo --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
 
 # JSON output
-cra retrieve "fix the login validation bug" --repo /path/to/repo --context-window 32768 --reserved-tokens 4096 --format json > context.json
+cra retrieve "fix the login validation bug" --repo /path/to/repo --stages scope,precision --context-window 32768 --reserved-tokens 4096 --format json > context.json
 ```
 
 **Gate criteria**:
@@ -269,5 +269,3 @@ cra retrieve "fix the login validation bug" --repo /path/to/repo --context-windo
 ## Future Handoff
 
 Formal retrieval quality evaluation and benchmark reporting are handled outside the active plan.
-
-

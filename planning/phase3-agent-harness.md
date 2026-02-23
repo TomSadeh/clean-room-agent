@@ -254,17 +254,17 @@ Phase 2's re-entry contract: it reads `"refinement_request"` and `"final_context
 
 **CLI interface**:
 ```bash
-cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --context-window <int> --reserved-tokens <int>
-cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --budget-config <path> --dry-run
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window <int> --reserved-tokens <int>
+cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --budget-config <path> --dry-run
 ```
 
 **CLI budget rules (`cra solve`)**:
-- All settings are resolved in precedence order: CLI flags > `.clean_room/config.toml` > hard error.
 - Provide either:
   - `--context-window <int>` and `--reserved-tokens <int>`, or
   - `--budget-config <path>`
 - `--budget-config` is mutually exclusive with `--context-window`/`--reserved-tokens`.
-- If neither CLI flags nor `--budget-config` are provided, values are read from `.clean_room/config.toml` `[budget]` section. `--model` and `--base-url` likewise fall back to `[model]` section. If the config file also lacks required values, it's a hard error.
+- Required runtime inputs are explicit in active development mode: `--model`, `--base-url`, and `--stages` are mandatory. Budget values are also mandatory via explicit pair or `--budget-config`.
+- If required values are missing, fail fast with a hard error.
 - Validation is strict and fail-fast:
   - `context_window > 0`
   - `reserved_tokens >= 0`
@@ -276,7 +276,7 @@ cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
 
 **Startup sequence**:
 1. Generate task ID.
-2. Build `BudgetConfig` and retrieval config from explicit CLI inputs (or explicit `--budget-config` file), validate constraints, and fail fast on invalid/missing values.
+2. Build `BudgetConfig` and retrieval config from explicit CLI inputs (or explicit `--budget-config` file), validate constraints, and fail fast on invalid/missing values. No required-value fallback loading.
 3. Open raw DB connection (append) and create a `task_runs` row immediately to obtain `task_run_id` before any attempts are generated. Persist the effective budget config for run reproducibility.
 4. Call `RetrievalPipeline` in-process, passing task ID and `BudgetConfig`. Retrieval performs curated preflight checks (including `file_metadata` presence), creates session DB, and returns `ContextPackage` plus a session handle in-memory.
 5. Run retry loop (each attempt writes to raw DB and session DB). When context is insufficient, emit `RefinementRequest` and call retrieval re-entry for updated context.
@@ -313,7 +313,7 @@ cra index /path/to/repo -v
 cra enrich /path/to/repo --model <your-loaded-model>
 
 # Solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --context-window 32768 --reserved-tokens 4096 -v
+cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --base-url <ollama-url> --stages scope,precision --context-window 32768 --reserved-tokens 4096 -v
 ```
 
 **Gate criteria**:
@@ -333,5 +333,3 @@ cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <mo
 ## Future Handoff
 
 External benchmark validation and reporting consume Phase 3 outputs (`TaskResult`, unified diffs, logs) outside the active plan.
-
-
