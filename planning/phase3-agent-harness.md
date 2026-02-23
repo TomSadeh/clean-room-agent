@@ -6,7 +6,7 @@ This is the execution build phase of the Clean Room Agent. It takes the curated 
 
 Phase 1 indexes (writes curated DB). Phase 2 retrieves (reads curated). Phase 3 executes without direct curated DB access. Phase 3 logs all attempts, results, and LLM outputs to raw DB and uses session DB for retry working memory.
 
-The gate for Phase 3: `cra solve` works end-to-end in pipeline mode, produces valid patches, logs all activity to raw DB, and is operationally stable.
+The gate for Phase 3: `cra solve` works end-to-end, produces valid patches, logs all activity to raw DB, and is operationally stable.
 
 ---
 
@@ -37,8 +37,7 @@ src/
     agent/
       __init__.py
       harness.py                  # Top-level agent orchestrator
-      prompt_builder.py           # Context + task -> model-ready prompt
-      llm_client.py               # Unified LLM interface
+      prompt_builder.py           # Context + task -> model-ready prompt, prompt-format helpers
       response_parser.py          # LLM output -> structured edits
       patch.py                    # Apply edits to files
       validation.py               # Run tests, lint, type check
@@ -49,7 +48,6 @@ tests/
     sample_llm_responses.py       # Canned LLM outputs for parser tests
     sample_patches/               # Known-good patches for application tests
   test_prompt_builder.py
-  test_llm_client.py
   test_response_parser.py
   test_patch.py
   test_validation.py
@@ -62,7 +60,7 @@ tests/
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), wrapped in `agent/llm_client.py` | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Add other providers when actually needed. |
+| LLM client | Shared Ollama transport from `llm/client.py` (Phase 1), imported directly by Phase 3 | Local path must work with zero API keys; shared transport avoids duplicating httpx/retry logic. Prompt-format helpers live in `prompt_builder.py`. |
 | Output format | Search-and-replace blocks (single required format) | Single strict format keeps parser behavior deterministic and fail-fast. |
 | Patch isolation | `git worktree` per attempt | Clean rollback on failure and isolated retries. Worktree creation must succeed - if it fails (e.g., Windows long-path issues), error out with diagnostic context. Test worktree lifecycle early on Windows. |
 | Retry strategy | Fresh prompt with structured error context; max attempts provided explicitly by caller config | Bounded retries without hardcoded core defaults. |
@@ -73,12 +71,11 @@ tests/
 
 ```python
 @dataclass
-class LLMConfig:
-    provider: str                     # "ollama", "anthropic", "openai"
+class OllamaConfig:
     model: str
     temperature: float
     max_tokens: int
-    base_url: str | None = None
+    base_url: str                     # Required, no default — user specifies their Ollama URL
 
 @dataclass
 class EditBlock:
@@ -112,18 +109,12 @@ class AttemptRecord:
     validation: ValidationResult | None
     unified_diff: str
 
-@dataclass
-class RefinementRequest:
-    reason: str                      # "insufficient_context"
-    missing_files: list[str]
-    missing_symbols: list[str]
-    missing_tests: list[str]
-    error_signatures: list[str]
+# RefinementRequest is defined in retrieval/dataclasses.py (Phase 2 owns the contract).
+# Phase 3 imports it: from clean_room.retrieval.dataclasses import RefinementRequest
 
 @dataclass
 class TaskResult:
     task_id: str
-    mode: str                         # "pipeline"
     success: bool
     attempts: list[AttemptRecord]
     total_tokens: int
@@ -137,19 +128,27 @@ class TaskResult:
 
 ## Implementation Steps
 
-### Step 1: LLM Client
+### Step 0: Platform Prerequisites
 
-**Delivers**: Unified interface for sending prompts and receiving completions.
-
-**Files**:
-- `src/clean_room/agent/llm_client.py`
-- `src/clean_room/agent/dataclasses.py`
-- `tests/test_llm_client.py`
+**Delivers**: Verified `git worktree add/remove` lifecycle on the target platform.
 
 **Requirements**:
-- Ollama path is required (`/api/chat` and `/api/generate` support).
-- Clear token/latency extraction and error mapping.
-- Retries for transient transport errors.
+- Verify `git worktree add` and `git worktree remove` work correctly, including cleanup. On Windows, test long paths and cleanup behavior. This is a blocking prerequisite for Steps 4-7 (patch isolation depends on worktrees).
+
+---
+
+### Step 1: Dataclasses + Prompt-Format Helpers
+
+**Delivers**: Phase 3 data structures (`OllamaConfig`, `EditBlock`, `GenerationResult`, `ValidationResult`, `AttemptRecord`, `TaskResult`) and prompt-format helpers in `prompt_builder.py`. Phase 3 imports `llm/client.py` directly for LLM transport — no wrapper layer.
+
+**Files**:
+- `src/clean_room/agent/dataclasses.py`
+- `src/clean_room/agent/prompt_builder.py` (prompt-format helpers)
+
+**Requirements**:
+- `OllamaConfig` with required `base_url` (no default — user specifies their Ollama URL).
+- Prompt-format helpers convert `ContextPackage` + task into model-ready prompt strings.
+- Phase 3 uses `llm/client.py` (shared Ollama transport from Phase 1) directly for LLM calls.
 
 ---
 
@@ -282,7 +281,9 @@ cra solve "fix the login validation bug" --repo /path/to/repo --model <model-id>
 ## Step Dependency Graph
 
 ```
-Step 1 (LLM Client)
+Step 0 (Platform Prerequisites — blocking)
+  |
+Step 1 (Dataclasses + Prompt-Format Helpers)
   |
   +--> Step 2 (Prompt Builder)    --|
   +--> Step 3 (Response Parser)   --|--> Step 6 (Retry Loop)
@@ -292,7 +293,7 @@ Step 1 (LLM Client)
 [All steps depend on Phases 1 + 2]
 ```
 
-Steps 2, 3, 4, 5 are independent of each other - they are all consumed by Step 6 (Retry Loop) and can be built in parallel.
+Step 0 is a blocking prerequisite (worktree lifecycle verification). Steps 2, 3, 4, 5 are independent of each other - they are all consumed by Step 6 (Retry Loop) and can be built in parallel.
 
 ---
 
@@ -303,8 +304,8 @@ Steps 2, 3, 4, 5 are independent of each other - they are all consumed by Step 6
 cra index /path/to/repo -v
 cra enrich /path/to/repo --model <your-loaded-model>
 
-# Pipeline solve
-cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> -v
+# Solve
+cra solve "fix the broken test in test_auth.py" --repo /path/to/repo --model <model-id> --context-window 32768 --reserved-tokens 4096 -v
 ```
 
 **Gate criteria**:

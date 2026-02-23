@@ -126,19 +126,20 @@ clean-room-agent/
 - `content_hash` as TEXT (hex SHA-256) on `files`
 - `co_changes` composite PK `(file_a_id, file_b_id)` with CHECK `file_a_id < file_b_id`
 - `symbol_references` for symbol-level edges: `caller_symbol_id`, `callee_symbol_id`, `reference_kind`, `confidence`
-- JSON columns (`concepts`, `parsed_fields`, `files_involved`) as TEXT
+- `file_metadata` table: `file_id` (FK to `files`), `purpose`, `module`, `domain`, `concepts` (JSON), `public_api_surface` (JSON), `complexity_notes` — populated by `cra enrich`, fields match the LLM enrichment prompt output
+- JSON columns (`concepts`, `parsed_fields`, `files_involved`, `public_api_surface`) as TEXT
 - Indexes on: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`
 
 **Raw DB schema highlights** (new):
 - `index_runs` - timestamp, repo_path, files_scanned, files_changed, duration_ms, status
 - `retrieval_decisions` - task_id, stage, file_id, score, included, reason, timestamp
-- `task_runs` - task_id, mode, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp (created at `cra solve` start, finalized at run end)
+- `task_runs` - task_id, repo_path, model, success, total_tokens, total_latency_ms, final_diff, timestamp (created at `cra solve` start, finalized at run end)
 - `run_attempts` - task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, raw_response, patch_applied, timestamp (attempt rows always reference the pre-created `task_runs` row)
 - `validation_results` - attempt_id, success, test_output, lint_output, type_check_output, failing_tests (JSON)
 - `session_archives` - task_id, session_blob (full session DB content), archived_at
 
 **Session DB schema highlights** (new):
-- `retrieval_state` - key-value store for retrieval pipeline state (stage, scores, decisions)
+- `retrieval_state` - key-value store for retrieval pipeline state. Values are JSON-serialized. This is intentionally simple — session is ephemeral and never queried externally. Key examples: `"scope_result"`, `"precision_decisions"`, `"stage_progress"`
 - `working_context` - staged context fragments being assembled during retrieval/solve
 - `scratch_notes` - freeform per-task notes (error classifications, retry context)
 
@@ -324,13 +325,13 @@ Uses a pre-built file index (`dict[str, int]` mapping relative paths to file IDs
 - LLM generation is seconds/file vs milliseconds/file for parsing
 - Users may re-enrich with different models without re-indexing
 
-**`cra enrich` is required** before running `cra solve --mode pipeline`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
+**`cra enrich` is required** before running `cra solve`. Phase 2 scoring signals depend on `file_metadata` (domain, module, concepts) which enrichment populates. `cra solve` will verify metadata exists and error if enrichment hasn't been run.
 
 **All LLM calls are local** - Ollama on localhost, no data leaves the machine. Model is a CLI flag (`--model`), no default hardcoded - user specifies whatever they have loaded. The shared LLM transport (`llm/client.py`) is also consumed by Phase 3's agent - see Phase 3 plan.
 
 **LLM prompt** (~2000 tokens input): file path, symbol list, docstrings, first 200 lines of source. Asks for JSON: `purpose`, `module`, `domain`, `concepts[]`, `public_api_surface[]`, `complexity_notes`. JSON parse failure raises with full context (raw response included).
 
-**Query API** (`KnowledgeBase` class) - reads exclusively from the **curated DB**. This is the contract Phase 2 depends on:
+**Query API** (`KnowledgeBase` class) - reads exclusively from the **curated DB**. Constructor: `KnowledgeBase(conn)` takes an existing curated DB connection (caller is responsible for obtaining it via `get_connection('curated', read_only=True)`). This is the contract Phase 2 depends on:
 - `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`
 - `search_files_by_metadata(repo_id, domain?, module?, concepts?)`
 - `get_symbols_for_file(file_id, kind?)`, `search_symbols_by_name(repo_id, pattern)`
@@ -398,8 +399,10 @@ session.close()
 
 # Verify queries from Python (reads curated DB only)
 python -c "
+from clean_room.db.connection import get_connection
 from clean_room.query.api import KnowledgeBase
-kb = KnowledgeBase()
+conn = get_connection('curated', read_only=True)
+kb = KnowledgeBase(conn)
 overview = kb.get_repo_overview(1)
 print(overview)
 # Pick a file and get its full context

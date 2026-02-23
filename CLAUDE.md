@@ -27,7 +27,7 @@ Three separate SQLite files, not three schemas in one file. Independent WAL jour
 
 3. **Session DB** (`session_<task_id>.sqlite`) - ephemeral per-task working memory. Created per solve run, discarded after (optionally archived to raw). Intentionally minimal: key-value retrieval state, staged working context, scratch notes. Phase 2 creates it, Phase 3 inherits and closes it.
 
-**Connection factory**: `get_connection(role, task_id=None)` where role is `"curated"`, `"raw"`, or `"session"`. Single point of DB management.
+**Connection factory**: `get_connection(role, task_id=None, read_only=False)` where role is `"curated"`, `"raw"`, or `"session"`. Single point of DB management.
 
 **Cold start**: `cra index` populates curated DB. Raw DB gets first real data from indexing run metadata. Session DB gets first real data in Phase 2/3.
 
@@ -50,7 +50,7 @@ planning/
   meta-plan.md                   - Top-level phase boundaries and gates
   phase1-knowledge-base.md       - Knowledge Base + Indexer (8 steps)
   phase2-retrieval-pipeline.md   - Retrieval pipeline build (7 steps)
-  phase3-agent-harness.md        - Agent harness build (8 steps)
+  phase3-agent-harness.md        - Agent harness build (7 steps)
 archive/
   (archived notes and superseded research/context documents)
 ```

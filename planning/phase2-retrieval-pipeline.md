@@ -76,7 +76,7 @@ tests/
 
 - `BudgetConfig`: shared between Phase 2 and Phase 3. Contains model context window size, reserved tokens for system prompt/retry overhead, and the effective retrieval budget `(window - reserved)`. Defined in `retrieval/dataclasses.py`, imported by Phase 3.
 - `TaskQuery`: parsed task intent (`task_type`, keywords, file/symbol hints, error patterns, concepts).
-- `RetrievalRefinementRequest`: structured request from Phase 3 when context is insufficient (`reason`, `missing_files[]`, `missing_symbols[]`, `missing_tests[]`, `error_signatures[]`).
+- `RefinementRequest`: structured request from Phase 3 when context is insufficient (`reason`, `missing_files[]`, `missing_symbols[]`, `missing_tests[]`, `error_signatures[]`).
 - `FileScore`: per-file relevance score with signal breakdown.
 - `ScopeResult`: ranked scoped files plus expansion provenance.
 - `SymbolContext`: selected symbol details and relevance tier.
@@ -92,7 +92,7 @@ tests/
 **Delivers**:
 - Retrieval dataclasses.
 - `analyze_task()` deterministic extraction for files/symbols/errors/keywords/task type.
-- Optional `--llm-assist` for vague tasks.
+- Optional `--llm-assist` for vague tasks. `--llm-assist` requires `--model <model-id>` when used with `cra retrieve` standalone. Missing `--model` with `--llm-assist` is a hard error.
 
 ---
 
@@ -113,6 +113,7 @@ tests/
 - Dependency and co-change expansion.
 
 **Configuration (explicit, no core hardcoded defaults)**:
+- Signal weights are defined in a `ScoringConfig` dataclass, required by the pipeline caller. `cra retrieve` standalone requires `--scoring-config <path>` or explicit weight flags. `cra solve` constructs `ScoringConfig` from its own config. No hardcoded weight defaults in scoring logic.
 - Scope size target is caller-provided (required in `BudgetConfig`/retrieval config).
 - Task-type weight tweaks (`bug_fix`, `refactor`, `test`).
 
@@ -137,6 +138,8 @@ tests/
 **Delivers**:
 - Token counting and hard budget enforcement.
 - Tiered eviction and primary-body demotion to signatures when needed.
+
+**Token counting**: Uses a character-based approximation (chars / 4) for budget checks. Exact counts come from Ollama response metadata post-call. Budget enforcement uses the approximation with a configurable safety margin. No tiktoken dependency.
 
 **Budget source**: Phase 2 receives a `BudgetConfig` from its caller. In `cra solve`, Phase 3 constructs and passes it. In standalone `cra retrieve`, the CLI requires explicit budget inputs and constructs it (no implicit defaults). This config contains the target model's context window size and reserved tokens for system prompt/retry overhead. Phase 2 targets `(window - reserved)` tokens for the context package. The `BudgetConfig` is a shared data structure defined in a common module, consumed by both Phase 2 and Phase 3.
 
@@ -176,9 +179,9 @@ tests/
 - Effective retrieval budget is always computed as: `retrieval_budget = context_window - reserved_tokens`.
 - Persist the effective budget config for the run to raw DB alongside retrieval decisions for reproducibility.
 
-**Handoff model**: In production, `cra solve --mode pipeline` calls `RetrievalPipeline` internally. The `ContextPackage` stays in-memory (no serialization required). `cra retrieve` exists as a standalone CLI command for inspection/debugging, not the normal solve path.
+**Handoff model**: In production, `cra solve` calls `RetrievalPipeline` internally. The `ContextPackage` stays in-memory (no serialization required). `cra retrieve` exists as a standalone CLI command for inspection/debugging, not the normal solve path.
 
-**Refinement model**: `RetrievalPipeline` supports re-entry from Phase 3 using `RetrievalRefinementRequest`. The same `task_id` and session handle are reused. Refinement adds/adjusts context and returns a new `ContextPackage` without giving Phase 3 direct curated access.
+**Refinement model**: `RetrievalPipeline` supports re-entry from Phase 3 using `RefinementRequest`. The same `task_id` and session handle are reused. Refinement adds/adjusts context and returns a new `ContextPackage` without giving Phase 3 direct curated access.
 
 **Database lifecycle**:
 1. Open curated DB connection in read-only mode via connection factory (`get_connection('curated', read_only=True)`).
@@ -219,10 +222,10 @@ Step 1 (Task Analysis + Data Structures)
 cra index /path/to/repo -v
 
 # Retrieval
-cra retrieve "fix the login validation bug" --repo /path/to/repo -v
+cra retrieve "fix the login validation bug" --repo /path/to/repo --context-window 32768 --reserved-tokens 4096 -v
 
 # JSON output
-cra retrieve "fix the login validation bug" --repo /path/to/repo --format json > context.json
+cra retrieve "fix the login validation bug" --repo /path/to/repo --context-window 32768 --reserved-tokens 4096 --format json > context.json
 ```
 
 **Gate criteria**:
