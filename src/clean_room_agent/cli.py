@@ -164,3 +164,183 @@ def retrieve(task, repo_path, stages, context_window, reserved_tokens, plan_path
     click.echo(f"  Timings:     {package.metadata.get('stage_timings', {})}")
     for fc in package.files:
         click.echo(f"    {fc.path} [{fc.detail_level}] ~{fc.token_estimate} tokens")
+
+
+def _resolve_budget(config: dict | None, role: str = "reasoning") -> tuple[int, int]:
+    """Resolve (context_window, reserved_tokens) from config. Raises on missing.
+
+    Uses ModelRouter to resolve context_window so per-role dicts are handled
+    correctly (same as orchestrator/runner.py _resolve_budget).
+    """
+    if config is None:
+        raise click.UsageError(
+            "Budget not configured. Set [budget] in .clean_room/config.toml."
+        )
+    from clean_room_agent.config import require_models_config
+    from clean_room_agent.llm.router import ModelRouter
+
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    model_config = router.resolve(role)
+    cw = model_config.context_window
+
+    budget_config = config.get("budget", {})
+    rt = budget_config.get("reserved_tokens")
+    if rt is None:
+        raise click.UsageError(
+            "Budget not configured. Set reserved_tokens in [budget] in .clean_room/config.toml."
+        )
+    return cw, rt
+
+
+def _resolve_stages(config: dict | None, stages_flag: str | None) -> list[str]:
+    """Resolve stage names from CLI flag or config."""
+    if stages_flag:
+        return [s.strip() for s in stages_flag.split(",")]
+    stages_config = (config or {}).get("stages", {})
+    default_stages = stages_config.get("default")
+    if not default_stages:
+        raise click.UsageError(
+            "Stages not configured. Provide --stages or set [stages] default in config.toml."
+        )
+    return [s.strip() for s in default_stages.split(",")]
+
+
+@cli.command()
+@click.argument("task")
+@click.option("--repo", "repo_path", default=".", type=click.Path(exists=True), help="Repository path.")
+@click.option("--stages", default=None, help="Comma-separated stage names.")
+@click.option("--output", type=click.Path(), default=None, help="Save plan to file.")
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
+def plan(task, repo_path, stages, output, verbose):
+    """Generate a plan for a task (meta-plan decomposition)."""
+    import json
+    import logging
+    import uuid
+    from pathlib import Path
+
+    from clean_room_agent.config import load_config, require_models_config
+    from clean_room_agent.db.connection import get_connection
+    from clean_room_agent.db.raw_queries import insert_retrieval_llm_call
+    from clean_room_agent.execute.dataclasses import PlanArtifact
+    from clean_room_agent.execute.plan import execute_plan
+    from clean_room_agent.llm.client import LoggedLLMClient
+    from clean_room_agent.llm.router import ModelRouter
+    from clean_room_agent.retrieval.dataclasses import BudgetConfig
+    from clean_room_agent.retrieval.pipeline import run_pipeline
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    repo = Path(repo_path).resolve()
+    config = load_config(repo)
+    if config is None:
+        raise click.UsageError(
+            "No config file found. Run 'cra init' to create .clean_room/config.toml"
+        )
+
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    reasoning_config = router.resolve("reasoning")
+
+    cw, rt = _resolve_budget(config)
+    budget = BudgetConfig(context_window=cw, reserved_tokens=rt)
+    stage_names = _resolve_stages(config, stages)
+    task_id = str(uuid.uuid4())
+
+    # Phase 2: retrieval
+    package = run_pipeline(
+        raw_task=task,
+        repo_path=repo,
+        stage_names=stage_names,
+        budget=budget,
+        mode="plan",
+        task_id=task_id,
+        config=config,
+    )
+
+    # Phase 3: execute plan
+    # Flush LLM records even if execute_plan raises (T28 traceability)
+    with LoggedLLMClient(reasoning_config) as llm:
+        try:
+            meta_plan = execute_plan(
+                package, task, llm,
+                pass_type="meta_plan",
+            )
+        finally:
+            raw_conn = get_connection("raw", repo_path=repo)
+            try:
+                for call in llm.flush():
+                    insert_retrieval_llm_call(
+                        raw_conn, task_id, "execute_plan", reasoning_config.model,
+                        call["prompt"], call["response"],
+                        call["prompt_tokens"], call["completion_tokens"],
+                        call["elapsed_ms"],
+                        stage_name="execute_plan",
+                        system_prompt=call["system"],
+                    )
+                raw_conn.commit()
+            finally:
+                raw_conn.close()
+
+    # Convert to user-facing PlanArtifact
+    artifact = PlanArtifact.from_meta_plan(meta_plan)
+    plan_json = json.dumps(artifact.to_dict(), indent=2)
+
+    if output:
+        out_path = Path(output)
+        out_path.write_text(plan_json, encoding="utf-8")
+        click.echo(f"Plan written to {out_path}")
+    else:
+        click.echo(plan_json)
+
+    click.echo(f"Task ID: {task_id}")
+    click.echo(f"Parts: {len(meta_plan.parts)}")
+
+
+@cli.command()
+@click.argument("task")
+@click.option("--repo", "repo_path", default=".", type=click.Path(exists=True), help="Repository path.")
+@click.option("--plan", "plan_path", default=None, type=click.Path(exists=True),
+              help="Pre-computed plan file (single atomic pass, skips orchestrator).")
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
+def solve(task, repo_path, plan_path, verbose):
+    """Solve a task by generating and applying code changes."""
+    import logging
+    from pathlib import Path
+
+    from clean_room_agent.config import load_config, require_models_config
+    from clean_room_agent.orchestrator.validator import require_testing_config
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    repo = Path(repo_path).resolve()
+    config = load_config(repo)
+    if config is None:
+        raise click.UsageError(
+            "No config file found. Run 'cra init' to create .clean_room/config.toml"
+        )
+
+    # Validate required config sections
+    require_models_config(config)
+    require_testing_config(config)
+
+    if plan_path:
+        from clean_room_agent.orchestrator.runner import run_single_pass
+        result = run_single_pass(task, repo, config, plan_path=Path(plan_path))
+    else:
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator(task, repo, config)
+
+    click.echo(f"Status: {result.status}")
+    click.echo(f"Task ID: {result.task_id}")
+    click.echo(f"Parts completed: {result.parts_completed}")
+    click.echo(f"Steps completed: {result.steps_completed}")
+    if result.pass_results:
+        passes_ok = sum(1 for pr in result.pass_results if pr.success)
+        click.echo(f"Passes: {passes_ok}/{len(result.pass_results)} successful")

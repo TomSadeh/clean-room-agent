@@ -128,6 +128,139 @@ def insert_session_archive(
     return cursor.lastrowid
 
 
+def insert_run_attempt(
+    conn: sqlite3.Connection,
+    task_run_id: int,
+    attempt: int,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    latency_ms: int,
+    raw_response: str,
+    patch_applied: bool,
+) -> int:
+    """Log a run attempt to the raw DB. Returns the attempt id."""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO run_attempts "
+        "(task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, "
+        "raw_response, patch_applied, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms,
+         raw_response, int(patch_applied), now),
+    )
+    return cursor.lastrowid
+
+
+def update_run_attempt_patch(conn: sqlite3.Connection, attempt_id: int, patch_applied: bool) -> None:
+    """Update the patch_applied flag on a run_attempt after edits are applied."""
+    conn.execute(
+        "UPDATE run_attempts SET patch_applied = ? WHERE id = ?",
+        (int(patch_applied), attempt_id),
+    )
+
+
+def insert_validation_result(
+    conn: sqlite3.Connection,
+    attempt_id: int,
+    success: bool,
+    test_output: str | None = None,
+    lint_output: str | None = None,
+    type_check_output: str | None = None,
+    failing_tests: str | None = None,
+) -> int:
+    """Log a validation result to the raw DB. Returns the result id."""
+    cursor = conn.execute(
+        "INSERT INTO validation_results "
+        "(attempt_id, success, test_output, lint_output, type_check_output, failing_tests) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (attempt_id, int(success), test_output, lint_output, type_check_output, failing_tests),
+    )
+    return cursor.lastrowid
+
+
+def insert_orchestrator_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    repo_path: str,
+    task_description: str,
+) -> int:
+    """Log an orchestrator run to the raw DB. Returns the run id."""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO orchestrator_runs "
+        "(task_id, repo_path, task_description, status, timestamp) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (task_id, repo_path, task_description, "running", now),
+    )
+    return cursor.lastrowid
+
+
+def update_orchestrator_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    total_parts: int | None = None,
+    total_steps: int | None = None,
+    parts_completed: int | None = None,
+    steps_completed: int | None = None,
+    status: str | None = None,
+    completed_at: str | None = None,
+) -> None:
+    """Update an orchestrator run with progress/completion data."""
+    sets = []
+    params = []
+    if total_parts is not None:
+        sets.append("total_parts = ?")
+        params.append(total_parts)
+    if total_steps is not None:
+        sets.append("total_steps = ?")
+        params.append(total_steps)
+    if parts_completed is not None:
+        sets.append("parts_completed = ?")
+        params.append(parts_completed)
+    if steps_completed is not None:
+        sets.append("steps_completed = ?")
+        params.append(steps_completed)
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    if completed_at is not None:
+        sets.append("completed_at = ?")
+        params.append(completed_at)
+    if not sets:
+        raise ValueError("update_orchestrator_run called with no fields to update")
+    params.append(run_id)
+    cursor = conn.execute(
+        f"UPDATE orchestrator_runs SET {', '.join(sets)} WHERE id = ?",
+        params,
+    )
+    if cursor.rowcount == 0:
+        raise RuntimeError(f"No orchestrator_run with id={run_id} to update")
+
+
+def insert_orchestrator_pass(
+    conn: sqlite3.Connection,
+    orchestrator_run_id: int,
+    task_run_id: int,
+    pass_type: str,
+    sequence_order: int,
+    *,
+    part_id: str | None = None,
+    step_id: str | None = None,
+) -> int:
+    """Log an orchestrator pass to the raw DB. Returns the pass id."""
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO orchestrator_passes "
+        "(orchestrator_run_id, task_run_id, pass_type, part_id, step_id, "
+        "sequence_order, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (orchestrator_run_id, task_run_id, pass_type, part_id, step_id,
+         sequence_order, now),
+    )
+    return cursor.lastrowid
+
+
 def insert_enrichment_output(
     conn: sqlite3.Connection,
     file_id: int,

@@ -1,0 +1,698 @@
+"""Orchestrator: deterministic sequencer for plan + implement passes."""
+
+from __future__ import annotations
+
+import json
+import logging
+import tempfile
+import uuid
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+
+from clean_room_agent.config import require_models_config
+from clean_room_agent.db.connection import _db_path, get_connection
+from clean_room_agent.db.raw_queries import (
+    insert_orchestrator_pass,
+    insert_orchestrator_run,
+    insert_retrieval_llm_call,
+    insert_run_attempt,
+    insert_session_archive,
+    update_orchestrator_run,
+    update_run_attempt_patch,
+)
+from clean_room_agent.db.session_helpers import set_state
+from clean_room_agent.execute.dataclasses import (
+    MetaPlan,
+    OrchestratorResult,
+    PartPlan,
+    PassResult,
+    PlanArtifact,
+    PlanStep,
+    StepResult,
+)
+from clean_room_agent.execute.implement import execute_implement
+from clean_room_agent.execute.patch import apply_edits, rollback_edits
+from clean_room_agent.execute.plan import execute_plan
+from clean_room_agent.llm.client import LoggedLLMClient
+from clean_room_agent.llm.router import ModelRouter
+from clean_room_agent.orchestrator.validator import require_testing_config, run_validation
+from clean_room_agent.retrieval.dataclasses import BudgetConfig
+from clean_room_agent.retrieval.pipeline import run_pipeline
+
+logger = logging.getLogger(__name__)
+
+# Cap cumulative diff at ~12,500 tokens (4 chars/token).  Oldest entries are
+# truncated first so the most recent changes remain visible to the model.
+_MAX_CUMULATIVE_DIFF_CHARS = 50_000
+
+
+def _cap_cumulative_diff(diff: str) -> str:
+    """Truncate cumulative diff to prevent unbounded context growth."""
+    if len(diff) <= _MAX_CUMULATIVE_DIFF_CHARS:
+        return diff
+    truncated = diff[-_MAX_CUMULATIVE_DIFF_CHARS:]
+    # Align to the next complete block boundary (starts with "--- ")
+    first_block = truncated.find("\n--- ")
+    if first_block >= 0:
+        truncated = truncated[first_block + 1:]
+    return f"[earlier changes truncated]\n{truncated}"
+
+
+def _resolve_budget(config: dict, role: str) -> BudgetConfig:
+    """Resolve budget for a given model role. Hard error if missing."""
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    model_config = router.resolve(role)
+    budget_config = config.get("budget", {})
+    rt = budget_config.get("reserved_tokens")
+    if rt is None:
+        raise RuntimeError(
+            "Missing reserved_tokens in [budget] section of config.toml."
+        )
+    return BudgetConfig(context_window=model_config.context_window, reserved_tokens=rt)
+
+
+def _resolve_stages(config: dict) -> list[str]:
+    """Resolve stage names from config. Hard error if missing."""
+    stages_config = config.get("stages", {})
+    default_stages = stages_config.get("default")
+    if not default_stages:
+        raise RuntimeError(
+            "Missing default in [stages] section of config.toml."
+        )
+    return [s.strip() for s in default_stages.split(",")]
+
+
+def _flush_llm_calls(
+    llm: LoggedLLMClient, raw_conn, task_id: str, call_type: str, stage_name: str,
+) -> tuple[int | None, int | None, int]:
+    """Flush LLM call records to raw DB.
+
+    Returns (total_prompt_tokens, total_completion_tokens, total_latency_ms).
+    Token counts are None if any individual call reported None.
+    """
+    total_prompt: int | None = 0
+    total_completion: int | None = 0
+    total_latency = 0
+    for call in llm.flush():
+        insert_retrieval_llm_call(
+            raw_conn, task_id, call_type, llm.config.model,
+            call["prompt"], call["response"],
+            call["prompt_tokens"], call["completion_tokens"],
+            call["elapsed_ms"],
+            stage_name=stage_name,
+            system_prompt=call["system"],
+        )
+        if call["prompt_tokens"] is not None and total_prompt is not None:
+            total_prompt += call["prompt_tokens"]
+        else:
+            total_prompt = None
+        if call["completion_tokens"] is not None and total_completion is not None:
+            total_completion += call["completion_tokens"]
+        else:
+            total_completion = None
+        total_latency += call["elapsed_ms"]
+    raw_conn.commit()
+    return total_prompt, total_completion, total_latency
+
+
+def _write_temp_plan(affected_files: list[str], tmp_dir: Path) -> Path:
+    """Write a minimal plan JSON for Tier 0 seeding in retrieval pipeline."""
+    plan_data = {"affected_files": [{"path": f} for f in affected_files]}
+    tmp_file = tmp_dir / f"plan_{uuid.uuid4().hex[:8]}.json"
+    tmp_file.write_text(json.dumps(plan_data), encoding="utf-8")
+    return tmp_file
+
+
+def _topological_sort(items, get_id, get_deps):
+    """Topological sort items by depends_on. Falls back to original order on cycles."""
+    id_to_item = {get_id(item): item for item in items}
+    in_degree = {get_id(item): 0 for item in items}
+    adjacency = {get_id(item): [] for item in items}
+    valid_ids = set(id_to_item.keys())
+
+    for item in items:
+        for dep in get_deps(item):
+            if dep in valid_ids:
+                adjacency[dep].append(get_id(item))
+                in_degree[get_id(item)] += 1
+
+    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
+    result = []
+    while queue:
+        node = queue.popleft()
+        result.append(id_to_item[node])
+        for neighbor in adjacency[node]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    if len(result) != len(items):
+        raise RuntimeError(
+            "Cycle detected in dependency graph — validate_plan should have "
+            "caught this. This indicates a bug or unvalidated plan input."
+        )
+    return result
+
+
+def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorResult:
+    """Run the full orchestrator loop.
+
+    meta_plan -> parts (topo-sorted) -> steps -> implement -> test -> retry -> adjust
+    """
+    task_id = str(uuid.uuid4())
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    reasoning_config = router.resolve("reasoning")
+    coding_config = router.resolve("coding")
+    stage_names = _resolve_stages(config)
+    orch_config = config.get("orchestrator", {})
+    max_retries = orch_config.get("max_retries_per_step")
+    if max_retries is None:
+        raise RuntimeError(
+            "Missing max_retries_per_step in [orchestrator] section of config.toml."
+        )
+
+    plan_budget = _resolve_budget(config, "reasoning")
+    impl_budget = _resolve_budget(config, "coding")
+
+    raw_conn = get_connection("raw", repo_path=repo_path)
+    session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
+
+    # Create temp dir for plan artifacts
+    tmp_dir = repo_path / ".clean_room" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    orch_run_id = insert_orchestrator_run(raw_conn, task_id, str(repo_path), task)
+    raw_conn.commit()
+
+    pass_results: list[PassResult] = []
+    step_final_outcomes: dict[str, bool] = {}  # step_key -> final success
+    cumulative_diff = ""
+    parts_completed = 0
+    steps_completed = 0
+    all_steps_count = 0
+    sequence_order = 0
+    status = "failed"
+
+    try:
+        # === META-PLAN PASS ===
+        sub_task_id = f"{task_id}:meta_plan"
+        context = run_pipeline(
+            raw_task=task,
+            repo_path=repo_path,
+            stage_names=stage_names,
+            budget=plan_budget,
+            mode="plan",
+            task_id=sub_task_id,
+            config=config,
+        )
+
+        with LoggedLLMClient(reasoning_config) as llm:
+            meta_plan = execute_plan(
+                context, task, llm,
+                pass_type="meta_plan",
+            )
+            _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
+
+        # Get task_run_id for the meta_plan pass
+        tr_row = raw_conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
+        ).fetchone()
+        meta_task_run_id = tr_row["id"]
+
+        insert_orchestrator_pass(
+            raw_conn, orch_run_id, meta_task_run_id, "meta_plan", sequence_order,
+        )
+        raw_conn.commit()
+        sequence_order += 1
+
+        pass_results.append(PassResult(
+            pass_type="meta_plan", task_run_id=meta_task_run_id,
+            success=True, artifact=meta_plan,
+        ))
+
+        set_state(session_conn, "meta_plan", meta_plan.to_dict())
+
+        update_orchestrator_run(
+            raw_conn, orch_run_id,
+            total_parts=len(meta_plan.parts),
+            status="running",
+        )
+        raw_conn.commit()
+
+        # === PART LOOP (topological order) ===
+        sorted_parts = _topological_sort(
+            meta_plan.parts, lambda p: p.id, lambda p: p.depends_on,
+        )
+
+        for part in sorted_parts:
+            # --- PART-PLAN PASS ---
+            temp_plan_path = _write_temp_plan(part.affected_files, tmp_dir)
+            sub_task_id = f"{task_id}:part_plan:{part.id}"
+
+            try:
+                part_context = run_pipeline(
+                    raw_task=part.description,
+                    repo_path=repo_path,
+                    stage_names=stage_names,
+                    budget=plan_budget,
+                    mode="plan",
+                    task_id=sub_task_id,
+                    config=config,
+                    plan_artifact_path=temp_plan_path,
+                )
+
+                with LoggedLLMClient(reasoning_config) as llm:
+                    part_plan = execute_plan(
+                        part_context, part.description, llm,
+                        pass_type="part_plan",
+                        cumulative_diff=cumulative_diff or None,
+                    )
+                    _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
+
+                tr_row = raw_conn.execute(
+                    "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
+                ).fetchone()
+                part_task_run_id = tr_row["id"]
+
+                insert_orchestrator_pass(
+                    raw_conn, orch_run_id, part_task_run_id, "part_plan", sequence_order,
+                    part_id=part.id,
+                )
+                raw_conn.commit()
+                sequence_order += 1
+
+                pass_results.append(PassResult(
+                    pass_type="part_plan", task_run_id=part_task_run_id,
+                    success=True, artifact=part_plan,
+                ))
+
+                set_state(session_conn, f"part_plan:{part.id}", part_plan.to_dict())
+                all_steps_count += len(part_plan.steps)
+
+            except (ValueError, RuntimeError, OSError) as e:
+                logger.error("Part plan failed for %s: %s", part.id, e)
+                pass_results.append(PassResult(
+                    pass_type="part_plan", task_run_id=None, success=False,
+                ))
+                continue
+
+            # --- STEP LOOP (within part) ---
+            sorted_steps = _topological_sort(
+                part_plan.steps, lambda s: s.id, lambda s: s.depends_on,
+            )
+
+            # Use index-based iteration so adjustment can splice revised
+            # steps into the remaining portion of the list (T25).
+            step_idx = 0
+            while step_idx < len(sorted_steps):
+                step = sorted_steps[step_idx]
+                step_success = False
+                step_result = None
+                validation = None
+                attempt_num = 0
+
+                for attempt in range(max_retries + 1):
+                    attempt_num = attempt + 1
+
+                    # IMPLEMENT
+                    suffix = f":retry_{attempt}" if attempt > 0 else ""
+                    sub_task_id = f"{task_id}:impl:{part.id}:{step.id}{suffix}"
+                    temp_plan_path = _write_temp_plan(step.target_files, tmp_dir)
+
+                    try:
+                        impl_context = run_pipeline(
+                            raw_task=step.description,
+                            repo_path=repo_path,
+                            stage_names=stage_names,
+                            budget=impl_budget,
+                            mode="implement",
+                            task_id=sub_task_id,
+                            config=config,
+                            plan_artifact_path=temp_plan_path,
+                        )
+
+                        with LoggedLLMClient(coding_config) as impl_llm:
+                            step_result = execute_implement(
+                                impl_context, step, impl_llm,
+                                plan=part_plan,
+                                cumulative_diff=cumulative_diff or None,
+                                failure_context=validation,
+                            )
+                            impl_pt, impl_ct, impl_ms = _flush_llm_calls(
+                                impl_llm, raw_conn, sub_task_id,
+                                "execute_implement", "execute_implement",
+                            )
+
+                        tr_row = raw_conn.execute(
+                            "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
+                        ).fetchone()
+                        impl_task_run_id = tr_row["id"]
+
+                        # Log run_attempt with actual token counts (T40) and
+                        # patch_applied=False; updated after apply succeeds (T27).
+                        attempt_id = insert_run_attempt(
+                            raw_conn, impl_task_run_id, attempt_num,
+                            impl_pt, impl_ct, impl_ms,
+                            step_result.raw_response,
+                            False,
+                        )
+                        raw_conn.commit()
+
+                        insert_orchestrator_pass(
+                            raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
+                            part_id=part.id, step_id=step.id,
+                        )
+                        raw_conn.commit()
+                        sequence_order += 1
+
+                        if not step_result.success:
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=impl_task_run_id,
+                                success=False, artifact=step_result,
+                            ))
+                            continue
+
+                        # APPLY EDITS
+                        patch_result = apply_edits(step_result.edits, repo_path)
+                        if not patch_result.success:
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=impl_task_run_id,
+                                success=False, artifact=step_result,
+                            ))
+                            continue
+
+                        # Patch actually applied — update the DB record (T27)
+                        update_run_attempt_patch(raw_conn, attempt_id, True)
+                        raw_conn.commit()
+
+                        # TEST
+                        validation = run_validation(repo_path, config, raw_conn, attempt_id)
+
+                        if validation.success:
+                            step_success = True
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=impl_task_run_id,
+                                success=True, artifact=step_result,
+                            ))
+                            break
+                        else:
+                            # Rollback for retry
+                            rollback_edits(patch_result, repo_path)
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=impl_task_run_id,
+                                success=False, artifact=step_result,
+                            ))
+
+                    except (ValueError, RuntimeError, OSError) as e:
+                        logger.error("Step implement failed for %s:%s: %s", part.id, step.id, e)
+                        pass_results.append(PassResult(
+                            pass_type="step_implement", task_run_id=None, success=False,
+                        ))
+                        break
+
+                # Track final outcome for this step
+                step_key = f"{part.id}:{step.id}"
+                step_final_outcomes[step_key] = step_success
+
+                # Update state
+                if step_success and step_result:
+                    diff_text = ""
+                    for edit in step_result.edits:
+                        diff_text += f"--- {edit.file_path}\n"
+                        diff_text += f"-{edit.search}\n"
+                        diff_text += f"+{edit.replacement}\n"
+                    cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                    set_state(session_conn, f"step_result:{part.id}:{step.id}", {
+                        "success": True, "edits_count": len(step_result.edits),
+                    })
+
+                    # Only count successfully completed steps (T26)
+                    steps_completed += 1
+
+                # ADJUSTMENT PASS (after every step)
+                try:
+                    adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
+                    remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
+                    adj_context = run_pipeline(
+                        raw_task=remaining_desc,
+                        repo_path=repo_path,
+                        stage_names=stage_names,
+                        budget=plan_budget,
+                        mode="plan",
+                        task_id=adj_sub_task_id,
+                        config=config,
+                    )
+
+                    with LoggedLLMClient(reasoning_config) as adj_llm:
+                        adjustment = execute_plan(
+                            adj_context, remaining_desc, adj_llm,
+                            pass_type="adjustment",
+                            prior_results=[step_result] if step_result else None,
+                            test_results=[validation] if validation else None,
+                            cumulative_diff=cumulative_diff or None,
+                        )
+                        _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
+
+                    tr_row = raw_conn.execute(
+                        "SELECT id FROM task_runs WHERE task_id = ?", (adj_sub_task_id,)
+                    ).fetchone()
+                    adj_task_run_id = tr_row["id"]
+
+                    insert_orchestrator_pass(
+                        raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
+                        part_id=part.id, step_id=step.id,
+                    )
+                    raw_conn.commit()
+                    sequence_order += 1
+
+                    set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", adjustment.to_dict())
+
+                    # Replace remaining steps with revised ones (T25).
+                    # Safe because we use index-based iteration.
+                    if adjustment.revised_steps:
+                        sorted_steps[step_idx + 1:] = adjustment.revised_steps
+
+                    pass_results.append(PassResult(
+                        pass_type="adjustment", task_run_id=adj_task_run_id,
+                        success=True, artifact=adjustment,
+                    ))
+
+                except (ValueError, RuntimeError, OSError) as e:
+                    logger.warning("Adjustment pass failed for %s:after_%s: %s", part.id, step.id, e)
+                    pass_results.append(PassResult(
+                        pass_type="adjustment", success=False,
+                    ))
+
+                step_idx += 1
+
+            parts_completed += 1
+
+        # Determine final status from per-step final outcomes (not individual attempts)
+        if not step_final_outcomes:
+            status = "failed"
+        elif all(step_final_outcomes.values()):
+            status = "complete"
+        elif any(step_final_outcomes.values()):
+            status = "partial"
+        else:
+            status = "failed"
+
+    except (ValueError, RuntimeError, OSError) as e:
+        logger.error("Orchestrator failed: %s", e)
+        status = "failed"
+
+    finally:
+        # Update orchestrator run
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            update_orchestrator_run(
+                raw_conn, orch_run_id,
+                total_steps=all_steps_count,
+                parts_completed=parts_completed,
+                steps_completed=steps_completed,
+                status=status,
+                completed_at=now,
+            )
+            raw_conn.commit()
+        except Exception as e:
+            logger.warning("Failed to update orchestrator run: %s", e)
+
+        set_state(session_conn, "cumulative_diff", cumulative_diff)
+        set_state(session_conn, "orchestrator_progress", {
+            "parts_completed": parts_completed,
+            "steps_completed": steps_completed,
+            "status": status,
+        })
+
+        session_conn.close()
+
+        # Archive session DB to raw, then delete the file (T41)
+        session_file = _db_path(repo_path, "session", task_id)
+        if session_file.exists():
+            try:
+                session_blob = session_file.read_bytes()
+                insert_session_archive(raw_conn, task_id, session_blob)
+                raw_conn.commit()
+                session_file.unlink()
+                logger.debug("Archived and removed session DB for task %s", task_id)
+            except Exception as archive_err:
+                logger.warning("Failed to archive session DB: %s", archive_err)
+
+        raw_conn.close()
+
+        # Cleanup temp files
+        try:
+            for f in tmp_dir.glob("plan_*.json"):
+                f.unlink()
+        except Exception:
+            pass
+
+    return OrchestratorResult(
+        task_id=task_id,
+        status=status,
+        parts_completed=parts_completed,
+        steps_completed=steps_completed,
+        cumulative_diff=cumulative_diff,
+        pass_results=pass_results,
+    )
+
+
+def run_single_pass(
+    task: str,
+    repo_path: Path,
+    config: dict,
+    *,
+    plan_path: Path,
+) -> OrchestratorResult:
+    """Run a single atomic implement pass from a pre-computed plan.
+
+    No orchestrator_run/passes records — just task_run + run_attempt + validation.
+    """
+    task_id = str(uuid.uuid4())
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    coding_config = router.resolve("coding")
+    stage_names = _resolve_stages(config)
+    impl_budget = _resolve_budget(config, "coding")
+    orch_config = config.get("orchestrator", {})
+    max_retries = orch_config.get("max_retries_per_step")
+    if max_retries is None:
+        raise RuntimeError(
+            "Missing max_retries_per_step in [orchestrator] section of config.toml."
+        )
+
+    # Load plan artifact
+    plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+    artifact = PlanArtifact.from_dict(plan_data)
+
+    # Create a synthetic step from the plan
+    target_files = [f["path"] if isinstance(f, dict) else f for f in artifact.affected_files]
+    step = PlanStep(
+        id="single_pass",
+        description=artifact.task_summary,
+        target_files=target_files,
+    )
+
+    raw_conn = get_connection("raw", repo_path=repo_path)
+    pass_results: list[PassResult] = []
+    cumulative_diff = ""
+    last_validation = None
+
+    try:
+        for attempt in range(max_retries + 1):
+            suffix = f":retry_{attempt}" if attempt > 0 else ""
+            sub_task_id = f"{task_id}:impl{suffix}"
+
+            context = run_pipeline(
+                raw_task=task,
+                repo_path=repo_path,
+                stage_names=stage_names,
+                budget=impl_budget,
+                mode="implement",
+                task_id=sub_task_id,
+                config=config,
+                plan_artifact_path=plan_path,
+            )
+
+            with LoggedLLMClient(coding_config) as impl_llm:
+                step_result = execute_implement(
+                    context, step, impl_llm,
+                    failure_context=last_validation,
+                )
+                impl_pt, impl_ct, impl_ms = _flush_llm_calls(
+                    impl_llm, raw_conn, sub_task_id,
+                    "execute_implement", "execute_implement",
+                )
+
+            tr_row = raw_conn.execute(
+                "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
+            ).fetchone()
+            impl_task_run_id = tr_row["id"]
+
+            # Log run_attempt with actual token counts (T40) and
+            # patch_applied=False; updated after apply succeeds (T27).
+            attempt_id = insert_run_attempt(
+                raw_conn, impl_task_run_id, attempt + 1,
+                impl_pt, impl_ct, impl_ms,
+                step_result.raw_response,
+                False,
+            )
+            raw_conn.commit()
+
+            if not step_result.success:
+                pass_results.append(PassResult(
+                    pass_type="step_implement", task_run_id=impl_task_run_id,
+                    success=False, artifact=step_result,
+                ))
+                continue
+
+            patch_result = apply_edits(step_result.edits, repo_path)
+            if not patch_result.success:
+                pass_results.append(PassResult(
+                    pass_type="step_implement", task_run_id=impl_task_run_id,
+                    success=False, artifact=step_result,
+                ))
+                continue
+
+            # Patch actually applied — update the DB record (T27)
+            update_run_attempt_patch(raw_conn, attempt_id, True)
+            raw_conn.commit()
+
+            last_validation = run_validation(repo_path, config, raw_conn, attempt_id)
+
+            if last_validation.success:
+                diff_text = ""
+                for edit in step_result.edits:
+                    diff_text += f"--- {edit.file_path}\n-{edit.search}\n+{edit.replacement}\n"
+                cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                pass_results.append(PassResult(
+                    pass_type="step_implement", task_run_id=impl_task_run_id,
+                    success=True, artifact=step_result,
+                ))
+                return OrchestratorResult(
+                    task_id=task_id,
+                    status="complete",
+                    parts_completed=1,
+                    steps_completed=1,
+                    cumulative_diff=cumulative_diff,
+                    pass_results=pass_results,
+                )
+            else:
+                rollback_edits(patch_result, repo_path)
+                pass_results.append(PassResult(
+                    pass_type="step_implement", task_run_id=impl_task_run_id,
+                    success=False, artifact=step_result,
+                ))
+
+    finally:
+        raw_conn.close()
+
+    return OrchestratorResult(
+        task_id=task_id,
+        status="failed",
+        cumulative_diff=cumulative_diff,
+        pass_results=pass_results,
+    )
