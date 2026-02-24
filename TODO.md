@@ -250,10 +250,10 @@ context_window) or a dict with `model` and optional `context_window`.
 
 ---
 
-## ~~Test Gaps — Phase 1/2 (from prior review)~~ — COVERED (27 tests added)
+## ~~Test Gaps — Phase 1/2 (from prior review)~~ — COVERED (40 tests added)
 
 **Critical — tests that miss code paths:**
-- `enrich_repository()` has zero test coverage — deferred (requires live LLM + full DB setup)
+- ~~`enrich_repository()` has zero test coverage~~ — added (2 tests: no-indexed-repo raises, skips-already-enriched)
 
 **Missing public API tests:**
 - ~~`get_file_by_id`, `get_symbol_by_id` — no direct test~~ — added (4 tests)
@@ -265,10 +265,10 @@ context_window) or a dict with `model` and optional `context_window`.
 
 **Missing error path tests:**
 - ~~`ModelRouter.resolve("reasoning")` when reasoning not configured~~ — added
-- `enrich_repository()` with no indexed repo — deferred (requires live LLM)
+- ~~`enrich_repository()` with no indexed repo~~ — added (mock-based, no live LLM needed)
 - ~~`_check_git_available` when git is not on PATH~~ — added (2 tests)
 - ~~`extract_git_history` with non-zero returncode~~ — added
-- `LLMClient.complete()` with HTTP error / large system prompt triggering R3 rejection — deferred (requires mock HTTP server)
+- ~~`LLMClient.complete()` with HTTP error / large system prompt triggering R3 rejection~~ — added (6 tests: HTTP 500, connect error, timeout, large system prompt, ModelConfig validation)
 
 **Missing integration tests:**
 - ~~CLI `index`, `enrich` help~~ — added (2 tests)
@@ -277,10 +277,10 @@ context_window) or a dict with `model` and optional `context_window`.
 
 **Missing edge case tests:**
 - ~~`_resolve_ts_js_baseurl` entirely untested~~ — added (3 tests: no tsconfig, baseUrl+paths, baseUrl only)
-- `expand_scope` with `seed_symbol_ids` — deferred (complex setup)
+- ~~`expand_scope` with `seed_symbol_ids`~~ — added (3 tests: tier 1 placement, dedup with seed_files, nonexistent symbol)
 - ~~`judge_scope` / `classify_symbols` with LLM returning non-list JSON~~ — covered (invalid verdict test)
 - ~~`_refilter_files` when LLM returns non-list — fallback~~ — added
-- `Assembly with all symbols excluded / multiple detail levels` — deferred (integration)
+- ~~`Assembly with all symbols excluded / multiple detail levels`~~ — added (3 tests: all excluded, multiple files excluded, mixed)
 
 ---
 

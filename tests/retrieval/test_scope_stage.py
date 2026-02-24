@@ -123,6 +123,48 @@ class TestExpandScope:
         results = expand_scope(task, kb, repo_id)
         assert results == []  # no seeds, no expansion
 
+    def test_seed_symbol_ids_tier_1(self, populated_kb):
+        """seed_symbol_ids resolve to their containing files at tier 1."""
+        kb, repo_id, fids = populated_kb
+        # Insert a symbol into the utils file
+        sid = insert_symbol(kb._conn, fids["utils"], "helper_func", "function", 1, 5, "def helper_func():")
+        kb._conn.commit()
+
+        task = TaskQuery(
+            raw_task="use helper_func", task_id="t1", mode="plan", repo_id=repo_id,
+            seed_file_ids=[], seed_symbol_ids=[sid], keywords=[],
+        )
+        results = expand_scope(task, kb, repo_id)
+        tier1 = [sf for sf in results if sf.tier == 1]
+        assert len(tier1) == 1
+        assert tier1[0].file_id == fids["utils"]
+        assert tier1[0].reason == "contains seed symbol"
+
+    def test_seed_symbol_ids_dedup_with_seed_files(self, populated_kb):
+        """seed_symbol_ids in an already-seeded file don't create duplicates."""
+        kb, repo_id, fids = populated_kb
+        sid = insert_symbol(kb._conn, fids["auth"], "login", "function", 3, 5, "def login():")
+        kb._conn.commit()
+
+        task = TaskQuery(
+            raw_task="fix login", task_id="t1", mode="plan", repo_id=repo_id,
+            seed_file_ids=[fids["auth"]], seed_symbol_ids=[sid], keywords=[],
+        )
+        results = expand_scope(task, kb, repo_id)
+        auth_entries = [sf for sf in results if sf.file_id == fids["auth"]]
+        assert len(auth_entries) == 1  # deduped: seed_file wins (added first)
+        assert auth_entries[0].reason == "seed file"  # first wins
+
+    def test_seed_symbol_ids_nonexistent_symbol(self, populated_kb):
+        """Nonexistent symbol IDs are silently skipped."""
+        kb, repo_id, fids = populated_kb
+        task = TaskQuery(
+            raw_task="use something", task_id="t1", mode="plan", repo_id=repo_id,
+            seed_file_ids=[], seed_symbol_ids=[9999], keywords=[],
+        )
+        results = expand_scope(task, kb, repo_id)
+        assert results == []
+
     def test_tier_4_metadata_match(self, populated_kb):
         kb, repo_id, fids = populated_kb
         # Add metadata

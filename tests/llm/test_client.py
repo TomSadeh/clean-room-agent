@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from clean_room_agent.llm.client import LLMClient, LLMResponse, LoggedLLMClient, ModelConfig
@@ -169,6 +170,62 @@ class TestLLMClient:
             result = client.complete("short prompt")
         assert result.text == "ok"
         client.close()
+
+    def test_http_status_error_propagates(self):
+        """HTTP 500 error propagates as httpx.HTTPStatusError."""
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        client = LLMClient(config)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server Error", request=MagicMock(), response=MagicMock(status_code=500),
+        )
+
+        with patch.object(client._http, "post", return_value=mock_response):
+            with pytest.raises(httpx.HTTPStatusError, match="Server Error"):
+                client.complete("test")
+        client.close()
+
+    def test_connect_error_propagates(self):
+        """Connection refused propagates as httpx.ConnectError."""
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        client = LLMClient(config)
+
+        with patch.object(client._http, "post", side_effect=httpx.ConnectError("Connection refused")):
+            with pytest.raises(httpx.ConnectError, match="Connection refused"):
+                client.complete("test")
+        client.close()
+
+    def test_timeout_error_propagates(self):
+        """Timeout propagates as httpx.TimeoutException."""
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        client = LLMClient(config)
+
+        with patch.object(client._http, "post", side_effect=httpx.TimeoutException("Timed out")):
+            with pytest.raises(httpx.TimeoutException, match="Timed out"):
+                client.complete("test")
+        client.close()
+
+    def test_oversized_system_prompt_raises(self):
+        """R3: large system prompt alone exceeding budget should raise ValueError."""
+        config = ModelConfig(
+            model="qwen3:4b", base_url="http://localhost:11434",
+            max_tokens=1024, context_window=2048,
+        )
+        client = LLMClient(config)
+        # available = 2048 - 1024 = 1024 tokens. System alone ~1667 tokens > 1024.
+        big_system = "x" * 5000
+        with pytest.raises(ValueError, match="Input too large"):
+            client.complete("short", system=big_system)
+        client.close()
+
+    def test_max_tokens_gte_context_window_raises(self):
+        """ModelConfig rejects max_tokens >= context_window."""
+        with pytest.raises(ValueError, match="max_tokens.*must be <"):
+            ModelConfig(
+                model="qwen3:4b", base_url="http://localhost:11434",
+                max_tokens=32768, context_window=32768,
+            )
 
 
 class TestLoggedLLMClient:

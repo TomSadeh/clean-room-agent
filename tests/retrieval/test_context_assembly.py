@@ -230,6 +230,91 @@ class TestAssembleContext:
         assert pkg.files[0].path == "src/auth.py"
 
 
+class TestAllSymbolsExcluded:
+    """Edge cases where all symbols are excluded or all files lack classifications."""
+
+    def test_all_symbols_excluded_produces_empty_context(self, task, source_files):
+        """All symbols marked 'excluded' → file not included (R2: default-deny)."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="excluded"),
+            ClassifiedSymbol(symbol_id=2, file_id=1, name="login",
+                             kind="function", start_line=3, end_line=5,
+                             detail_level="excluded"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        assert pkg.files == []
+        # Should appear in R2 exclusion decisions
+        decisions = pkg.metadata["assembly_decisions"]
+        excluded = [d for d in decisions if not d["included"]]
+        assert len(excluded) == 1
+        assert "R2" in excluded[0]["reason"]
+
+    def test_multiple_files_all_excluded(self, task, source_files):
+        """Multiple files with all symbols excluded → empty context, R2 warnings for each."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="excluded"),
+            ClassifiedSymbol(symbol_id=2, file_id=2, name="User",
+                             kind="class", start_line=1, end_line=3,
+                             detail_level="excluded"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        assert pkg.files == []
+        decisions = pkg.metadata["assembly_decisions"]
+        r2_exclusions = [d for d in decisions if not d["included"] and "R2" in d["reason"]]
+        assert len(r2_exclusions) == 2
+
+    def test_mixed_excluded_and_included(self, task, source_files):
+        """One file all-excluded, another has primary symbols → only second file in context."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=2, file_id=2, name="User",
+                             kind="class", start_line=1, end_line=3,
+                             detail_level="excluded"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        assert len(pkg.files) == 1
+        assert pkg.files[0].path == "src/auth.py"
+        # models.py should be R2-excluded (only excluded symbols)
+        decisions = pkg.metadata["assembly_decisions"]
+        r2_exclusions = [d for d in decisions if not d["included"] and "R2" in d["reason"]]
+        assert len(r2_exclusions) == 1
+        assert r2_exclusions[0]["file_id"] == 2
+
+
 class TestExtractSignatures:
     """R4: _extract_signatures uses parsed AST data from classified symbols."""
 

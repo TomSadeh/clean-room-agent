@@ -1,5 +1,8 @@
 """Tests for llm/enrichment.py."""
 
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from clean_room_agent.db.connection import get_connection
@@ -9,7 +12,11 @@ from clean_room_agent.db.queries import (
     upsert_file,
     upsert_repo,
 )
-from clean_room_agent.llm.enrichment import _build_prompt, _parse_enrichment_response
+from clean_room_agent.llm.enrichment import (
+    _build_prompt,
+    _parse_enrichment_response,
+    enrich_repository,
+)
 
 
 class TestParseEnrichmentResponse:
@@ -111,3 +118,67 @@ class TestBuildPrompt:
         assert "File: missing.py" in prompt
         assert "Source preview" not in prompt
         conn.close()
+
+
+class TestEnrichRepository:
+    """Tests for enrich_repository orchestration logic."""
+
+    def test_no_indexed_repo_raises(self, tmp_path):
+        """enrich_repository raises RuntimeError when no repo is indexed."""
+        mock_curated_conn = MagicMock()
+        mock_curated_conn.execute.return_value.fetchone.return_value = None
+        mock_raw_conn = MagicMock()
+
+        def mock_get_conn(role, *, repo_path, read_only=False):
+            if role == "curated":
+                return mock_curated_conn
+            return mock_raw_conn
+
+        models_config = {
+            "provider": "ollama",
+            "reasoning": "qwen3:4b",
+            "base_url": "http://localhost:11434",
+            "context_window": 32768,
+        }
+
+        with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
+            with patch("clean_room_agent.llm.enrichment.LLMClient"):
+                with pytest.raises(RuntimeError, match="No indexed repo.*Run 'cra index' first"):
+                    enrich_repository(tmp_path, models_config)
+
+    def test_skips_already_enriched_files(self, tmp_path):
+        """enrich_repository skips files that already have enrichment_outputs."""
+        # curated_conn.execute() is called twice:
+        #   1. SELECT id FROM repos → fetchone → {"id": 1}
+        #   2. SELECT * FROM files  → fetchall → [file row]
+        repo_result = MagicMock()
+        repo_result.fetchone.return_value = {"id": 1}
+        files_result = MagicMock()
+        files_result.fetchall.return_value = [
+            {"id": 10, "path": "src/main.py", "repo_id": 1},
+        ]
+        mock_curated_conn = MagicMock()
+        mock_curated_conn.execute.side_effect = [repo_result, files_result]
+
+        # raw_conn.execute() checks for existing enrichment → found
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 99}
+
+        def mock_get_conn(role, *, repo_path, read_only=False):
+            if role == "curated":
+                return mock_curated_conn
+            return mock_raw_conn
+
+        models_config = {
+            "provider": "ollama",
+            "reasoning": "qwen3:4b",
+            "base_url": "http://localhost:11434",
+            "context_window": 32768,
+        }
+
+        with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
+            with patch("clean_room_agent.llm.enrichment.LLMClient"):
+                result = enrich_repository(tmp_path, models_config)
+
+        assert result.files_skipped == 1
+        assert result.files_enriched == 0
