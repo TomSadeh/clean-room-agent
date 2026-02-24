@@ -123,6 +123,24 @@ class TestContextPackage:
         text = pkg.to_prompt_text()
         assert "task" in text
 
+    def test_with_environment_brief(self):
+        tq = TaskQuery(raw_task="fix bug", task_id="t1", mode="plan", repo_id=1)
+        pkg = ContextPackage(
+            task=tq,
+            environment_brief="<environment>\nOS: Windows\n</environment>",
+        )
+        text = pkg.to_prompt_text()
+        # Brief should appear before the task
+        env_pos = text.index("<environment>")
+        task_pos = text.index("# Task")
+        assert env_pos < task_pos
+
+    def test_without_environment_brief(self):
+        tq = TaskQuery(raw_task="fix bug", task_id="t1", mode="plan", repo_id=1)
+        pkg = ContextPackage(task=tq, environment_brief="")
+        text = pkg.to_prompt_text()
+        assert text.startswith("# Task")
+
 
 class TestRefinementRequest:
     def test_construction(self):

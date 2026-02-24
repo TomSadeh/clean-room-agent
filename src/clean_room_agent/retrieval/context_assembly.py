@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _DETAIL_PRIORITY = {"primary": 0, "supporting": 1, "type_context": 2}
 
 REFILTER_SYSTEM = (
-    "You are a context budget optimizer. Given a list of files with their sizes and "
+    "You are Jane, a context budget optimizer. Given a list of files with their sizes and "
     "detail levels, select the subset that fits within the given token budget. "
     "Prioritize primary files, then supporting, then type_context. "
     "Respond with a JSON array of file paths to KEEP: [\"path1.py\", \"path2.py\"]. "

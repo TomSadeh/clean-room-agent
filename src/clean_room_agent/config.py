@@ -67,5 +67,28 @@ def create_default_config(repo_path: Path) -> Path:
         '[orchestrator]\n'
         'max_retries_per_step = 1\n'
         '# max_adjustment_rounds = 1\n'
+        '\n'
+        '[environment]\n'
+        'coding_style = "development"  # options: development, maintenance, prototyping\n'
     )
     return config_path
+
+
+def require_environment_config(config: dict | None) -> dict:
+    """Extract [environment] section with safe defaults.
+
+    Unlike [models], the [environment] section is optional.
+    Returns defaults if absent.
+    """
+    from clean_room_agent.environment import CODING_STYLES
+
+    if config is None:
+        return {"coding_style": "development"}
+    section = config.get("environment", {})
+    coding_style = section.get("coding_style", "development")
+    if coding_style not in CODING_STYLES:
+        raise ValueError(
+            f"Unknown coding_style {coding_style!r} in [environment] config. "
+            f"Valid options: {', '.join(sorted(CODING_STYLES))}"
+        )
+    return {"coding_style": coding_style}

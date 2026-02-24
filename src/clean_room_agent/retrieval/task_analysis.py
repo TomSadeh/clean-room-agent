@@ -27,7 +27,7 @@ STOP_WORDS = frozenset({
 })
 
 TASK_ANALYSIS_SYSTEM = (
-    "You are a code task analyzer. Given a task description and extracted signals, "
+    "You are Jane, a code task analyzer. Given a task description and extracted signals, "
     "produce a concise 1-2 sentence intent summary that captures the core goal. "
     "Focus on what needs to change and why. Respond with ONLY the summary text, "
     "no formatting or labels."
@@ -138,15 +138,31 @@ def enrich_task_intent(
     raw_task: str,
     signals: dict,
     llm: LLMClient,
+    repo_file_tree: str = "",
+    environment_brief: str = "",
 ) -> str:
-    """Use LLM to produce an intent summary from the task and extracted signals."""
+    """Use LLM to produce an intent summary from the task and extracted signals.
+
+    When repo_file_tree and environment_brief are provided, this becomes the
+    bird's-eye-view prompt: the model sees the whole repo layout alongside the
+    task, enabling strategic decisions about where to look.
+    """
     signal_text = (
         f"Extracted files: {signals.get('files', [])}\n"
         f"Extracted symbols: {signals.get('symbols', [])}\n"
         f"Task type: {signals.get('task_type', 'unknown')}\n"
         f"Keywords: {signals.get('keywords', [])}"
     )
-    prompt = f"Task: {raw_task}\n\n{signal_text}"
+
+    parts = []
+    if environment_brief:
+        parts.append(environment_brief)
+    parts.append(f"Task: {raw_task}")
+    parts.append(signal_text)
+    if repo_file_tree:
+        parts.append(f"<repo_structure>\n{repo_file_tree}\n</repo_structure>")
+    prompt = "\n\n".join(parts)
+
     try:
         response = llm.complete(prompt, system=TASK_ANALYSIS_SYSTEM)
     except ValueError as e:
@@ -164,11 +180,17 @@ def analyze_task(
     kb: KnowledgeBase,
     repo_id: int,
     llm: LLMClient,
+    repo_file_tree: str = "",
+    environment_brief: str = "",
 ) -> TaskQuery:
     """Full task analysis: extract signals, resolve seeds, enrich intent."""
     signals = extract_task_signals(raw_task)
     file_ids, symbol_ids = resolve_seeds(signals, kb, repo_id)
-    intent = enrich_task_intent(raw_task, signals, llm)
+    intent = enrich_task_intent(
+        raw_task, signals, llm,
+        repo_file_tree=repo_file_tree,
+        environment_brief=environment_brief,
+    )
 
     return TaskQuery(
         raw_task=raw_task,

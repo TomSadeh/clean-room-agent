@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from clean_room_agent.llm.client import LLMClient, LLMResponse, LoggedLLMClient, ModelConfig
+from clean_room_agent.llm.client import (
+    EnvironmentLLMClient, LLMClient, LLMResponse, LoggedLLMClient, ModelConfig,
+    strip_thinking,
+)
 
 
 class TestModelConfig:
@@ -26,14 +29,40 @@ class TestModelConfig:
 
 class TestLLMResponse:
     def test_fields(self):
-        resp = LLMResponse(text="hello", prompt_tokens=10, completion_tokens=5, latency_ms=100)
+        resp = LLMResponse(text="hello", thinking=None, prompt_tokens=10, completion_tokens=5, latency_ms=100)
         assert resp.text == "hello"
         assert resp.prompt_tokens == 10
 
     def test_tokens_can_be_none(self):
-        resp = LLMResponse(text="hello", prompt_tokens=None, completion_tokens=None, latency_ms=50)
+        resp = LLMResponse(text="hello", thinking=None, prompt_tokens=None, completion_tokens=None, latency_ms=50)
         assert resp.prompt_tokens is None
         assert resp.completion_tokens is None
+
+
+class TestStripThinking:
+    def test_strips_thinking_block(self):
+        raw = "<think>I need to plan this carefully.</think>\n{\"result\": true}"
+        clean, thinking = strip_thinking(raw)
+        assert clean == '{"result": true}'
+        assert thinking == "I need to plan this carefully."
+
+    def test_no_thinking_block(self):
+        raw = '{"result": true}'
+        clean, thinking = strip_thinking(raw)
+        assert clean == '{"result": true}'
+        assert thinking is None
+
+    def test_multiline_thinking(self):
+        raw = "<think>\nLine 1\nLine 2\nLine 3\n</think>\nclean output"
+        clean, thinking = strip_thinking(raw)
+        assert clean == "clean output"
+        assert "Line 1" in thinking
+        assert "Line 3" in thinking
+
+    def test_whitespace_after_close_tag_stripped(self):
+        raw = "<think>thought</think>   \n  response"
+        clean, thinking = strip_thinking(raw)
+        assert clean == "response"
 
 
 class TestLLMClient:
@@ -55,7 +84,7 @@ class TestLLMClient:
     def test_complete_sends_correct_payload(self):
         config = ModelConfig(
             model="qwen3:4b", base_url="http://localhost:11434",
-            temperature=0.3, max_tokens=1024,
+            temperature=0.3, max_tokens=1024, context_window=32768,
         )
         client = LLMClient(config)
 
@@ -78,12 +107,36 @@ class TestLLMClient:
         assert payload["system"] == "Be helpful"
         assert payload["stream"] is False
         assert payload["options"]["temperature"] == 0.3
-        assert payload["options"]["num_predict"] == 1024
+        # num_predict is dynamic: context_window - input_estimate - margin
+        # "test prompt" + "Be helpful" = 21 chars -> ~7 tokens at chars/3
+        # num_predict = 32768 - 7 - 256 = 32505
+        assert payload["options"]["num_predict"] > 1024  # not the fixed max_tokens
+        assert payload["options"]["num_predict"] < config.context_window
 
         assert result.text == "Hello world"
+        assert result.thinking is None
         assert result.prompt_tokens == 15
         assert result.completion_tokens == 8
         assert result.latency_ms >= 0
+        client.close()
+
+    def test_complete_strips_thinking_from_response(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        client = LLMClient(config)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "response": "<think>Let me reason about this.</think>\n{\"answer\": 42}",
+            "prompt_eval_count": 10,
+            "eval_count": 30,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._http, "post", return_value=mock_response):
+            result = client.complete("test")
+
+        assert result.text == '{"answer": 42}'
+        assert result.thinking == "Let me reason about this."
         client.close()
 
     def test_complete_without_system_omits_key(self):
@@ -295,6 +348,37 @@ class TestLoggedLLMClient:
             assert client.config.model == "qwen3:4b"
         assert client._client._http.is_closed
 
+    def test_thinking_logged_separately(self):
+        """Thinking content is logged for traceability."""
+        client = self._make_logged_client()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "response": "<think>reasoning here</think>\nclean answer",
+            "prompt_eval_count": 10,
+            "eval_count": 20,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client._http, "post", return_value=mock_response):
+            result = client.complete("test")
+
+        assert result.text == "clean answer"
+        assert result.thinking == "reasoning here"
+        call = client.calls[0]
+        assert call["response"] == "clean answer"
+        assert call["thinking"] == "reasoning here"
+        client.close()
+
+    def test_no_thinking_omits_key(self):
+        """When no thinking block, 'thinking' key is absent from logged call."""
+        client = self._make_logged_client()
+        with self._mock_http_response(client, "plain answer"):
+            client.complete("test")
+
+        call = client.calls[0]
+        assert "thinking" not in call
+        client.close()
+
     def test_config_passthrough(self):
         config = ModelConfig(
             model="qwen3:4b", base_url="http://localhost:11434",
@@ -305,3 +389,72 @@ class TestLoggedLLMClient:
         assert client.config.temperature == 0.5
         assert client.config.max_tokens == 2048
         client.close()
+
+
+class TestEnvironmentLLMClient:
+    """Tests for EnvironmentLLMClient wrapper that auto-prepends environment brief."""
+
+    def _make_inner(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        return LoggedLLMClient(config)
+
+    def _mock_http(self, inner, text="ok"):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "response": text,
+            "prompt_eval_count": 10,
+            "eval_count": 5,
+        }
+        mock_response.raise_for_status = MagicMock()
+        return patch.object(inner._client._http, "post", return_value=mock_response)
+
+    def test_prepends_brief_to_prompt(self):
+        inner = self._make_inner()
+        env_client = EnvironmentLLMClient(inner, "<environment>\nOS: Linux\n</environment>")
+
+        with self._mock_http(inner):
+            env_client.complete("do the thing", system="be helpful")
+
+        # The logged call should contain the brief prepended to the prompt
+        assert len(inner.calls) == 1
+        logged_prompt = inner.calls[0]["prompt"]
+        assert logged_prompt.startswith("<environment>")
+        assert "do the thing" in logged_prompt
+
+    def test_empty_brief_passes_through(self):
+        inner = self._make_inner()
+        env_client = EnvironmentLLMClient(inner, "")
+
+        with self._mock_http(inner):
+            env_client.complete("just the prompt")
+
+        logged_prompt = inner.calls[0]["prompt"]
+        assert logged_prompt == "just the prompt"
+
+    def test_config_passthrough(self):
+        inner = self._make_inner()
+        env_client = EnvironmentLLMClient(inner, "brief")
+        assert env_client.config.model == "qwen3:4b"
+
+    def test_flush_delegates(self):
+        inner = self._make_inner()
+        env_client = EnvironmentLLMClient(inner, "brief")
+
+        with self._mock_http(inner):
+            env_client.complete("test")
+
+        flushed = env_client.flush()
+        assert len(flushed) == 1
+        assert len(inner.calls) == 0  # flushed from inner
+
+    def test_close_delegates(self):
+        inner = self._make_inner()
+        env_client = EnvironmentLLMClient(inner, "brief")
+        env_client.close()
+        assert inner._client._http.is_closed
+
+    def test_context_manager(self):
+        inner = self._make_inner()
+        with EnvironmentLLMClient(inner, "brief") as env_client:
+            assert env_client.config.model == "qwen3:4b"
+        assert inner._client._http.is_closed

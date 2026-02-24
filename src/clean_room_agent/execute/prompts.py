@@ -16,7 +16,7 @@ from clean_room_agent.token_estimation import CHARS_PER_TOKEN_CONSERVATIVE
 # -- System prompt constants --
 
 META_PLAN_SYSTEM = (
-    "You are a task decomposition planner. Given a codebase context and task description, "
+    "You are Jane, a task decomposition planner. Given a codebase context and task description, "
     "decompose the task into independent parts that can be implemented sequentially.\n\n"
     "Output a JSON object with exactly these fields:\n"
     "- task_summary: string — concise summary of the task\n"
@@ -34,7 +34,7 @@ META_PLAN_SYSTEM = (
 )
 
 PART_PLAN_SYSTEM = (
-    "You are a detailed step planner. Given a codebase context and a specific part description, "
+    "You are Jane, a detailed step planner. Given a codebase context and a specific part description, "
     "break the part into small implementation steps.\n\n"
     "Output a JSON object with exactly these fields:\n"
     "- part_id: string — the ID of the part being planned\n"
@@ -54,7 +54,7 @@ PART_PLAN_SYSTEM = (
 )
 
 ADJUSTMENT_SYSTEM = (
-    "You are a plan reviewer. Given test results and prior changes, revise the remaining "
+    "You are Jane, a plan reviewer. Given test results and prior changes, revise the remaining "
     "implementation steps.\n\n"
     "Output a JSON object with exactly these fields:\n"
     "- revised_steps: array of step objects (same format as part plan steps)\n"
@@ -67,7 +67,7 @@ ADJUSTMENT_SYSTEM = (
 )
 
 IMPLEMENT_SYSTEM = (
-    "You are a code editor. Given a codebase context and a specific step to implement, "
+    "You are Jane, a code editor. Given a codebase context and a specific step to implement, "
     "produce search/replace edits.\n\n"
     "Output one or more edit blocks in this exact format:\n"
     "<edit file=\"path/to/file.py\">\n"
@@ -79,6 +79,47 @@ IMPLEMENT_SYSTEM = (
     "- Make minimal changes — only modify what the step requires\n"
     "- All edits must be in one response\n"
     "- For deletions, use an empty <replacement></replacement>\n"
+    "- For new code insertion, use a search string that matches the insertion point context"
+)
+
+TEST_PLAN_SYSTEM = (
+    "You are Jane, a test planner. Given a codebase context and code changes, "
+    "plan test coverage for all changed and new functions/methods.\n\n"
+    "Output a JSON object with exactly these fields:\n"
+    "- part_id: string — the ID of the part being tested (e.g. \"p1_tests\")\n"
+    "- task_summary: string — concise summary of what tests will cover\n"
+    "- steps: array of objects, each with:\n"
+    "  - id: string — unique identifier (e.g. \"t1\", \"t2\")\n"
+    "  - description: string — what behavior to verify, what assertions to make\n"
+    "  - target_files: array of test file paths to create or modify\n"
+    "  - target_symbols: array of function/method names under test\n"
+    "  - depends_on: array of step IDs this step depends on\n"
+    "- rationale: string — why this test breakdown was chosen\n\n"
+    "Rules:\n"
+    "- Cover all changed and new functions/methods, not just happy paths\n"
+    "- Include edge cases and error paths\n"
+    "- Each step should test one logical behavior group\n"
+    "- Follow the project's existing test file naming conventions\n"
+    "- Do not include code — only describe what to test\n"
+    "- Output only valid JSON"
+)
+
+TEST_IMPLEMENT_SYSTEM = (
+    "You are Jane, a test code editor. Given a codebase context and a test step to implement, "
+    "produce search/replace edits that create or modify test code.\n\n"
+    "Output one or more edit blocks in this exact format:\n"
+    "<edit file=\"path/to/test_file.py\">\n"
+    "<search>\nexact text to find\n</search>\n"
+    "<replacement>\nnew text to replace it with\n</replacement>\n"
+    "</edit>\n\n"
+    "Rules:\n"
+    "- Search text must match the file content EXACTLY (including whitespace and indentation)\n"
+    "- Follow the project's existing test framework and conventions\n"
+    "- Import functions under test correctly\n"
+    "- Each test function should test one behavior\n"
+    "- All edits must be in one response\n"
+    "- For new test files, use an empty <search></search> is not allowed — "
+    "use a search string that matches the insertion point or create file content\n"
     "- For new code insertion, use a search string that matches the insertion point context"
 )
 
@@ -124,6 +165,8 @@ def build_plan_prompt(
         system = META_PLAN_SYSTEM
     elif pass_type == "part_plan":
         system = PART_PLAN_SYSTEM
+    elif pass_type == "test_plan":
+        system = TEST_PLAN_SYSTEM
     elif pass_type == "adjustment":
         system = ADJUSTMENT_SYSTEM
     else:
@@ -171,27 +214,21 @@ def build_plan_prompt(
     return system, user
 
 
-def build_implement_prompt(
+def _assemble_implement_user_prompt(
     context: ContextPackage,
     step: PlanStep,
     *,
-    model_config: ModelConfig,
+    step_header: str = "Step to Implement",
     plan: PartPlan | None = None,
     cumulative_diff: str | None = None,
     failure_context: ValidationResult | None = None,
-) -> tuple[str, str]:
-    """Build system and user prompts for an implement pass.
+) -> str:
+    """Assemble the user prompt for an implement-style pass.
 
-    Returns:
-        (system_prompt, user_prompt)
-
-    Raises:
-        ValueError: If prompt exceeds budget.
+    Shared by build_implement_prompt and build_test_implement_prompt.
     """
-    system = IMPLEMENT_SYSTEM
-
     parts = [context.to_prompt_text()]
-    parts.append(f"\n# Step to Implement\nID: {step.id}\n{step.description}\n")
+    parts.append(f"\n# {step_header}\nID: {step.id}\n{step.description}\n")
 
     if step.target_files:
         parts.append(f"Target files: {', '.join(step.target_files)}\n")
@@ -223,7 +260,65 @@ def build_implement_prompt(
         fail_section += "</test_failures>\n"
         parts.append(fail_section)
 
-    user = "".join(parts)
+    return "".join(parts)
+
+
+def build_implement_prompt(
+    context: ContextPackage,
+    step: PlanStep,
+    *,
+    model_config: ModelConfig,
+    plan: PartPlan | None = None,
+    cumulative_diff: str | None = None,
+    failure_context: ValidationResult | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for an implement pass.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If prompt exceeds budget.
+    """
+    system = IMPLEMENT_SYSTEM
+    user = _assemble_implement_user_prompt(
+        context, step,
+        plan=plan,
+        cumulative_diff=cumulative_diff,
+        failure_context=failure_context,
+    )
+
+    # R3: Budget validation
+    _validate_prompt_budget(system, user, model_config)
+
+    return system, user
+
+
+def build_test_implement_prompt(
+    context: ContextPackage,
+    step: PlanStep,
+    *,
+    model_config: ModelConfig,
+    test_plan: PartPlan | None = None,
+    cumulative_diff: str | None = None,
+    failure_context: ValidationResult | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for a test implement pass.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If prompt exceeds budget.
+    """
+    system = TEST_IMPLEMENT_SYSTEM
+    user = _assemble_implement_user_prompt(
+        context, step,
+        step_header="Test Step to Implement",
+        plan=test_plan,
+        cumulative_diff=cumulative_diff,
+        failure_context=failure_context,
+    )
 
     # R3: Budget validation
     _validate_prompt_budget(system, user, model_config)

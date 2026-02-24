@@ -17,7 +17,7 @@ MAX_CO_CHANGES = 20
 MAX_METADATA = 20
 
 SCOPE_JUDGMENT_SYSTEM = (
-    "You are a code retrieval judge. Given a task description and a list of candidate files, "
+    "You are Jane, a code retrieval judge. Given a task description and a list of candidate files, "
     "determine which files are relevant to the task. "
     "Respond with a JSON array of objects: [{\"path\": \"...\", \"verdict\": \"relevant\" or \"irrelevant\", \"reason\": \"...\"}]. "
     "Respond with ONLY the JSON array, no markdown fencing or extra text."

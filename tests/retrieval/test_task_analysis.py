@@ -182,6 +182,49 @@ class TestEnrichTaskIntent:
         assert result == "Fix the authentication bug in login handler"
         mock_llm.complete.assert_called_once()
 
+    def test_includes_repo_file_tree(self):
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "Intent summary"
+        mock_llm.complete.return_value = mock_response
+
+        signals = {"files": [], "symbols": [], "task_type": "feature", "keywords": []}
+        enrich_task_intent(
+            "add auth", signals, mock_llm,
+            repo_file_tree="src/\n  main.py\n  utils.py",
+        )
+        prompt_arg = mock_llm.complete.call_args[0][0]
+        assert "<repo_structure>" in prompt_arg
+        assert "main.py" in prompt_arg
+        assert "</repo_structure>" in prompt_arg
+
+    def test_includes_environment_brief(self):
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "Intent summary"
+        mock_llm.complete.return_value = mock_response
+
+        signals = {"files": [], "symbols": [], "task_type": "feature", "keywords": []}
+        enrich_task_intent(
+            "add auth", signals, mock_llm,
+            environment_brief="<environment>\nOS: Linux\n</environment>",
+        )
+        prompt_arg = mock_llm.complete.call_args[0][0]
+        assert "<environment>" in prompt_arg
+        assert "OS: Linux" in prompt_arg
+
+    def test_no_tree_no_brief_backward_compat(self):
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "Intent"
+        mock_llm.complete.return_value = mock_response
+
+        signals = {"files": [], "symbols": [], "task_type": "unknown", "keywords": []}
+        enrich_task_intent("do thing", signals, mock_llm)
+        prompt_arg = mock_llm.complete.call_args[0][0]
+        assert "<repo_structure>" not in prompt_arg
+        assert "<environment>" not in prompt_arg
+
 
 class TestAnalyzeTask:
     def test_full_pipeline(self):

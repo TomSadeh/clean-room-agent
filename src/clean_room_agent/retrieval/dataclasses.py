@@ -125,6 +125,7 @@ class ContextPackage:
     total_token_estimate: int = 0
     budget: BudgetConfig | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    environment_brief: str = ""
 
     def to_prompt_text(self) -> str:
         """Render the context package as prompt text for the execute stage.
@@ -133,6 +134,8 @@ class ContextPackage:
         content injection (code containing ``` would break markdown fences).
         """
         parts = []
+        if self.environment_brief:
+            parts.append(self.environment_brief)
         parts.append(f"# Task\n{self.task.raw_task}\n")
         if self.task.intent_summary:
             parts.append(f"# Intent\n{self.task.intent_summary}\n")

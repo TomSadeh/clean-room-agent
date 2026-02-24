@@ -12,7 +12,7 @@ from clean_room_agent.retrieval.utils import parse_json_response
 logger = logging.getLogger(__name__)
 
 PRECISION_SYSTEM = (
-    "You are a code precision analyst. Given a task description and a list of symbols, "
+    "You are Jane, a code precision analyst. Given a task description and a list of symbols, "
     "classify each symbol's relevance to the task. "
     "Detail levels:\n"
     "- primary: directly involved in the change\n"

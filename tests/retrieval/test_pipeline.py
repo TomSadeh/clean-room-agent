@@ -13,7 +13,7 @@ from clean_room_agent.db.queries import (
     upsert_repo,
 )
 from clean_room_agent.db.session_helpers import get_state, set_state
-from clean_room_agent.retrieval.dataclasses import BudgetConfig, RefinementRequest
+from clean_room_agent.retrieval.dataclasses import BudgetConfig, ContextPackage, RefinementRequest
 from clean_room_agent.retrieval.pipeline import run_pipeline, _resume_task_from_session
 
 
@@ -85,6 +85,8 @@ def _mock_llm_complete(prompt, system=None):
             {"name": "helper", "file_path": "src/main.py", "start_line": 4, "detail_level": "supporting", "reason": "context"},
             {"name": "format_output", "file_path": "src/utils.py", "start_line": 1, "detail_level": "type_context", "reason": "utility"},
         ])
+    elif system and "budget optimizer" in system.lower():
+        response.text = "Generic response"
     else:
         response.text = "Generic response"
     return response
@@ -287,6 +289,39 @@ class TestRunPipeline:
 
         assert package is not None
         assert len(package.files) >= 1
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_environment_brief_threaded(self, mock_llm_class, pipeline_repo):
+        """Environment brief flows through to ContextPackage and task analysis prompt."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        config = _make_config()
+        config["testing"] = {"test_command": "pytest tests/"}
+
+        package = run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id="test-env-brief-001",
+            config=config,
+        )
+
+        # Environment brief should be set on the package
+        assert package.environment_brief != ""
+        assert "<environment>" in package.environment_brief
+        assert "pytest" in package.environment_brief
+
+        # to_prompt_text should include the brief
+        prompt_text = package.to_prompt_text()
+        assert "<environment>" in prompt_text
 
     @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_error_handler_propagates_original(self, mock_llm_class, pipeline_repo):

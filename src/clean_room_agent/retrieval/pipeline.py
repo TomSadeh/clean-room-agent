@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from clean_room_agent.config import require_models_config
+from clean_room_agent.environment import build_environment_brief, build_repo_file_tree
 from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
     insert_retrieval_decision,
@@ -15,7 +16,7 @@ from clean_room_agent.db.raw_queries import (
     update_task_run,
 )
 from clean_room_agent.db.session_helpers import get_state, set_state
-from clean_room_agent.llm.client import LoggedLLMClient
+from clean_room_agent.llm.client import EnvironmentLLMClient, LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.context_assembly import assemble_context
@@ -95,6 +96,11 @@ def run_pipeline(
             )
         repo_id = repo_row["id"]
 
+        # 5b. Compute environment brief + repo file tree
+        env_brief = build_environment_brief(config, kb, repo_id)
+        repo_file_tree = build_repo_file_tree(kb, repo_id)
+        brief_text = env_brief.to_prompt_text()
+
         # 6. Log task_run
         task_run_id = insert_task_run(
             raw_conn,
@@ -140,7 +146,11 @@ def run_pipeline(
             reasoning_config = router.resolve("reasoning", "task_analysis")
             with LoggedLLMClient(reasoning_config) as llm:
                 start = time.monotonic()
-                task_query = analyze_task(raw_task, task_id, mode, kb, repo_id, llm)
+                task_query = analyze_task(
+                    raw_task, task_id, mode, kb, repo_id, llm,
+                    repo_file_tree=repo_file_tree,
+                    environment_brief=brief_text,
+                )
                 elapsed = int((time.monotonic() - start) * 1000)
 
                 for call in llm.flush():
@@ -198,7 +208,8 @@ def run_pipeline(
             stage = stages[stage_name]
             stage_config = router.resolve("reasoning", stage_name)
 
-            with LoggedLLMClient(stage_config) as llm:
+            with LoggedLLMClient(stage_config) as base_llm:
+                llm = EnvironmentLLMClient(base_llm, brief_text)
                 start = time.monotonic()
                 context = stage.run(context, kb, task_query, llm)
                 elapsed = int((time.monotonic() - start) * 1000)
@@ -244,7 +255,8 @@ def run_pipeline(
 
         # 10. Context assembly (pass LLM for R1 re-filter if budget exceeded)
         assembly_config = router.resolve("reasoning")
-        with LoggedLLMClient(assembly_config) as assembly_llm:
+        with LoggedLLMClient(assembly_config) as base_assembly_llm:
+            assembly_llm = EnvironmentLLMClient(base_assembly_llm, brief_text)
             package = assemble_context(context, budget, repo_path, llm=assembly_llm, kb=kb)
 
             for call in assembly_llm.flush():
@@ -266,6 +278,7 @@ def run_pipeline(
             )
         raw_conn.commit()
 
+        package.environment_brief = brief_text
         package.metadata["stage_timings"] = dict(context.stage_timings)
 
         # 11. Save final context to session
