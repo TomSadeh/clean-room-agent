@@ -333,8 +333,9 @@ kv (
 
 | Key | Writer | Reader | Content |
 |-----|--------|--------|---------|
-| `stage_outputs` | Phase 2 | Phase 2 (re-entry) | Map of stage_name -> serialized stage output |
-| `stage_progress` | Phase 2 | Phase 2 (re-entry) | Ordered list of completed stages + status |
+| `task_query` | Phase 2 | Phase 2 (re-entry) | Serialized `TaskQuery` fields including error_patterns |
+| `stage_output_{stage_name}` | Phase 2 | Phase 2 (re-entry) | Serialized `StageContext.to_dict()` per stage |
+| `stage_progress` | Phase 2 | Phase 2 (re-entry) | `{completed: [...], remaining: [...]}` |
 | `final_context` | Phase 2 | Phase 2 (re-entry), Phase 3 | Serialized final `StageContext` |
 | `refinement_request` | Phase 3 | Phase 2 (re-entry) | Serialized `RefinementRequest` |
 | `attempt_summary` | Phase 3 | Phase 2 (logging) | Summary of attempts leading to refinement |

@@ -209,7 +209,7 @@ get_connection(role, *, repo_path, task_id=None, read_only=False)
 
 ### 4.5-4.7 Database Schemas
 
-See [schemas.md](schemas.md) for full DDL of all three databases (curated: 13 tables, raw: 13 tables, session: 1 KV table) plus indexes and session DB key contracts.
+See [schemas.md](schemas.md) for full DDL of all three databases (curated: 12 tables, raw: 13 tables, session: 1 KV table) plus indexes and session DB key contracts.
 
 ---
 

@@ -6,6 +6,14 @@ A self-improving coding agent built around the thesis: **the primary bottleneck 
 
 This is a standalone Python coding agent. No external platform dependency - the harness, retrieval pipeline, and training loop are all ours. The same N-prompt pipeline architecture serves multiple modes (planning, coding, training planning, data curation), creating a closed loop where the agent improves itself from its own logged activity. Bootstrapping from external repo commit histories breaks the chicken-and-egg dependency, allowing LoRA training before the agent produces any real runs.
 
+## Core Principle: Transparency Is Load-Bearing
+
+Transparency is not a safety feature bolted on top. It is the mechanism by which the system produces results. Remove it and the system stops working.
+
+Every LLM call is a fresh instance — if context isn't explicit, the call fails. If reasoning isn't logged, there's no training data for the self-improvement loop. If retrieval isn't deterministic, the next stage gets garbage. This is the same relationship as a methodology section in a paper: remove it and what remains isn't a less transparent paper — it's not a paper. It doesn't replicate, it doesn't build, nobody can extend it.
+
+**The traceability test:** a human must be able to trace any output back through every decision that produced it using only the logs. If they can't, something is broken — fix the transparency, don't patch around it. The Three-Database Architecture, Context Curation Rules, and Coding Style below are all load-bearing implementations of this principle.
+
 ## Core Architecture: The N-Prompt Pipeline
 
 Instead of stuffing a 200K context window and hoping the model finds what matters, use a multi-stage pipeline where each prompt starts clean with curated context:
@@ -80,12 +88,30 @@ archive/
 
 ## Development Principles
 
+All of these serve the core principle: every decision must be explicit, logged, and traceable.
+
 - **The room, not the model** - performance comes from what's in the context window
 - **Results and capabilities, never mechanisms** - show what the system does, never explain how (competitive advantage)
 - **Deterministic first, AI second** - metadata extraction before semantic search
-- **Each token earns its place** - default-deny context architecture, not additive stuffing
+- **Each token earns its place** - default-deny context architecture, not additive stuffing (see Context Curation Rules below)
 - **Log everything, curate deliberately** - raw DB captures all activity; promotion to curated is an explicit, reviewed act
 - **The loop closes** - logged activity becomes training data; the agent uses itself to plan its own improvement
+
+### Context Curation Rules
+
+These rules operationalize the core transparency principle for context curation. Every component that touches content destined for an LLM context window — retrieval stages, context assembly, prompt construction, enrichment — must follow them.
+
+**1. No degradation. Fix decisions, not content.** If the precision stage classified a file as "primary", the execute stage needs the full source — downgrading to signatures means the model can't edit code it can't see. If assembled content exceeds the budget, the upstream stages made wrong decisions. The correct response is to re-filter: add an LLM call to re-prioritize and drop entire files or symbols. Never silently degrade, truncate, or partially render content that was classified at a specific detail level.
+
+**2. Default-deny, not default-include.** When a curation decision cannot be made — LLM omits a file from its response, returns an invalid classification, or a symbol has no classification — the default is to **exclude**. Including content without a positive curation signal violates the architecture. Log a warning when the default fires, but do not promote unclassified content into the context window.
+
+**3. Every LLM prompt must be budget-validated.** Not just the final execute-stage context, but every intermediate prompt (scope judgment, precision classification, task analysis, enrichment) must be validated against the target model's input capacity before sending. If the prompt exceeds the model's context window, batch or pre-filter — never send an oversized prompt and let the provider silently truncate it, because silent input truncation can discard the system prompt and task description.
+
+**4. Use parsed structure, not string heuristics.** The indexer already parses AST, extracts signatures, identifies docstring boundaries, and stores symbol line ranges. Rendering and extraction must use this parsed data. Do not re-derive structure from raw source with keyword matching (e.g., `line.startswith("def ")`) — it breaks on multi-line signatures, decorators, and language edge cases.
+
+**5. Framing overhead is part of the budget.** Headers, code fences, section markers, and other structural text consume tokens. Budget tracking must account for framing, not just content. If the framing format can be broken by content (e.g., triple backticks inside code fences), use a format that is immune to content injection.
+
+**6. Arbitrary caps must be ordered and justified.** When a numeric limit is necessary (e.g., max candidates per tier, max connections per symbol), the items must be ordered by a defined relevance criterion before the cap is applied. Slicing an unordered list (`results[:5]`) is random selection, not curation. If no ordering criterion exists, send everything and let an LLM call decide what to cut.
 
 ### Coding Style (Development Mode)
 
@@ -101,9 +127,9 @@ Formal benchmarking and thesis validation are intentionally outside the active P
 
 ## Status
 
-Phase 1 complete (knowledge base, indexer, enrichment, query API, CLI). Next steps:
+Phase 2 complete (retrieval pipeline with scope, precision, assembly, budget management). Next steps:
 1. ~~Build the knowledge base and indexer (Phase 1)~~ -- DONE
-2. Build the retrieval pipeline (Phase 2)
+2. ~~Build the retrieval pipeline (Phase 2)~~ -- DONE
 3. Build the code agent with plan + implement modes (Phase 3) -- MVP boundary
 4. Build the self-improvement loop (Phase 4) -- post-MVP
 

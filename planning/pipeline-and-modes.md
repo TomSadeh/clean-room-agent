@@ -80,7 +80,8 @@ class ModelConfig:
     base_url: str                 # provider URL
     provider: str = "ollama"      # "ollama", "openai_compat", or "remote_api"
     temperature: float = 0.0     # deterministic by default
-    max_tokens: int = 4096       # reasonable default
+    max_tokens: int = 4096       # reasonable default; configurable per-role in [models]
+    context_window: int = 32768  # R3: required for budget validation
 
 class ModelRouter:
     """Resolves which model to use for a given role and stage."""
@@ -362,9 +363,9 @@ Defaults are enforced in config — no hardcoded values in orchestrator logic.
 
 **Methods** (the contract Phase 2 depends on):
 
-- `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`
+- `get_files(repo_id, language?)`, `get_file_by_path(repo_id, path)`, `get_file_by_id(file_id)`
 - `search_files_by_metadata(repo_id, domain?, module?, concepts?)` -- returns empty when `file_metadata` is unpopulated (not an error)
-- `get_symbols_for_file(file_id, kind?)`, `search_symbols_by_name(repo_id, pattern)`
+- `get_symbols_for_file(file_id, kind?)`, `get_symbol_by_id(symbol_id)`, `search_symbols_by_name(repo_id, pattern)`
 - `get_symbol_neighbors(symbol_id, direction, kinds?)` -- Python MVP only
 - `get_dependencies(file_id, direction)`, `get_dependency_subgraph(file_ids, depth)`
 - `get_co_change_neighbors(file_id, min_count)`
