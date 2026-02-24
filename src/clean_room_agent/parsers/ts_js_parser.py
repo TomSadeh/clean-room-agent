@@ -187,6 +187,8 @@ class TSJSParser:
             line = line.strip()
             if line.startswith("/**"):
                 line = line[3:].strip()
+                if line.endswith("*/"):
+                    line = line[:-2].strip()
             elif line.startswith("*/"):
                 continue
             elif line.startswith("*"):

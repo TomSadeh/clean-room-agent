@@ -274,7 +274,11 @@ def _do_index(
     curated_conn.commit()
 
     # Extract git history (pass remote_url to avoid redundant subprocess call)
-    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
+    try:
+        git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
+    except RuntimeError:
+        logger.warning("Git history extraction failed, skipping")
+        git_history = None
 
     if git_history:
         for commit in git_history.commits:

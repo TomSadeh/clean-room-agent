@@ -61,8 +61,9 @@ class KnowledgeBase:
             conditions.append("m.module = ?")
             params.append(module)
         if concepts:
-            conditions.append("m.concepts LIKE ?")
-            params.append(f"%{concepts}%")
+            escaped = concepts.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append("m.concepts LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
 
         query = (
             "SELECT f.* FROM files f "

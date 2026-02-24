@@ -34,6 +34,12 @@ class LLMClient:
             )
         self._http = httpx.Client(timeout=300.0)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._http.close()
