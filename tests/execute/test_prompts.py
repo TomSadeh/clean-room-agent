@@ -13,8 +13,11 @@ from clean_room_agent.execute.prompts import (
     IMPLEMENT_SYSTEM,
     META_PLAN_SYSTEM,
     PART_PLAN_SYSTEM,
+    TEST_IMPLEMENT_SYSTEM,
+    TEST_PLAN_SYSTEM,
     build_implement_prompt,
     build_plan_prompt,
+    build_test_implement_prompt,
 )
 from clean_room_agent.llm.client import ModelConfig
 from clean_room_agent.retrieval.dataclasses import (
@@ -232,5 +235,80 @@ class TestBuildImplementPrompt:
         step = PlanStep(id="s1", description="d" * 5000)
         with pytest.raises(ValueError, match="Prompt too large"):
             build_implement_prompt(
+                context_package, step, model_config=small_model_config,
+            )
+
+
+class TestBuildPlanPromptTestPlan:
+    def test_test_plan_system(self, context_package, model_config):
+        system, user = build_plan_prompt(
+            context_package, "Plan tests for part p1",
+            pass_type="test_plan", model_config=model_config,
+        )
+        assert system == TEST_PLAN_SYSTEM
+        assert "Plan tests" in user
+
+    def test_test_plan_with_cumulative_diff(self, context_package, model_config):
+        _, user = build_plan_prompt(
+            context_package, "Plan tests",
+            pass_type="test_plan", model_config=model_config,
+            cumulative_diff="--- a.py\n+new_func()",
+        )
+        assert "<prior_changes>" in user
+        assert "new_func()" in user
+
+
+class TestBuildTestImplementPrompt:
+    def test_basic(self, context_package, model_config):
+        step = PlanStep(id="t1", description="Test hello endpoint")
+        system, user = build_test_implement_prompt(
+            context_package, step, model_config=model_config,
+        )
+        assert system == TEST_IMPLEMENT_SYSTEM
+        assert "t1" in user
+        assert "Test hello endpoint" in user
+        assert "Test Step to Implement" in user
+
+    def test_with_test_plan(self, context_package, model_config):
+        step = PlanStep(id="t1", description="Test step 1")
+        test_plan = PartPlan(
+            part_id="p1_tests", task_summary="Test coverage for p1",
+            steps=[step, PlanStep(id="t2", description="Test step 2")],
+            rationale="r",
+        )
+        _, user = build_test_implement_prompt(
+            context_package, step, model_config=model_config,
+            test_plan=test_plan,
+        )
+        assert "<plan_constraints>" in user
+        assert "Test coverage for p1" in user
+        assert "(current)" in user
+
+    def test_with_cumulative_diff(self, context_package, model_config):
+        step = PlanStep(id="t1", description="d")
+        _, user = build_test_implement_prompt(
+            context_package, step, model_config=model_config,
+            cumulative_diff="diff content",
+        )
+        assert "<prior_changes>" in user
+
+    def test_with_failure_context(self, context_package, model_config):
+        step = PlanStep(id="t1", description="Fix test")
+        failure = ValidationResult(
+            success=False,
+            test_output="ImportError",
+            failing_tests=["test_bar"],
+        )
+        _, user = build_test_implement_prompt(
+            context_package, step, model_config=model_config,
+            failure_context=failure,
+        )
+        assert "<test_failures>" in user
+        assert "ImportError" in user
+
+    def test_budget_overflow_raises(self, context_package, small_model_config):
+        step = PlanStep(id="t1", description="d" * 5000)
+        with pytest.raises(ValueError, match="Prompt too large"):
+            build_test_implement_prompt(
                 context_package, step, model_config=small_model_config,
             )

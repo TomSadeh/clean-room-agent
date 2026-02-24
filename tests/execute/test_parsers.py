@@ -87,6 +87,26 @@ class TestParsePlanResponseAdjustment:
         assert result.revised_steps == []
 
 
+class TestParsePlanResponseTestPlan:
+    def test_valid(self):
+        text = '''{
+            "part_id": "p1_tests",
+            "task_summary": "Test coverage for part p1",
+            "steps": [{"id": "t1", "description": "Test hello function", "target_files": ["tests/test_main.py"], "target_symbols": ["hello"]}],
+            "rationale": "Cover all new functions"
+        }'''
+        result = parse_plan_response(text, "test_plan")
+        assert isinstance(result, PartPlan)
+        assert result.part_id == "p1_tests"
+        assert len(result.steps) == 1
+        assert result.steps[0].target_symbols == ["hello"]
+
+    def test_missing_field_raises(self):
+        text = '{"part_id": "p1_tests", "rationale": "r"}'
+        with pytest.raises(ValueError, match="missing required key"):
+            parse_plan_response(text, "test_plan")
+
+
 class TestParsePlanResponseUnknownType:
     def test_unknown_pass_type_raises(self):
         with pytest.raises(ValueError, match="Unknown pass_type"):

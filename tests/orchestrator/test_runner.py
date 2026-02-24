@@ -50,6 +50,14 @@ def _make_meta_plan():
     )
 
 
+def _make_test_plan(part_id="p1"):
+    return PartPlan(
+        part_id=f"{part_id}_tests", task_summary=f"Tests for {part_id}",
+        steps=[PlanStep(id="t1", description="Test step 1", target_files=["tests/test_a.py"])],
+        rationale="Full coverage",
+    )
+
+
 def _make_part_plan():
     return PartPlan(
         part_id="p1", task_summary="Part 1",
@@ -101,6 +109,7 @@ def _make_config():
 
 
 class TestRunOrchestrator:
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
     @patch("clean_room_agent.orchestrator.runner.run_validation")
     @patch("clean_room_agent.orchestrator.runner.apply_edits")
     @patch("clean_room_agent.orchestrator.runner.execute_implement")
@@ -109,7 +118,8 @@ class TestRunOrchestrator:
     @patch("clean_room_agent.orchestrator.runner.get_connection")
     def test_successful_run(
         self, mock_get_conn, mock_pipeline, mock_exec_plan,
-        mock_exec_impl, mock_apply, mock_validate, tmp_path,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
     ):
         # Setup mock DB connections
         mock_raw_conn = MagicMock()
@@ -122,14 +132,16 @@ class TestRunOrchestrator:
 
         mock_pipeline.return_value = _make_context()
 
-        # execute_plan returns: meta_plan, then part_plan, then adjustment
+        # execute_plan: meta_plan, part_plan, adjustment, test_plan
         mock_exec_plan.side_effect = [
             _make_meta_plan(),
             _make_part_plan(),
             _make_adjustment(),
+            _make_test_plan(),
         ]
 
         mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -145,7 +157,12 @@ class TestRunOrchestrator:
         assert result.parts_completed == 1
         assert result.steps_completed == 1
         assert len(result.pass_results) > 0
+        # Verify test plan and test implement passes exist
+        pass_types = [pr.pass_type for pr in result.pass_results]
+        assert "test_plan" in pass_types
+        assert "test_implement" in pass_types
 
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
     @patch("clean_room_agent.orchestrator.runner.run_validation")
     @patch("clean_room_agent.orchestrator.runner.apply_edits")
     @patch("clean_room_agent.orchestrator.runner.execute_implement")
@@ -154,7 +171,8 @@ class TestRunOrchestrator:
     @patch("clean_room_agent.orchestrator.runner.get_connection")
     def test_failed_implementation(
         self, mock_get_conn, mock_pipeline, mock_exec_plan,
-        mock_exec_impl, mock_apply, mock_validate, tmp_path,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
     ):
         mock_raw_conn = MagicMock()
         mock_raw_conn.execute.return_value.lastrowid = 1
@@ -165,6 +183,7 @@ class TestRunOrchestrator:
         )
 
         mock_pipeline.return_value = _make_context()
+        # No test_plan because code step fails → testing phase skipped
         mock_exec_plan.side_effect = [
             _make_meta_plan(),
             _make_part_plan(),
@@ -179,17 +198,22 @@ class TestRunOrchestrator:
         result = run_orchestrator("Test task", tmp_path, _make_config())
 
         assert result.status == "failed"
+        # Test phase should be skipped when code steps fail
+        mock_exec_test_impl.assert_not_called()
 
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
     @patch("clean_room_agent.orchestrator.runner.run_validation")
     @patch("clean_room_agent.orchestrator.runner.apply_edits")
     @patch("clean_room_agent.orchestrator.runner.execute_implement")
     @patch("clean_room_agent.orchestrator.runner.execute_plan")
     @patch("clean_room_agent.orchestrator.runner.run_pipeline")
     @patch("clean_room_agent.orchestrator.runner.get_connection")
-    def test_retry_on_test_failure(
+    def test_validation_failure_lifo_rollback(
         self, mock_get_conn, mock_pipeline, mock_exec_plan,
-        mock_exec_impl, mock_apply, mock_validate, tmp_path,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
     ):
+        """Validation failure after code+tests causes LIFO rollback."""
         mock_raw_conn = MagicMock()
         mock_raw_conn.execute.return_value.lastrowid = 1
         mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
@@ -203,27 +227,33 @@ class TestRunOrchestrator:
             _make_meta_plan(),
             _make_part_plan(),
             _make_adjustment(),
+            _make_test_plan(),
         ]
         mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
         from clean_room_agent.execute.dataclasses import PatchResult
-        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        code_patch = PatchResult(success=True, files_modified=["a.py"])
+        test_patch = PatchResult(success=True, files_modified=["tests/test_a.py"])
+        mock_apply.side_effect = [code_patch, test_patch]
 
-        # First test fails, retry succeeds
-        mock_validate.side_effect = [
-            _make_validation(False),
-            _make_validation(True),
-        ]
+        # Validation fails
+        mock_validate.return_value = _make_validation(False)
 
         (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
 
         from clean_room_agent.orchestrator.runner import run_orchestrator
-        result = run_orchestrator("Test task", tmp_path, _make_config())
+        with patch("clean_room_agent.orchestrator.runner.rollback_edits") as mock_rollback:
+            result = run_orchestrator("Test task", tmp_path, _make_config())
 
-        assert result.status == "complete"
-        # Implementation called twice (initial + retry)
-        assert mock_exec_impl.call_count == 2
+        assert result.status == "failed"
+        # Rollback called: test patch first (LIFO), then code patch
+        assert mock_rollback.call_count == 2
+        first_rollback = mock_rollback.call_args_list[0][0][0]
+        second_rollback = mock_rollback.call_args_list[1][0][0]
+        assert first_rollback.files_modified == ["tests/test_a.py"]
+        assert second_rollback.files_modified == ["a.py"]
 
-
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
     @patch("clean_room_agent.orchestrator.runner.run_validation")
     @patch("clean_room_agent.orchestrator.runner.apply_edits")
     @patch("clean_room_agent.orchestrator.runner.execute_implement")
@@ -232,7 +262,8 @@ class TestRunOrchestrator:
     @patch("clean_room_agent.orchestrator.runner.get_connection")
     def test_adjustment_revises_remaining_steps(
         self, mock_get_conn, mock_pipeline, mock_exec_plan,
-        mock_exec_impl, mock_apply, mock_validate, tmp_path,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
     ):
         """T25: Adjustment pass revised_steps replace remaining steps."""
         mock_raw_conn = MagicMock()
@@ -270,9 +301,11 @@ class TestRunOrchestrator:
             two_step_plan,
             adj_with_revision,
             adj_no_revision,
+            _make_test_plan(),
         ]
 
         mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -294,6 +327,7 @@ class TestRunOrchestrator:
         assert step_arg.id == "s3"
         assert step_arg.target_files == ["c.py"]
 
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
     @patch("clean_room_agent.orchestrator.runner.run_validation")
     @patch("clean_room_agent.orchestrator.runner.apply_edits")
     @patch("clean_room_agent.orchestrator.runner.execute_implement")
@@ -302,7 +336,8 @@ class TestRunOrchestrator:
     @patch("clean_room_agent.orchestrator.runner.get_connection")
     def test_steps_completed_counts_only_successes(
         self, mock_get_conn, mock_pipeline, mock_exec_plan,
-        mock_exec_impl, mock_apply, mock_validate, tmp_path,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
     ):
         """T26: steps_completed should only count successful steps."""
         mock_raw_conn = MagicMock()
@@ -329,6 +364,105 @@ class TestRunOrchestrator:
 
         assert result.status == "failed"
         assert result.steps_completed == 0  # T26: failed steps not counted
+
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_testing_phase_with_test_plan_and_test_implement(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
+    ):
+        """Testing phase: test_plan + test_implement run after code steps."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+
+        test_plan = _make_test_plan()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            test_plan,
+        ]
+
+        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
+        from clean_room_agent.execute.dataclasses import PatchResult
+        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        mock_validate.return_value = _make_validation(True)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_config())
+
+        assert result.status == "complete"
+        # Code implement called once, test implement called once
+        assert mock_exec_impl.call_count == 1
+        assert mock_exec_test_impl.call_count == 1
+        # Validation called once (at end, not per-step)
+        assert mock_validate.call_count == 1
+        # execute_plan called 4 times: meta, part, adjust, test_plan
+        assert mock_exec_plan.call_count == 4
+
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_max_retries_per_test_step_config(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
+    ):
+        """max_retries_per_test_step defaults to max_retries_per_step."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+
+        mock_exec_impl.return_value = _make_step_result(True)
+        # Test impl fails on first try, succeeds on second (tests retry)
+        mock_exec_test_impl.side_effect = [
+            _make_step_result(False),
+            _make_step_result(True),
+        ]
+        from clean_room_agent.execute.dataclasses import PatchResult
+        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        mock_validate.return_value = _make_validation(True)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_config())
+
+        assert result.status == "complete"
+        # Test impl called twice (initial fail + retry)
+        assert mock_exec_test_impl.call_count == 2
 
 
 class TestRunSinglePass:

@@ -34,6 +34,8 @@ def parse_plan_response(text: str, pass_type: str) -> MetaPlan | PartPlan | Plan
         return MetaPlan.from_dict(data)
     elif pass_type == "part_plan":
         return PartPlan.from_dict(data)
+    elif pass_type == "test_plan":
+        return PartPlan.from_dict(data)
     elif pass_type == "adjustment":
         return PlanAdjustment.from_dict(data)
     else:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -31,7 +30,7 @@ from clean_room_agent.execute.dataclasses import (
     PlanStep,
     StepResult,
 )
-from clean_room_agent.execute.implement import execute_implement
+from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.execute.patch import apply_edits, rollback_edits
 from clean_room_agent.execute.plan import execute_plan
 from clean_room_agent.llm.client import LoggedLLMClient
@@ -174,6 +173,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
             "Missing max_retries_per_step in [orchestrator] section of config.toml."
         )
 
+    max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
+
     plan_budget = _resolve_budget(config, "reasoning")
     impl_budget = _resolve_budget(config, "coding")
 
@@ -299,10 +300,15 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                 ))
                 continue
 
-            # --- STEP LOOP (within part) ---
+            # --- CODE STEP LOOP (within part) ---
             sorted_steps = _topological_sort(
                 part_plan.steps, lambda s: s.id, lambda s: s.depends_on,
             )
+
+            # Track applied code patches for LIFO rollback
+            code_patch_results = []
+            code_step_results = []
+            all_code_steps_ok = True
 
             # Use index-based iteration so adjustment can splice revised
             # steps into the remaining portion of the list (T25).
@@ -311,7 +317,6 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                 step = sorted_steps[step_idx]
                 step_success = False
                 step_result = None
-                validation = None
                 attempt_num = 0
 
                 for attempt in range(max_retries + 1):
@@ -339,7 +344,6 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                 impl_context, step, impl_llm,
                                 plan=part_plan,
                                 cumulative_diff=cumulative_diff or None,
-                                failure_context=validation,
                             )
                             impl_pt, impl_ct, impl_ms = _flush_llm_calls(
                                 impl_llm, raw_conn, sub_task_id,
@@ -388,23 +392,13 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         update_run_attempt_patch(raw_conn, attempt_id, True)
                         raw_conn.commit()
 
-                        # TEST
-                        validation = run_validation(repo_path, config, raw_conn, attempt_id)
-
-                        if validation.success:
-                            step_success = True
-                            pass_results.append(PassResult(
-                                pass_type="step_implement", task_run_id=impl_task_run_id,
-                                success=True, artifact=step_result,
-                            ))
-                            break
-                        else:
-                            # Rollback for retry
-                            rollback_edits(patch_result, repo_path)
-                            pass_results.append(PassResult(
-                                pass_type="step_implement", task_run_id=impl_task_run_id,
-                                success=False, artifact=step_result,
-                            ))
+                        step_success = True
+                        code_patch_results.append(patch_result)
+                        pass_results.append(PassResult(
+                            pass_type="step_implement", task_run_id=impl_task_run_id,
+                            success=True, artifact=step_result,
+                        ))
+                        break
 
                     except (ValueError, RuntimeError, OSError) as e:
                         logger.error("Step implement failed for %s:%s: %s", part.id, step.id, e)
@@ -413,9 +407,10 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         ))
                         break
 
-                # Track final outcome for this step
+                # Track final outcome for this code step
                 step_key = f"{part.id}:{step.id}"
                 step_final_outcomes[step_key] = step_success
+                code_step_results.append(step_result)
 
                 # Update state
                 if step_success and step_result:
@@ -431,8 +426,10 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
 
                     # Only count successfully completed steps (T26)
                     steps_completed += 1
+                else:
+                    all_code_steps_ok = False
 
-                # ADJUSTMENT PASS (after every step)
+                # ADJUSTMENT PASS (after every code step)
                 try:
                     adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
                     remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
@@ -451,7 +448,6 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             adj_context, remaining_desc, adj_llm,
                             pass_type="adjustment",
                             prior_results=[step_result] if step_result else None,
-                            test_results=[validation] if validation else None,
                             cumulative_diff=cumulative_diff or None,
                         )
                         _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
@@ -487,6 +483,205 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     ))
 
                 step_idx += 1
+
+            # --- TESTING PHASE (after all code steps for this part) ---
+            test_plan = None
+            test_patch_results = []
+
+            if all_code_steps_ok and cumulative_diff:
+                # TEST PLAN
+                try:
+                    test_plan_task_id = f"{task_id}:test_plan:{part.id}"
+                    test_plan_desc = (
+                        f"Plan tests for part {part.id}: {part.description}"
+                    )
+                    test_affected = []
+                    for sr in code_step_results:
+                        if sr and sr.success:
+                            for edit in sr.edits:
+                                if edit.file_path not in test_affected:
+                                    test_affected.append(edit.file_path)
+                    temp_plan_path = _write_temp_plan(test_affected, tmp_dir)
+
+                    test_plan_context = run_pipeline(
+                        raw_task=test_plan_desc,
+                        repo_path=repo_path,
+                        stage_names=stage_names,
+                        budget=plan_budget,
+                        mode="plan",
+                        task_id=test_plan_task_id,
+                        config=config,
+                        plan_artifact_path=temp_plan_path,
+                    )
+
+                    with LoggedLLMClient(reasoning_config) as tp_llm:
+                        test_plan = execute_plan(
+                            test_plan_context, test_plan_desc, tp_llm,
+                            pass_type="test_plan",
+                            cumulative_diff=cumulative_diff or None,
+                        )
+                        _flush_llm_calls(tp_llm, raw_conn, test_plan_task_id, "execute_plan", "execute_plan")
+
+                    tr_row = raw_conn.execute(
+                        "SELECT id FROM task_runs WHERE task_id = ?", (test_plan_task_id,)
+                    ).fetchone()
+                    tp_task_run_id = tr_row["id"]
+
+                    insert_orchestrator_pass(
+                        raw_conn, orch_run_id, tp_task_run_id, "test_plan", sequence_order,
+                        part_id=part.id,
+                    )
+                    raw_conn.commit()
+                    sequence_order += 1
+
+                    pass_results.append(PassResult(
+                        pass_type="test_plan", task_run_id=tp_task_run_id,
+                        success=True, artifact=test_plan,
+                    ))
+
+                    set_state(session_conn, f"test_plan:{part.id}", test_plan.to_dict())
+
+                except (ValueError, RuntimeError, OSError) as e:
+                    logger.error("Test plan failed for %s: %s", part.id, e)
+                    pass_results.append(PassResult(
+                        pass_type="test_plan", task_run_id=None, success=False,
+                    ))
+                    test_plan = None
+
+            # TEST STEP LOOP
+            if test_plan is not None:
+                sorted_test_steps = _topological_sort(
+                    test_plan.steps, lambda s: s.id, lambda s: s.depends_on,
+                )
+
+                for test_step in sorted_test_steps:
+                    test_step_success = False
+                    test_step_result = None
+
+                    for test_attempt in range(max_test_retries + 1):
+                        suffix = f":retry_{test_attempt}" if test_attempt > 0 else ""
+                        test_sub_task_id = f"{task_id}:test_impl:{part.id}:{test_step.id}{suffix}"
+                        test_target_files = test_step.target_files or test_affected
+                        temp_plan_path = _write_temp_plan(test_target_files, tmp_dir)
+
+                        try:
+                            test_impl_context = run_pipeline(
+                                raw_task=test_step.description,
+                                repo_path=repo_path,
+                                stage_names=stage_names,
+                                budget=impl_budget,
+                                mode="implement",
+                                task_id=test_sub_task_id,
+                                config=config,
+                                plan_artifact_path=temp_plan_path,
+                            )
+
+                            with LoggedLLMClient(coding_config) as test_llm:
+                                test_step_result = execute_test_implement(
+                                    test_impl_context, test_step, test_llm,
+                                    test_plan=test_plan,
+                                    cumulative_diff=cumulative_diff or None,
+                                )
+                                ti_pt, ti_ct, ti_ms = _flush_llm_calls(
+                                    test_llm, raw_conn, test_sub_task_id,
+                                    "execute_test_implement", "execute_test_implement",
+                                )
+
+                            tr_row = raw_conn.execute(
+                                "SELECT id FROM task_runs WHERE task_id = ?", (test_sub_task_id,)
+                            ).fetchone()
+                            ti_task_run_id = tr_row["id"]
+
+                            attempt_id = insert_run_attempt(
+                                raw_conn, ti_task_run_id, test_attempt + 1,
+                                ti_pt, ti_ct, ti_ms,
+                                test_step_result.raw_response,
+                                False,
+                            )
+                            raw_conn.commit()
+
+                            insert_orchestrator_pass(
+                                raw_conn, orch_run_id, ti_task_run_id, "test_implement", sequence_order,
+                                part_id=part.id, step_id=test_step.id,
+                            )
+                            raw_conn.commit()
+                            sequence_order += 1
+
+                            if not test_step_result.success:
+                                pass_results.append(PassResult(
+                                    pass_type="test_implement", task_run_id=ti_task_run_id,
+                                    success=False, artifact=test_step_result,
+                                ))
+                                continue
+
+                            test_patch_result = apply_edits(test_step_result.edits, repo_path)
+                            if not test_patch_result.success:
+                                pass_results.append(PassResult(
+                                    pass_type="test_implement", task_run_id=ti_task_run_id,
+                                    success=False, artifact=test_step_result,
+                                ))
+                                continue
+
+                            update_run_attempt_patch(raw_conn, attempt_id, True)
+                            raw_conn.commit()
+
+                            test_step_success = True
+                            test_patch_results.append(test_patch_result)
+                            pass_results.append(PassResult(
+                                pass_type="test_implement", task_run_id=ti_task_run_id,
+                                success=True, artifact=test_step_result,
+                            ))
+                            break
+
+                        except (ValueError, RuntimeError, OSError) as e:
+                            logger.error("Test step implement failed for %s:%s: %s", part.id, test_step.id, e)
+                            pass_results.append(PassResult(
+                                pass_type="test_implement", task_run_id=None, success=False,
+                            ))
+                            break
+
+                    step_key = f"{part.id}:test:{test_step.id}"
+                    step_final_outcomes[step_key] = test_step_success
+
+                    if test_step_success and test_step_result:
+                        diff_text = ""
+                        for edit in test_step_result.edits:
+                            diff_text += f"--- {edit.file_path}\n"
+                            diff_text += f"-{edit.search}\n"
+                            diff_text += f"+{edit.replacement}\n"
+                        cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                        set_state(session_conn, f"test_step_result:{part.id}:{test_step.id}", {
+                            "success": True, "edits_count": len(test_step_result.edits),
+                        })
+
+            # --- VALIDATION (code + tests together) ---
+            validation = None
+            if code_patch_results or test_patch_results:
+                # We need an attempt_id for validation logging. Use the last
+                # code step's attempt_id if available.
+                last_attempt_id = raw_conn.execute(
+                    "SELECT id FROM run_attempts ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                val_attempt_id = last_attempt_id["id"] if last_attempt_id else None
+
+                if val_attempt_id is not None:
+                    validation = run_validation(repo_path, config, raw_conn, val_attempt_id)
+                else:
+                    validation = run_validation(repo_path, config, raw_conn, 0)
+
+                if not validation.success:
+                    # LIFO rollback: test edits first, then code edits
+                    for tp in reversed(test_patch_results):
+                        rollback_edits(tp, repo_path)
+                    for cp in reversed(code_patch_results):
+                        rollback_edits(cp, repo_path)
+
+                    # Mark all steps for this part as failed since validation failed
+                    for key in list(step_final_outcomes):
+                        if key.startswith(f"{part.id}:"):
+                            if step_final_outcomes[key]:
+                                step_final_outcomes[key] = False
+                                steps_completed -= 1
 
             parts_completed += 1
 

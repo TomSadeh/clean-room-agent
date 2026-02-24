@@ -48,6 +48,7 @@ def _make_llm(response_text):
     llm = MagicMock()
     llm.complete.return_value = LLMResponse(
         text=response_text,
+        thinking=None,
         prompt_tokens=100,
         completion_tokens=50,
         latency_ms=500,
@@ -273,7 +274,7 @@ class TestExecutePlanBudgetOverflow:
         })
         llm = MagicMock()
         llm.complete.return_value = LLMResponse(
-            text=response, prompt_tokens=100, completion_tokens=50, latency_ms=500,
+            text=response, thinking=None, prompt_tokens=100, completion_tokens=50, latency_ms=500,
         )
         # Tiny context window: 512 total, 256 for output => 256 for input
         llm.config = ModelConfig(

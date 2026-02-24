@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from clean_room_agent.execute.dataclasses import PartPlan, PlanStep, StepResult, ValidationResult
-from clean_room_agent.execute.implement import execute_implement
+from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.llm.client import LLMResponse, ModelConfig
 from clean_room_agent.retrieval.dataclasses import (
     BudgetConfig,
@@ -41,6 +41,7 @@ def _make_llm(response_text):
     llm = MagicMock()
     llm.complete.return_value = LLMResponse(
         text=response_text,
+        thinking=None,
         prompt_tokens=100,
         completion_tokens=50,
         latency_ms=500,
@@ -192,7 +193,7 @@ class TestExecuteImplementBudgetOverflow:
 </edit>'''
         llm = MagicMock()
         llm.complete.return_value = LLMResponse(
-            text=response, prompt_tokens=100, completion_tokens=50, latency_ms=500,
+            text=response, thinking=None, prompt_tokens=100, completion_tokens=50, latency_ms=500,
         )
         llm.config = ModelConfig(
             model="test-model",
@@ -203,3 +204,71 @@ class TestExecuteImplementBudgetOverflow:
         step = PlanStep(id="s1", description="Fix the bug")
         with pytest.raises(ValueError, match="Prompt too large"):
             execute_implement(context, step, llm)
+
+
+class TestExecuteTestImplement:
+    def test_valid_response(self, context_package):
+        response = '''<edit file="tests/test_main.py">
+<search>def test_placeholder(): pass</search>
+<replacement>def test_hello():
+    assert hello() == "world"</replacement>
+</edit>'''
+        llm = _make_llm(response)
+        step = PlanStep(id="t1", description="Test hello function")
+        result = execute_test_implement(context_package, step, llm)
+        assert isinstance(result, StepResult)
+        assert result.success is True
+        assert len(result.edits) == 1
+        assert result.edits[0].file_path == "tests/test_main.py"
+
+    def test_parse_failure_returns_failed_result(self, context_package):
+        llm = _make_llm("I can't write tests for that")
+        step = PlanStep(id="t1", description="Test something")
+        result = execute_test_implement(context_package, step, llm)
+        assert result.success is False
+        assert result.error_info is not None
+        assert "No valid <edit>" in result.error_info
+
+    def test_prompt_includes_test_step_header(self, context_package):
+        response = '''<edit file="tests/test_a.py">
+<search>x</search>
+<replacement>y</replacement>
+</edit>'''
+        llm = _make_llm(response)
+        step = PlanStep(id="t1", description="Test the handler")
+        execute_test_implement(context_package, step, llm)
+        user_prompt = llm.complete.call_args[0][0]
+        assert "Test Step to Implement" in user_prompt
+        assert "t1" in user_prompt
+
+    def test_with_test_plan_context(self, context_package):
+        response = '''<edit file="tests/test_a.py">
+<search>x</search>
+<replacement>y</replacement>
+</edit>'''
+        llm = _make_llm(response)
+        step = PlanStep(id="t1", description="Test handler")
+        test_plan = PartPlan(
+            part_id="p1_tests",
+            task_summary="Test coverage for p1",
+            steps=[step, PlanStep(id="t2", description="Test edge cases")],
+            rationale="Full coverage",
+        )
+        result = execute_test_implement(
+            context_package, step, llm,
+            test_plan=test_plan,
+        )
+        assert result.success is True
+        user_prompt = llm.complete.call_args[0][0]
+        assert "<plan_constraints>" in user_prompt
+        assert "Test coverage for p1" in user_prompt
+
+    def test_raw_response_preserved(self, context_package):
+        raw = '''<edit file="tests/test_a.py">
+<search>x</search>
+<replacement>y</replacement>
+</edit>'''
+        llm = _make_llm(raw)
+        step = PlanStep(id="t1", description="d")
+        result = execute_test_implement(context_package, step, llm)
+        assert result.raw_response == raw
