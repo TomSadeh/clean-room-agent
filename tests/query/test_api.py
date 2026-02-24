@@ -201,12 +201,16 @@ class TestDependencySubgraphDepth:
         assert deps == []
 
     def test_depth_two_expands(self, kb):
-        """With f1->f2 and f3->f2, depth=2 from f1 should reach f3."""
+        """With f1->f2 and f3->f2, depth=2 from f1 should reach f3.
+
+        BFS is bidirectional: it follows both source and target edges,
+        so f2 (discovered at depth 1) expands to f3 via the f3->f2 edge.
+        """
         api, rid, f1, f2, f3, *_ = kb
         deps = api.get_dependency_subgraph([f1], depth=2)
         all_file_ids = set()
         for d in deps:
             all_file_ids.add(d.source_file_id)
             all_file_ids.add(d.target_file_id)
-        # f1 imports f2, f3 imports f2 — depth 2 should discover f3->f2 edge
+        # f1 imports f2, f3 imports f2 — depth 2 discovers f3 via bidirectional BFS
         assert f3 in all_file_ids

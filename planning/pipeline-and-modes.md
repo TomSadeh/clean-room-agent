@@ -42,7 +42,7 @@ After deterministic extraction, the precision stage LLM call classifies each sym
 2. **OpenAI-compatible** (Phase 4 multi-adapter): vLLM or llama-server for per-request LoRA adapter selection. Same `complete()` interface, different transport internals.
 3. **Remote API** (Phase 4 teacher inference): External API calls for distillation data generation (Qwen3.5-Plus, DeepSeek-V3.2). Used only during training data creation, not at runtime.
 
-`ModelConfig` will gain a `provider` field (default `"ollama"`) to select the backend. The external `complete()` interface does not change — provider selection is internal to the transport layer. All phases call through the same `LLMClient.complete()` regardless of backend.
+`ModelConfig` has a `provider` field (default `"ollama"`) to select the backend. The external `complete()` interface does not change — provider selection is internal to the transport layer. All phases call through the same `LLMClient.complete()` regardless of backend.
 
 Used by all four phases:
 
@@ -76,11 +76,11 @@ Above the transport layer, a routing layer resolves which model to call based on
 ```python
 @dataclass
 class ModelConfig:
-    model: str            # resolved model/adapter identifier
-    base_url: str         # provider URL
-    provider: str         # "ollama", "openai_compat", or "remote_api"
-    temperature: float    # tuning parameter, reasonable default OK (e.g. 0.0 for code)
-    max_tokens: int       # tuning parameter, reasonable default OK
+    model: str                    # resolved model/adapter identifier
+    base_url: str                 # provider URL
+    provider: str = "ollama"      # "ollama", "openai_compat", or "remote_api"
+    temperature: float = 0.0     # deterministic by default
+    max_tokens: int = 4096       # reasonable default
 
 class ModelRouter:
     """Resolves which model to use for a given role and stage."""

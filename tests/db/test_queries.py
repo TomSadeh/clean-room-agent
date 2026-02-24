@@ -121,6 +121,7 @@ class TestCuratedQueries:
         ).fetchone()
         assert row["purpose"] == "main entry"
         assert row["module"] == "core"
+        assert row["domain"] is None  # full-replace upsert clears omitted fields
         # Only one row, not two
         count = curated_conn.execute("SELECT COUNT(*) FROM file_metadata").fetchone()[0]
         assert count == 1

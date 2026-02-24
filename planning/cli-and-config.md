@@ -82,6 +82,10 @@ base_url = "http://localhost:11434"
 # primary_base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 # primary_api_key_env = "DASHSCOPE_API_KEY"
 
+# [models.temperature]
+# coding = 0.0
+# reasoning = 0.0
+
 [budget]
 context_window = 32768
 reserved_tokens = 4096

@@ -78,12 +78,16 @@ class TestGetConnection:
     def test_schema_idempotent(self, tmp_repo):
         """Opening the same DB twice should not error (CREATE IF NOT EXISTS)."""
         conn1 = get_connection("curated", repo_path=tmp_repo)
-        conn1.close()
-        conn2 = get_connection("curated", repo_path=tmp_repo)
-        tables = conn2.execute(
+        count1 = conn1.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
         ).fetchone()[0]
-        assert tables > 0
+        conn1.close()
+        conn2 = get_connection("curated", repo_path=tmp_repo)
+        count2 = conn2.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+        assert count2 > 0
+        assert count1 == count2
         conn2.close()
 
 
@@ -97,7 +101,10 @@ class TestEnsureSchema:
         tables = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
-        assert len(tables) > 0
+        table_names = [t["name"] for t in tables]
+        assert "repos" in table_names
+        assert "files" in table_names
+        assert "symbols" in table_names
         conn.close()
 
     def test_ensure_schema_invalid_role(self, tmp_repo):

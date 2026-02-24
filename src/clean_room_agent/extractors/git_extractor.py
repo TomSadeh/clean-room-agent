@@ -36,8 +36,14 @@ class GitHistory:
     remote_url: str | None
 
 
+_git_available: bool | None = None
+
+
 def _check_git_available() -> None:
-    """Raise RuntimeError if git is not on PATH."""
+    """Raise RuntimeError if git is not on PATH. Caches result after first success."""
+    global _git_available
+    if _git_available:
+        return
     try:
         result = subprocess.run(
             ["git", "--version"],
@@ -53,6 +59,7 @@ def _check_git_available() -> None:
         raise RuntimeError(
             "git not found on PATH. Install git to use indexing features."
         )
+    _git_available = True
 
 
 def get_remote_url(repo_path: Path) -> str | None:
