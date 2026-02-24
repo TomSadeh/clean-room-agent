@@ -307,6 +307,15 @@ may encounter them in external repos.
   structure) to pre-filter likely pairs, then show their bodies side by side within budget.
   This is a new retrieval stage pattern, not a configuration of existing stages.
 
+### Git workflow integration
+
+The agent needs a git workflow for its own operations — committing changes, creating
+branches, handling failed attempts. Not GitHub (no PRs, no issues) — local git only.
+Needs: auto-commit after successful validation, branch-per-task isolation, rollback via
+git reset on failure (cleaner than file-level rollback), cumulative diff from git diff
+instead of string accumulation. The orchestrator currently does file-level patch/rollback
+which is fragile; git gives atomic rollback for free.
+
 ### Magic Numbers (from prior review)
 
 Budget-derived or LLM-decided values that are hardcoded. Functional but could be
