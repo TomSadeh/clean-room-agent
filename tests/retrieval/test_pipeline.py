@@ -74,6 +74,11 @@ def _mock_llm_complete(prompt, system=None):
 
     if system and "task analyzer" in system.lower():
         response.text = "Fix the main function in main.py"
+    elif system and "stage router" in system.lower():
+        response.text = json.dumps({
+            "stages": ["scope", "precision"],
+            "reasoning": "Bug fix needs full context.",
+        })
     elif system and "retrieval judge" in system.lower():
         response.text = json.dumps([
             {"path": "src/main.py", "verdict": "relevant", "reason": "directly mentioned"},
@@ -693,3 +698,145 @@ class TestResumeTaskFromSession:
         assert "KeyError: missing" in result.error_patterns
         assert "ValueError: invalid input" in result.error_patterns
         session_conn.close()
+
+
+class TestPipelineRouting:
+    """Tests for LLM-based stage routing in the pipeline."""
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_routing_logged_to_raw_db(self, mock_llm_class, pipeline_repo):
+        """Routing LLM call is logged to raw DB with stage_name='stage_routing'."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        task_id = "test-routing-log-001"
+
+        run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=task_id,
+            config=_make_config(),
+        )
+
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        try:
+            calls = raw_conn.execute(
+                "SELECT * FROM retrieval_llm_calls WHERE task_id = ? AND call_type = 'stage_routing'",
+                (task_id,),
+            ).fetchall()
+            assert len(calls) == 1
+            assert calls[0]["stage_name"] == "stage_routing"
+        finally:
+            raw_conn.close()
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_routing_skips_stages(self, mock_llm_class, pipeline_repo):
+        """When routing selects no stages, stage loop is skipped and assembly uses seeds."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        call_count = 0
+
+        def _routing_skips_all(prompt, system=None):
+            nonlocal call_count
+            call_count += 1
+            response = MagicMock()
+            response.latency_ms = 100
+            response.prompt_tokens = 50
+            response.completion_tokens = 20
+
+            if system and "task analyzer" in system.lower():
+                response.text = "Fix the main function in main.py"
+            elif system and "stage router" in system.lower():
+                response.text = json.dumps({
+                    "stages": [],
+                    "reasoning": "Simple targeted edit, no expansion needed.",
+                })
+            else:
+                response.text = "Generic response"
+            return response
+
+        mock_instance = _make_mock_llm_instance()
+        mock_instance.complete.side_effect = _routing_skips_all
+        mock_llm_class.return_value = mock_instance
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        package = run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id="test-routing-skip-001",
+            config=_make_config(),
+        )
+
+        assert package is not None
+        # No scope/precision calls should have been made
+        # Only task_analysis + routing + assembly calls
+        for c in mock_instance.calls:
+            sys = c.get("system", "") or ""
+            assert "retrieval judge" not in sys.lower(), "Scope stage should not have run"
+            assert "precision analyst" not in sys.lower(), "Precision stage should not have run"
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_routing_selects_subset(self, mock_llm_class, pipeline_repo):
+        """When routing selects only scope, precision stage is skipped."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        def _routing_scope_only(prompt, system=None):
+            response = MagicMock()
+            response.latency_ms = 100
+            response.prompt_tokens = 50
+            response.completion_tokens = 20
+
+            if system and "task analyzer" in system.lower():
+                response.text = "Fix the main function in main.py"
+            elif system and "stage router" in system.lower():
+                response.text = json.dumps({
+                    "stages": ["scope"],
+                    "reasoning": "Need file expansion but not symbol classification.",
+                })
+            elif system and "retrieval judge" in system.lower():
+                response.text = json.dumps([
+                    {"path": "src/main.py", "verdict": "relevant", "reason": "mentioned"},
+                ])
+            else:
+                response.text = "Generic response"
+            return response
+
+        mock_instance = _make_mock_llm_instance()
+        mock_instance.complete.side_effect = _routing_scope_only
+        mock_llm_class.return_value = mock_instance
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        package = run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id="test-routing-subset-001",
+            config=_make_config(),
+        )
+
+        assert package is not None
+        # Precision should not have run
+        for c in mock_instance.calls:
+            sys = c.get("system", "") or ""
+            assert "precision analyst" not in sys.lower(), "Precision stage should not have run"

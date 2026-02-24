@@ -164,7 +164,11 @@ def classify_symbols(
     return results
 
 
-@register_stage("precision")
+@register_stage("precision", description=(
+    "Classifies individual symbols (functions, classes) within scoped files "
+    "by relevance level (primary, supporting, type_context) to control how "
+    "much of each file enters the context window."
+))
 class PrecisionStage:
     """Precision retrieval stage: symbol extraction + LLM classification."""
 

@@ -11,8 +11,10 @@ from clean_room_agent.retrieval.dataclasses import (
 )
 from clean_room_agent.retrieval.stage import (
     StageContext,
+    StageInfo,
     _STAGE_REGISTRY,
     get_stage,
+    get_stage_descriptions,
     register_stage,
 )
 
@@ -112,7 +114,7 @@ class TestStageRegistry:
         # Clean up after test
         original = dict(_STAGE_REGISTRY)
 
-        @register_stage("test_stage_123")
+        @register_stage("test_stage_123", description="A test stage for unit tests")
         class TestStage123:
             @property
             def name(self):
@@ -127,6 +129,32 @@ class TestStageRegistry:
         # Cleanup
         _STAGE_REGISTRY.clear()
         _STAGE_REGISTRY.update(original)
+
+    def test_registry_stores_stage_info(self):
+        original = dict(_STAGE_REGISTRY)
+
+        @register_stage("test_info_stage", description="Info test")
+        class InfoStage:
+            @property
+            def name(self):
+                return "test_info_stage"
+
+            def run(self, context, kb, task, llm):
+                return context
+
+        info = _STAGE_REGISTRY["test_info_stage"]
+        assert isinstance(info, StageInfo)
+        assert info.cls is InfoStage
+        assert info.description == "Info test"
+
+        _STAGE_REGISTRY.clear()
+        _STAGE_REGISTRY.update(original)
+
+    def test_empty_description_raises(self):
+        with pytest.raises(ValueError, match="non-empty description"):
+            @register_stage("bad_stage", description="")
+            class BadStage:
+                pass
 
     def test_unknown_stage_raises(self):
         with pytest.raises(ValueError, match="Unknown stage"):
@@ -151,6 +179,24 @@ class TestStageRegistry:
         assert scope.name == "scope"
         precision = get_stage("precision")
         assert precision.name == "precision"
+
+    def test_get_stage_descriptions(self):
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        descs = get_stage_descriptions()
+        assert "scope" in descs
+        assert "precision" in descs
+        assert "import" in descs["scope"].lower() or "files" in descs["scope"].lower()
+        assert "symbol" in descs["precision"].lower() or "classif" in descs["precision"].lower()
+
+    def test_builtin_descriptions_non_empty(self):
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        descs = get_stage_descriptions()
+        for name, desc in descs.items():
+            assert desc, f"Stage {name!r} has empty description"
 
 
 class TestFromDictMissingKeys:

@@ -114,14 +114,23 @@ class RetrievalStage(Protocol):
     ) -> StageContext: ...
 
 
+@dataclass
+class StageInfo:
+    """Registry entry for a retrieval stage."""
+    cls: type
+    description: str
+
+
 # Module-level stage registry
-_STAGE_REGISTRY: dict[str, type] = {}
+_STAGE_REGISTRY: dict[str, StageInfo] = {}
 
 
-def register_stage(name: str):
-    """Decorator to register a stage class by name."""
+def register_stage(name: str, *, description: str):
+    """Decorator to register a stage class by name with a description."""
     def decorator(cls):
-        _STAGE_REGISTRY[name] = cls
+        if not description:
+            raise ValueError(f"Stage {name!r} must have a non-empty description")
+        _STAGE_REGISTRY[name] = StageInfo(cls=cls, description=description)
         return cls
     return decorator
 
@@ -132,4 +141,9 @@ def get_stage(name: str) -> RetrievalStage:
         raise ValueError(
             f"Unknown stage {name!r}. Registered: {sorted(_STAGE_REGISTRY.keys())}"
         )
-    return _STAGE_REGISTRY[name]()
+    return _STAGE_REGISTRY[name].cls()
+
+
+def get_stage_descriptions() -> dict[str, str]:
+    """Return {name: description} for all registered stages."""
+    return {name: info.description for name, info in _STAGE_REGISTRY.items()}

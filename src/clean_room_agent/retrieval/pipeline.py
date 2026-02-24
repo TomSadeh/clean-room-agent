@@ -28,7 +28,8 @@ from clean_room_agent.retrieval.dataclasses import (
     TaskQuery,
 )
 from clean_room_agent.retrieval.preflight import run_preflight_checks
-from clean_room_agent.retrieval.stage import StageContext, get_stage
+from clean_room_agent.retrieval.routing import route_stages
+from clean_room_agent.retrieval.stage import StageContext, get_stage, get_stage_descriptions
 from clean_room_agent.retrieval.task_analysis import analyze_task
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,38 @@ def run_pipeline(
                 "seed_symbol_ids": task_query.seed_symbol_ids,
                 "error_patterns": task_query.error_patterns,
             })
+
+        # 7b. Stage routing
+        available_for_routing = {
+            name: desc for name, desc in get_stage_descriptions().items()
+            if name in stages  # only stages the config authorized
+        }
+        routing_config = router.resolve("reasoning", "stage_routing")
+        with LoggedLLMClient(routing_config) as base_routing_llm:
+            routing_llm = EnvironmentLLMClient(base_routing_llm, brief_text)
+            selected, reasoning = route_stages(
+                task_query, available_for_routing, routing_llm,
+            )
+
+            for call in routing_llm.flush():
+                insert_retrieval_llm_call(
+                    raw_conn, task_id, "stage_routing", routing_config.model,
+                    call["prompt"], call["response"],
+                    call["prompt_tokens"], call["completion_tokens"],
+                    call["elapsed_ms"],
+                    stage_name="stage_routing",
+                    system_prompt=call["system"],
+                )
+            raw_conn.commit()
+
+        set_state(session_conn, "routing_decision", {
+            "selected_stages": selected,
+            "reasoning": reasoning,
+            "available_stages": list(available_for_routing.keys()),
+        })
+
+        stage_names = selected
+        stages = {name: stages[name] for name in selected}
 
         # 8. Plan artifact
         plan_file_ids = []

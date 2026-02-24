@@ -286,6 +286,27 @@ context_window) or a dict with `model` and optional `context_window`.
 
 ## Other (Carried Forward)
 
+### Large-file refactoring exceeds context budget
+
+A single 4000+ line file classified as "primary" consumes the entire 32K context window.
+R1 prohibits downgrading to signatures, so assembly can't fit the file plus system prompt,
+task description, and supporting context. The agent won't create such files itself, but it
+may encounter them in external repos.
+
+**Chunked strategy by refactor type** (task analysis already identifies the type):
+
+- **Structural** (split, move, rename, reorganize): signatures + docstrings + return
+  statements are sufficient for planning. Edits execute per-symbol with only the relevant
+  slice in context. Fits current architecture.
+- **Simplify**: function-by-function, method-by-method, class-by-class. Each pass gets
+  only the body it's simplifying. Fits current architecture.
+- **Deduplication / extract common pattern**: requires seeing multiple bodies simultaneously
+  to recognize shared logic. Function-by-function fails because the point is *comparing*
+  them. Needs a different retrieval strategy: deterministic candidate pairing from the symbol
+  graph (similar signatures, similar callees/imports, similar line counts, similar AST
+  structure) to pre-filter likely pairs, then show their bodies side by side within budget.
+  This is a new retrieval stage pattern, not a configuration of existing stages.
+
 ### Magic Numbers (from prior review)
 
 Budget-derived or LLM-decided values that are hardcoded. Functional but could be

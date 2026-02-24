@@ -238,7 +238,11 @@ def judge_scope(
     return candidates
 
 
-@register_stage("scope")
+@register_stage("scope", description=(
+    "Finds related files beyond those explicitly mentioned, using import "
+    "dependencies, co-change history, and metadata search, then judges "
+    "each file's relevance."
+))
 class ScopeStage:
     """Scope retrieval stage: tiered expansion + LLM judgment."""
 
