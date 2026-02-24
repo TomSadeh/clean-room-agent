@@ -144,8 +144,14 @@ class ContextPackage:
 
 @dataclass
 class RefinementRequest:
-    """Request for pipeline re-entry with additional context."""
+    """Request for pipeline re-entry with additional context.
+
+    The orchestrator creates a new task_id for each refinement pass.
+    ``source_task_id`` identifies the previous pipeline run whose session
+    archive should be restored for re-entry.
+    """
     reason: str
+    source_task_id: str
     missing_files: list[str] = field(default_factory=list)
     missing_symbols: list[str] = field(default_factory=list)
     missing_tests: list[str] = field(default_factory=list)

@@ -126,7 +126,8 @@ class TestContextPackage:
 
 class TestRefinementRequest:
     def test_construction(self):
-        rr = RefinementRequest(reason="missing test files", missing_tests=["test_auth.py"])
+        rr = RefinementRequest(reason="missing test files", source_task_id="t1", missing_tests=["test_auth.py"])
         assert rr.reason == "missing test files"
+        assert rr.source_task_id == "t1"
         assert rr.missing_tests == ["test_auth.py"]
         assert rr.missing_files == []

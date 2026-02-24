@@ -5,20 +5,13 @@ the core transparency principle and Context Curation Rules (R1-R6) from CLAUDE.m
 
 ---
 
-## P2 — Medium Priority
+## Completed (P2)
 
-### T20. `_LoggingLLMClient` is pipeline-internal, not system-wide
+### ~~T20. `_LoggingLLMClient` is pipeline-internal, not system-wide~~ — FIXED
 
-The wrapper is defined inside `pipeline.py` and only used in `run_pipeline()`. Any code
-calling `LLMClient.complete()` outside the pipeline bypasses logging. As Phase 3/4 add
-more LLM call sites, unlogged calls become more likely.
-
-**Elevated from P3:** Fragmented logging violates traceability completeness. All LLM call
-sites currently log correctly, but through different paths — consolidation needed before
-Phase 3 adds more call sites.
-
-**Consider:** Making logging intrinsic to `LLMClient.complete()` via callback or
-making `LoggedLLMClient` the only way to obtain an `LLMClient` during pipeline execution.
+`LoggedLLMClient` promoted to `llm/client.py` as the standard production LLM client.
+Wraps `LLMClient` and records all calls with full I/O for the traceability chain.
+`flush()` returns and clears accumulated records. Pipeline uses it exclusively.
 
 ### ~~T21. Context window is global, not per-model override~~ — FIXED
 
@@ -32,7 +25,7 @@ context_window) or a dict with `model` and optional `context_window`.
 
 ### T22. `__del__` with `except Exception: pass`
 
-**Location:** `llm/client.py:58-59`
+**Location:** `llm/client.py:62-66`
 
 Acceptable for destructors but technically violates "do not silently recover."
 
@@ -56,7 +49,7 @@ that bytes match.
 
 ### Test Gaps (from prior review)
 
-These are test coverage improvements — not bugs. The codebase has 464 passing tests.
+These are test coverage improvements — not bugs. The codebase has 474 passing tests.
 
 **Critical — tests that miss code paths:**
 - `enrich_repository()` has zero test coverage
@@ -71,7 +64,6 @@ These are test coverage improvements — not bugs. The codebase has 464 passing 
 
 **Missing error path tests:**
 - `ModelRouter.resolve("reasoning")` when reasoning not configured
-- `_resume_task_from_session` with missing `task_query` in session
 - `enrich_repository()` with no indexed repo
 - `_check_git_available` when git is not on PATH
 - `extract_git_history` with non-zero returncode
@@ -81,7 +73,6 @@ These are test coverage improvements — not bugs. The codebase has 464 passing 
 - CLI `index`, `enrich`, `retrieve` commands
 - CLI `init` with existing `.gitignore` containing `.clean_room/`
 - `ScopeStage.run()` and `PrecisionStage.run()` wiring
-- `run_pipeline` with `refinement_request` set
 
 **Missing edge case tests:**
 - `_resolve_ts_js_baseurl` entirely untested
@@ -100,5 +91,6 @@ improved for configurability. See git history for the full table (commit `a803eb
 **8.1** Parser comment classification differs: Python `^#\s*TODO\b` (anchored) vs TS/JS
 `\bTODO\b` (anywhere). Intentional per language design.
 
-**8.2** Enrichment skip logic checks `file_id` which isn't stable across curated DB
-rebuilds. Proper fix requires adding `file_path` to `enrichment_outputs` schema.
+**~~8.2~~ FIXED:** Enrichment skip logic now uses `file_path` (stable across curated DB
+rebuilds). `enrichment_outputs` schema has `file_path TEXT` column with migration for
+existing DBs.

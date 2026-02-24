@@ -15,7 +15,7 @@ from clean_room_agent.db.raw_queries import (
     update_task_run,
 )
 from clean_room_agent.db.session_helpers import get_state, set_state
-from clean_room_agent.llm.client import LLMClient
+from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.context_assembly import assemble_context
@@ -31,32 +31,6 @@ from clean_room_agent.retrieval.stage import StageContext, get_stage
 from clean_room_agent.retrieval.task_analysis import analyze_task
 
 logger = logging.getLogger(__name__)
-
-
-class _LoggingLLMClient:
-    """LLM client wrapper that records calls for pipeline logging."""
-
-    def __init__(self, client: LLMClient):
-        self._client = client
-        self.calls: list[dict] = []
-
-    @property
-    def config(self):
-        return self._client.config
-
-    def complete(self, prompt: str, system: str | None = None):
-        start = time.monotonic()
-        response = self._client.complete(prompt, system=system)
-        elapsed = int((time.monotonic() - start) * 1000)
-        self.calls.append({
-            "prompt": prompt,
-            "system": system,
-            "response": response.text,
-            "prompt_tokens": response.prompt_tokens,
-            "completion_tokens": response.completion_tokens,
-            "elapsed_ms": elapsed,
-        })
-        return response
 
 
 def run_pipeline(
@@ -97,6 +71,12 @@ def run_pipeline(
     # Curated DB is read-only here — no cross-DB atomicity risk in Phase 2/3.
     curated_conn = get_connection("curated", repo_path=repo_path, read_only=True)
     raw_conn = get_connection("raw", repo_path=repo_path)
+
+    # For refinement re-entry, restore session from the source task's archive
+    # before opening the session connection (which would create an empty one).
+    if refinement_request is not None:
+        _restore_session_from_archive(raw_conn, repo_path, task_id, refinement_request.source_task_id)
+
     session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
 
     total_start = time.monotonic()
@@ -158,14 +138,12 @@ def run_pipeline(
             raw_conn.commit()
         else:
             reasoning_config = router.resolve("reasoning", "task_analysis")
-            with LLMClient(reasoning_config) as llm:
-                logging_llm = _LoggingLLMClient(llm)
+            with LoggedLLMClient(reasoning_config) as llm:
                 start = time.monotonic()
-                task_query = analyze_task(raw_task, task_id, mode, kb, repo_id, logging_llm)
+                task_query = analyze_task(raw_task, task_id, mode, kb, repo_id, llm)
                 elapsed = int((time.monotonic() - start) * 1000)
 
-                # Log the actual prompt/response (not just raw_task/intent_summary)
-                for call in logging_llm.calls:
+                for call in llm.flush():
                     insert_retrieval_llm_call(
                         raw_conn, task_id, "task_analysis", reasoning_config.model,
                         call["prompt"], call["response"],
@@ -220,15 +198,13 @@ def run_pipeline(
             stage = stages[stage_name]
             stage_config = router.resolve("reasoning", stage_name)
 
-            with LLMClient(stage_config) as llm:
-                logging_llm = _LoggingLLMClient(llm)
+            with LoggedLLMClient(stage_config) as llm:
                 start = time.monotonic()
-                context = stage.run(context, kb, task_query, logging_llm)
+                context = stage.run(context, kb, task_query, llm)
                 elapsed = int((time.monotonic() - start) * 1000)
                 context.stage_timings[stage_name] = elapsed
 
-                # Log all stage LLM calls to raw DB
-                for call in logging_llm.calls:
+                for call in llm.flush():
                     insert_retrieval_llm_call(
                         raw_conn, task_id, stage_name, stage_config.model,
                         call["prompt"], call["response"],
@@ -268,12 +244,10 @@ def run_pipeline(
 
         # 10. Context assembly (pass LLM for R1 re-filter if budget exceeded)
         assembly_config = router.resolve("reasoning")
-        with LLMClient(assembly_config) as assembly_llm:
-            logging_assembly_llm = _LoggingLLMClient(assembly_llm)
-            package = assemble_context(context, budget, repo_path, llm=logging_assembly_llm, kb=kb)
+        with LoggedLLMClient(assembly_config) as assembly_llm:
+            package = assemble_context(context, budget, repo_path, llm=assembly_llm, kb=kb)
 
-            # Log any assembly refilter LLM calls to raw DB
-            for call in logging_assembly_llm.calls:
+            for call in assembly_llm.flush():
                 insert_retrieval_llm_call(
                     raw_conn, task_id, "assembly_refilter", assembly_config.model,
                     call["prompt"], call["response"],
@@ -335,6 +309,41 @@ def run_pipeline(
                 logger.warning("Failed to archive session DB: %s", archive_err)
 
         raw_conn.close()
+
+
+def _restore_session_from_archive(
+    raw_conn,
+    repo_path: Path,
+    task_id: str,
+    source_task_id: str,
+) -> None:
+    """Restore session DB from a previous task's archive for refinement re-entry.
+
+    The previous pipeline run archived and deleted its session DB.  This
+    function retrieves the most recent archive blob for ``source_task_id``
+    and writes it as the session file for ``task_id`` so that
+    ``_resume_task_from_session`` can read the stored task_query.
+    """
+    session_file = _db_path(repo_path, "session", task_id)
+    if session_file.exists():
+        # Session file already exists (e.g. from a prior interrupted run) — nothing to restore
+        return
+
+    archive = raw_conn.execute(
+        "SELECT session_blob FROM session_archives WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (source_task_id,),
+    ).fetchone()
+    if not archive:
+        raise RuntimeError(
+            f"Refinement requested but no session archive found for source task {source_task_id!r}."
+        )
+
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_bytes(archive["session_blob"])
+    logger.debug(
+        "Restored session from archive (source_task_id=%s) for refinement task %s",
+        source_task_id, task_id,
+    )
 
 
 def _resume_task_from_session(

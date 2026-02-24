@@ -91,18 +91,38 @@ def _mock_llm_complete(prompt, system=None):
 
 
 def _make_mock_llm_instance():
-    """Create a mock LLM instance with config attributes for batching."""
+    """Create a mock LoggedLLMClient instance with config and call recording."""
     mock_instance = MagicMock()
-    mock_instance.complete.side_effect = _mock_llm_complete
-    mock_instance.__enter__ = MagicMock(return_value=mock_instance)
-    mock_instance.__exit__ = MagicMock(return_value=False)
+    mock_instance.calls = []
     mock_instance.config.context_window = 32768
     mock_instance.config.max_tokens = 4096
+    mock_instance.__enter__ = MagicMock(return_value=mock_instance)
+    mock_instance.__exit__ = MagicMock(return_value=False)
+
+    def _recording_complete(prompt, system=None):
+        response = _mock_llm_complete(prompt, system)
+        mock_instance.calls.append({
+            "prompt": prompt,
+            "system": system,
+            "response": response.text,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "elapsed_ms": 100,
+        })
+        return response
+
+    def _flush():
+        calls = list(mock_instance.calls)
+        mock_instance.calls.clear()
+        return calls
+
+    mock_instance.complete.side_effect = _recording_complete
+    mock_instance.flush.side_effect = _flush
     return mock_instance
 
 
 class TestRunPipeline:
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_end_to_end(self, mock_llm_class, pipeline_repo):
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
@@ -129,7 +149,7 @@ class TestRunPipeline:
         assert len(package.files) >= 1
         assert package.task.task_id == "test-pipeline-001"
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_session_archived_and_deleted(self, mock_llm_class, pipeline_repo):
         """T13: session DB is archived to raw DB and file is deleted after pipeline."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
@@ -167,7 +187,7 @@ class TestRunPipeline:
         finally:
             raw_conn.close()
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_raw_db_logging(self, mock_llm_class, pipeline_repo):
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
@@ -237,7 +257,7 @@ class TestRunPipeline:
                 config=None,
             )
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_with_plan_artifact(self, mock_llm_class, pipeline_repo):
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
@@ -268,7 +288,7 @@ class TestRunPipeline:
         assert package is not None
         assert len(package.files) >= 1
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_error_handler_propagates_original(self, mock_llm_class, pipeline_repo):
         """B2: if the pipeline errors, the original exception propagates even if DB logging fails."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
@@ -309,7 +329,7 @@ class TestRunPipeline:
 class TestPipelineTraceability:
     """T1/T2/T3: Verify full traceability of LLM calls and decisions in raw DB."""
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_system_prompt_logged(self, mock_llm_class, pipeline_repo):
         """T1: system prompts are persisted to raw DB retrieval_llm_calls."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
@@ -345,7 +365,7 @@ class TestPipelineTraceability:
         finally:
             raw_conn.close()
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_token_counts_logged(self, mock_llm_class, pipeline_repo):
         """T6: prompt_tokens and completion_tokens are captured from LLM responses."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
@@ -384,7 +404,7 @@ class TestPipelineTraceability:
         finally:
             raw_conn.close()
 
-    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_assembly_decisions_logged(self, mock_llm_class, pipeline_repo):
         """T3: assembly file decisions are logged to raw DB retrieval_decisions."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
@@ -421,6 +441,193 @@ class TestPipelineTraceability:
             raw_conn.close()
 
 
+class TestRefinementPipeline:
+    """Test pipeline re-entry via refinement_request."""
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_refinement_restores_session_and_merges(self, mock_llm_class, pipeline_repo):
+        """Full refinement flow: run pipeline, then re-enter with refinement."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        # Step 1: Normal pipeline run
+        source_task_id = "test-refine-source"
+        package1 = run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=source_task_id,
+            config=_make_config(),
+        )
+        assert package1 is not None
+
+        # Session file should be deleted after run
+        from clean_room_agent.db.connection import _db_path
+        session_file = _db_path(tmp_path, "session", source_task_id)
+        assert not session_file.exists()
+
+        # Step 2: Refinement re-entry with new task_id
+        refinement = RefinementRequest(
+            reason="need more context",
+            source_task_id=source_task_id,
+            missing_files=["src/utils.py"],
+            error_patterns=["NameError: helper not defined"],
+        )
+
+        refinement_task_id = "test-refine-pass2"
+        package2 = run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=refinement_task_id,
+            config=_make_config(),
+            refinement_request=refinement,
+        )
+        assert package2 is not None
+        assert package2.task.task_id == refinement_task_id
+        # Merged error patterns from refinement
+        assert "NameError: helper not defined" in package2.task.error_patterns
+        # Merged missing_files into mentioned_files
+        assert "src/utils.py" in package2.task.mentioned_files
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_refinement_no_archive_raises(self, mock_llm_class, pipeline_repo):
+        """Refinement without a prior session archive should fail fast."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        refinement = RefinementRequest(
+            reason="need more",
+            source_task_id="nonexistent-task",
+        )
+
+        with pytest.raises(RuntimeError, match="no session archive found"):
+            run_pipeline(
+                raw_task="Fix it",
+                repo_path=tmp_path,
+                stage_names=["scope", "precision"],
+                budget=budget,
+                mode="plan",
+                task_id="test-refine-noarchive",
+                config=_make_config(),
+                refinement_request=refinement,
+            )
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_refinement_logged_to_raw_db(self, mock_llm_class, pipeline_repo):
+        """Refinement merge decision is logged as a retrieval_llm_call."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        # Normal run first
+        run_pipeline(
+            raw_task="Fix it",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id="test-reflog-source",
+            config=_make_config(),
+        )
+
+        # Refinement run
+        refinement = RefinementRequest(
+            reason="missing context",
+            source_task_id="test-reflog-source",
+            missing_files=["extra.py"],
+        )
+        run_pipeline(
+            raw_task="Fix it",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id="test-reflog-pass2",
+            config=_make_config(),
+            refinement_request=refinement,
+        )
+
+        # Check raw DB for refinement_merge call
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        try:
+            calls = raw_conn.execute(
+                "SELECT * FROM retrieval_llm_calls WHERE task_id = ? AND call_type = 'refinement_merge'",
+                ("test-reflog-pass2",),
+            ).fetchall()
+            assert len(calls) == 1
+            assert calls[0]["stage_name"] == "task_analysis"
+        finally:
+            raw_conn.close()
+
+
+class TestRestoreSessionFromArchive:
+    def test_restore_from_archive(self, pipeline_repo):
+        """Session blob is correctly written to disk from archive."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        from clean_room_agent.db.connection import _db_path
+        from clean_room_agent.retrieval.pipeline import _restore_session_from_archive
+
+        # Create a session, write some state, archive it
+        session_conn = get_connection("session", repo_path=tmp_path, task_id="src-task")
+        set_state(session_conn, "task_query", {"raw_task": "fix it", "intent_summary": "fix"})
+        session_conn.close()
+
+        # Archive the session
+        session_file = _db_path(tmp_path, "session", "src-task")
+        session_blob = session_file.read_bytes()
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        from clean_room_agent.db.raw_queries import insert_session_archive
+        insert_session_archive(raw_conn, "src-task", session_blob)
+        raw_conn.commit()
+
+        # Delete the original
+        session_file.unlink()
+        assert not session_file.exists()
+
+        # Restore into a new task_id
+        _restore_session_from_archive(raw_conn, tmp_path, "new-task", "src-task")
+        raw_conn.close()
+
+        # Verify the restored session has the data
+        new_session_file = _db_path(tmp_path, "session", "new-task")
+        assert new_session_file.exists()
+        new_conn = get_connection("session", repo_path=tmp_path, task_id="new-task")
+        data = get_state(new_conn, "task_query")
+        assert data is not None
+        assert data["raw_task"] == "fix it"
+        new_conn.close()
+
+    def test_no_archive_raises(self, pipeline_repo):
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        from clean_room_agent.retrieval.pipeline import _restore_session_from_archive
+
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        with pytest.raises(RuntimeError, match="no session archive found"):
+            _restore_session_from_archive(raw_conn, tmp_path, "new-task", "nonexistent")
+        raw_conn.close()
+
+
 class TestResumeTaskFromSession:
     def test_error_patterns_merged(self, tmp_repo):
         """B7: error_patterns from session and refinement should be merged, not replaced."""
@@ -439,6 +646,7 @@ class TestResumeTaskFromSession:
 
         refinement = RefinementRequest(
             reason="more errors found",
+            source_task_id="merge-test",
             error_patterns=["ValueError: invalid input"],
         )
 

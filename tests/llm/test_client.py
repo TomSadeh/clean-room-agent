@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clean_room_agent.llm.client import LLMClient, LLMResponse, ModelConfig
+from clean_room_agent.llm.client import LLMClient, LLMResponse, LoggedLLMClient, ModelConfig
 
 
 class TestModelConfig:
@@ -168,4 +168,83 @@ class TestLLMClient:
         with patch.object(client._http, "post", return_value=mock_response):
             result = client.complete("short prompt")
         assert result.text == "ok"
+        client.close()
+
+
+class TestLoggedLLMClient:
+    """T20: LoggedLLMClient records all calls for the traceability chain."""
+
+    def _make_logged_client(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        return LoggedLLMClient(config)
+
+    def _mock_http_response(self, client, text="ok", prompt_tokens=10, completion_tokens=5):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "response": text,
+            "prompt_eval_count": prompt_tokens,
+            "eval_count": completion_tokens,
+        }
+        mock_response.raise_for_status = MagicMock()
+        return patch.object(client._client._http, "post", return_value=mock_response)
+
+    def test_complete_records_call(self):
+        client = self._make_logged_client()
+        with self._mock_http_response(client, "hello", 15, 8):
+            result = client.complete("test prompt", system="be helpful")
+
+        assert result.text == "hello"
+        assert len(client.calls) == 1
+        call = client.calls[0]
+        assert call["prompt"] == "test prompt"
+        assert call["system"] == "be helpful"
+        assert call["response"] == "hello"
+        assert call["prompt_tokens"] == 15
+        assert call["completion_tokens"] == 8
+        assert call["elapsed_ms"] >= 0
+        client.close()
+
+    def test_flush_returns_and_clears(self):
+        client = self._make_logged_client()
+        with self._mock_http_response(client):
+            client.complete("call 1")
+            client.complete("call 2")
+
+        assert len(client.calls) == 2
+        flushed = client.flush()
+        assert len(flushed) == 2
+        assert len(client.calls) == 0
+        assert flushed[0]["prompt"] == "call 1"
+        assert flushed[1]["prompt"] == "call 2"
+        client.close()
+
+    def test_multiple_flushes(self):
+        client = self._make_logged_client()
+        with self._mock_http_response(client):
+            client.complete("batch 1")
+        first = client.flush()
+        assert len(first) == 1
+
+        with self._mock_http_response(client):
+            client.complete("batch 2")
+        second = client.flush()
+        assert len(second) == 1
+        assert second[0]["prompt"] == "batch 2"
+        client.close()
+
+    def test_context_manager(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        with LoggedLLMClient(config) as client:
+            assert client.config.model == "qwen3:4b"
+        assert client._client._http.is_closed
+
+    def test_config_passthrough(self):
+        config = ModelConfig(
+            model="qwen3:4b", base_url="http://localhost:11434",
+            temperature=0.5, max_tokens=2048,
+        )
+        client = LoggedLLMClient(config)
+        assert client.config.model == "qwen3:4b"
+        assert client.config.temperature == 0.5
+        assert client.config.max_tokens == 2048
         client.close()

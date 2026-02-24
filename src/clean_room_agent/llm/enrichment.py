@@ -74,11 +74,10 @@ def enrich_repository(
             file_id = file_row["id"]
             file_path = file_row["path"]
 
-            # Skip already enriched files.
-            # NOTE: file_id is from curated DB; not stable across curated DB rebuilds.
-            # A full fix requires storing file_path in enrichment_outputs schema.
+            # Skip already enriched files — keyed by file_path (stable across
+            # curated DB rebuilds) rather than file_id (which changes on re-index).
             existing = raw_conn.execute(
-                "SELECT id FROM enrichment_outputs WHERE file_id = ?", (file_id,)
+                "SELECT id FROM enrichment_outputs WHERE file_path = ?", (file_path,)
             ).fetchone()
             if existing:
                 skipped += 1
@@ -122,6 +121,7 @@ def enrich_repository(
                 complexity_notes=parsed.get("complexity_notes"),
                 promoted=promote,
                 system_prompt=ENRICHMENT_SYSTEM,
+                file_path=file_path,
             )
             raw_conn.commit()
             enriched += 1

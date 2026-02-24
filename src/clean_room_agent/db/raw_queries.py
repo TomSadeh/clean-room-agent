@@ -143,16 +143,17 @@ def insert_enrichment_output(
     promoted: bool = False,
     system_prompt: str | None = None,
     task_id: str | None = None,
+    file_path: str | None = None,
 ) -> int:
     """Log an enrichment output to the raw DB. Returns the output id."""
     now = datetime.now(timezone.utc).isoformat()
     cursor = conn.execute(
         "INSERT INTO enrichment_outputs "
-        "(task_id, file_id, model, purpose, module, domain, concepts, public_api_surface, "
+        "(task_id, file_id, file_path, model, purpose, module, domain, concepts, public_api_surface, "
         "complexity_notes, system_prompt, raw_prompt, raw_response, promoted, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            task_id, file_id, model, purpose, module, domain, concepts,
+            task_id, file_id, file_path, model, purpose, module, domain, concepts,
             public_api_surface, complexity_notes, system_prompt, raw_prompt, raw_response,
             int(promoted), now,
         ),

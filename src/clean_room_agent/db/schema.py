@@ -147,6 +147,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             task_id TEXT,
             file_id INTEGER NOT NULL,
+            file_path TEXT,
             model TEXT NOT NULL,
             purpose TEXT,
             module TEXT,
@@ -300,6 +301,15 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             timestamp TEXT NOT NULL
         );
     """)
+
+    # Migration: add file_path column for existing DBs (8.2 fix).
+    # SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so catch the
+    # "duplicate column" error.  This is the one intentional silent-catch
+    # in the codebase — the migration is idempotent by construction.
+    try:
+        conn.execute("ALTER TABLE enrichment_outputs ADD COLUMN file_path TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists (new DB or migration already applied)
 
 
 def create_session_schema(conn: sqlite3.Connection) -> None:

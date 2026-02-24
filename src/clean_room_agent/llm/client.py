@@ -1,4 +1,9 @@
-"""LLM client for Ollama HTTP transport."""
+"""LLM client for Ollama HTTP transport.
+
+LLMClient is the raw transport layer.  LoggedLLMClient wraps it and records
+every call for the traceability chain — use LoggedLLMClient in all production
+code so that LLM I/O logging cannot be forgotten.
+"""
 
 import time
 from dataclasses import dataclass
@@ -104,3 +109,53 @@ class LLMClient:
             completion_tokens=data.get("eval_count"),
             latency_ms=elapsed_ms,
         )
+
+
+class LoggedLLMClient:
+    """LLM client that records all calls for the traceability chain.
+
+    Wraps LLMClient and captures full I/O for every call.  Use this in all
+    production code paths — retrieval stages, enrichment, Phase 3 execute
+    stages — so that logging is automatic and cannot be forgotten.
+
+    After a batch of calls, use ``flush()`` to retrieve and clear the
+    accumulated call records, then write them to the raw DB.
+    """
+
+    def __init__(self, config: ModelConfig):
+        self._client = LLMClient(config)
+        self.calls: list[dict] = []
+
+    @property
+    def config(self) -> ModelConfig:
+        return self._client.config
+
+    def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
+        """Send a completion request and record the full I/O."""
+        start = time.monotonic()
+        response = self._client.complete(prompt, system=system)
+        elapsed = int((time.monotonic() - start) * 1000)
+        self.calls.append({
+            "prompt": prompt,
+            "system": system,
+            "response": response.text,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "elapsed_ms": elapsed,
+        })
+        return response
+
+    def flush(self) -> list[dict]:
+        """Return and clear accumulated call records."""
+        calls = self.calls
+        self.calls = []
+        return calls
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
