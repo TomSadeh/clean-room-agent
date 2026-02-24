@@ -128,6 +128,47 @@ class TestResolveSeeds:
         file_ids, symbol_ids = resolve_seeds(signals, mock_kb, repo_id=1)
         assert symbol_ids == []
 
+    def test_like_matches_ordered_by_name_length(self):
+        """T9/R6: non-exact LIKE matches must be ordered by specificity before cap."""
+        mock_kb = MagicMock()
+        mock_kb.get_file_by_path.return_value = None
+
+        # Return matches in non-length order (simulating SQLite rowid order)
+        # Note: MagicMock(name=...) is special, must set .name after creation
+        sym_long = MagicMock()
+        sym_long.id = 1
+        sym_long.name = "verify_login_status"
+        sym_med = MagicMock()
+        sym_med.id = 2
+        sym_med.name = "login_handler"
+        sym_short = MagicMock()
+        sym_short.id = 3
+        sym_short.name = "do_login"
+        mock_kb.search_symbols_by_name.return_value = [sym_long, sym_med, sym_short]
+
+        signals = {"files": [], "symbols": ["login"]}
+        _, symbol_ids = resolve_seeds(signals, mock_kb, repo_id=1)
+        # Shortest name first (most specific match)
+        assert symbol_ids == [3, 2, 1]
+
+    def test_exact_matches_preferred_over_like(self):
+        """R6: exact name matches take priority over LIKE wildcards."""
+        mock_kb = MagicMock()
+        mock_kb.get_file_by_path.return_value = None
+
+        sym_exact = MagicMock()
+        sym_exact.id = 1
+        sym_exact.name = "login"
+        sym_like = MagicMock()
+        sym_like.id = 2
+        sym_like.name = "login_handler"
+        mock_kb.search_symbols_by_name.return_value = [sym_like, sym_exact]
+
+        signals = {"files": [], "symbols": ["login"]}
+        _, symbol_ids = resolve_seeds(signals, mock_kb, repo_id=1)
+        # Only exact match selected
+        assert symbol_ids == [1]
+
 
 class TestEnrichTaskIntent:
     def test_returns_text(self):

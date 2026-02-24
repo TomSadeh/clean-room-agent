@@ -10,6 +10,7 @@ from clean_room_agent.db.queries import upsert_file_metadata
 from clean_room_agent.db.raw_queries import insert_enrichment_output
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.llm.router import ModelRouter
+from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,17 @@ def enrich_repository(
             # Build enrichment prompt
             prompt = _build_prompt(file_path, file_id, curated_conn, repo_path)
 
+            # R3: pre-validate prompt size before sending
+            input_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(ENRICHMENT_SYSTEM)
+            available = model_config.context_window - model_config.max_tokens
+            if input_tokens > available:
+                logger.warning(
+                    "R3: enrichment prompt for %s too large (%d tokens, available %d) — skipping",
+                    file_path, input_tokens, available,
+                )
+                skipped += 1
+                continue
+
             try:
                 response = client.complete(prompt, system=ENRICHMENT_SYSTEM)
                 parsed = _parse_enrichment_response(response.text)
@@ -93,7 +105,9 @@ def enrich_repository(
                 logger.error("Enrichment failed for %s: %s", file_path, e)
                 raise
 
-            # Write to raw DB
+            # Write to raw DB first (audit trail — not rebuildable from cra index).
+            # T17: curated DB writes second — rebuildable from cra index + cra enrich.
+            # A crash between commits may leave curated stale, but raw preserves the record.
             insert_enrichment_output(
                 raw_conn,
                 file_id=file_id,
@@ -107,6 +121,7 @@ def enrich_repository(
                 public_api_surface=json.dumps(parsed.get("public_api_surface", [])),
                 complexity_notes=parsed.get("complexity_notes"),
                 promoted=promote,
+                system_prompt=ENRICHMENT_SYSTEM,
             )
             raw_conn.commit()
             enriched += 1

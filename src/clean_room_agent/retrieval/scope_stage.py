@@ -4,6 +4,7 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
+from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 from clean_room_agent.retrieval.utils import parse_json_response
@@ -194,10 +195,10 @@ def judge_scope(
     if not non_seeds:
         return candidates
 
-    # Calculate batch size from available context
+    # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
-    system_overhead = len(SCOPE_JUDGMENT_SYSTEM) // 4
-    header_overhead = len(task_header) // 4
+    system_overhead = estimate_tokens_conservative(SCOPE_JUDGMENT_SYSTEM)
+    header_overhead = estimate_tokens_conservative(task_header)
     available = llm.config.context_window - llm.config.max_tokens - system_overhead - header_overhead
     batch_size = max(1, available // _TOKENS_PER_SCOPE_CANDIDATE)
 

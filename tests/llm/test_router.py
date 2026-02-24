@@ -94,9 +94,47 @@ class TestModelRouter:
     def test_override_inherits_role_temperature(self):
         config = {
             **self.config,
-            "temperature": {"reasoning": 0.5},
+            "temperature": {"coding": 0.0, "reasoning": 0.5},
         }
         router = ModelRouter(config)
         mc = router.resolve("reasoning", stage_name="scope")
         assert mc.model == "qwen3:4b-scope-v1"
         assert mc.temperature == 0.5
+
+    def test_max_tokens_int(self):
+        config = {**self.config, "max_tokens": 2048}
+        router = ModelRouter(config)
+        mc = router.resolve("coding")
+        assert mc.max_tokens == 2048
+        mc2 = router.resolve("reasoning")
+        assert mc2.max_tokens == 2048
+
+    def test_max_tokens_dict(self):
+        config = {**self.config, "max_tokens": {"coding": 1024, "reasoning": 2048}}
+        router = ModelRouter(config)
+        assert router.resolve("coding").max_tokens == 1024
+        assert router.resolve("reasoning").max_tokens == 2048
+
+    def test_max_tokens_dict_missing_key_raises(self):
+        """T7: incomplete max_tokens dict is a config error, not silently defaulted."""
+        config = {**self.config, "max_tokens": {"coding": 1024}}
+        with pytest.raises(RuntimeError, match="max_tokens dict missing 'reasoning'"):
+            ModelRouter(config)
+
+    def test_max_tokens_invalid_type_raises(self):
+        """T7: unrecognized max_tokens type must raise, not silently default."""
+        config = {**self.config, "max_tokens": "4096"}
+        with pytest.raises(RuntimeError, match="must be an int or dict"):
+            ModelRouter(config)
+
+    def test_overrides_invalid_type_raises(self):
+        """T7: overrides must be a dict."""
+        config = {**self.config, "overrides": ["scope", "precision"]}
+        with pytest.raises(RuntimeError, match="must be a dict"):
+            ModelRouter(config)
+
+    def test_invalid_role_in_stage_override(self):
+        """T7: invalid role caught even when stage override matches."""
+        router = ModelRouter(self.config)
+        with pytest.raises(ValueError, match="Unknown role"):
+            router.resolve("invalid_role", stage_name="scope")

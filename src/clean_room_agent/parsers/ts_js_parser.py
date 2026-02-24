@@ -128,10 +128,19 @@ class TSJSParser:
         return None
 
     def _extract_signature(self, node, source: bytes) -> str:
-        # Take the first line of the node text
+        """Extract the declaration header (everything before the body).
+
+        R4/T12: Uses tree-sitter AST body node position to extract the full
+        signature including multi-line parameter lists.
+        """
+        body = node.child_by_field_name("body")
+        if body is not None:
+            header_bytes = source[node.start_byte:body.start_byte]
+            header = header_bytes.decode("utf-8", errors="replace").rstrip()
+            return header
+        # Fallback for nodes without a body (e.g., type aliases, interfaces w/o body)
         text = node.text.decode("utf-8", errors="replace")
-        first_line = text.split("\n")[0].strip()
-        return first_line
+        return text.split("\n")[0].strip()
 
     def _extract_variable_symbols(self, node, source: bytes, out: list):
         """Extract arrow functions and other variable declarations."""
@@ -304,21 +313,56 @@ class TSJSParser:
         )
 
     def _parse_commonjs_require(self, node, source: bytes) -> ExtractedImport | None:
-        """Parse CommonJS require() call from lexical/variable declarations."""
+        """Parse CommonJS require() call from lexical/variable declarations.
+
+        R4: walks the tree-sitter AST instead of regex. Handles:
+        - const x = require("module")
+        - const { x, y } = require("module")
+        - let/var variants
+        """
         if self._language != "javascript":
             return None
-        text = node.text.decode("utf-8")
-        # Handle: const x = require("...") or const { x } = require("...")
-        match = re.match(
-            r'(?:const|let|var)\s+(?:(\w+)|\{([^}]+)\})\s*=\s*require\(["\']([^"\']+)["\']\)',
-            text,
-        )
-        if match:
-            single_name, destructured, module = match.group(1), match.group(2), match.group(3)
-            if single_name:
-                names = [single_name]
-            else:
-                names = [n.strip() for n in destructured.split(",") if n.strip()]
+
+        # Walk variable_declarators inside the declaration
+        for child in node.children:
+            if child.type != "variable_declarator":
+                continue
+
+            # Right side must be a call_expression calling "require"
+            value = child.child_by_field_name("value")
+            if value is None or value.type != "call_expression":
+                continue
+            func_node = value.child_by_field_name("function")
+            if func_node is None or func_node.text != b"require":
+                continue
+
+            # Extract the module path from arguments
+            args = value.child_by_field_name("arguments")
+            if args is None:
+                continue
+            module = None
+            for arg in args.children:
+                if arg.type == "string":
+                    module = arg.text.decode("utf-8").strip("'\"")
+                    break
+            if module is None:
+                continue
+
+            # Extract names from the left side (name node)
+            name_node = child.child_by_field_name("name")
+            names = []
+            if name_node is not None:
+                if name_node.type == "identifier":
+                    names = [name_node.text.decode("utf-8")]
+                elif name_node.type == "object_pattern":
+                    for pat_child in name_node.children:
+                        if pat_child.type == "shorthand_property_identifier_pattern":
+                            names.append(pat_child.text.decode("utf-8"))
+                        elif pat_child.type == "pair_pattern":
+                            val = pat_child.child_by_field_name("value")
+                            if val and val.type == "identifier":
+                                names.append(val.text.decode("utf-8"))
+
             return ExtractedImport(
                 module=module,
                 names=names,

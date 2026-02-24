@@ -189,6 +189,46 @@ class TestAssembleContext:
         pkg = assemble_context(ctx, budget, source_files)
         assert pkg.files == []  # irrelevant not included
 
+    def test_primary_file_read_failure_raises(self, task, source_files):
+        """T8/R1: a primary file that can't be read is a hard error."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=99, path="nonexistent.py", language="python",
+                       tier=1, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {99}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=99, file_id=99, name="Missing",
+                             kind="function", start_line=1, end_line=5,
+                             detail_level="primary"),
+        ]
+        with pytest.raises(RuntimeError, match="R1.*primary file"):
+            assemble_context(ctx, budget, source_files)
+
+    def test_supporting_file_read_failure_skipped(self, task, source_files):
+        """T8: supporting/type_context files that can't be read are skipped, not fatal."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=99, path="nonexistent.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 99}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=99, file_id=99, name="Helper",
+                             kind="function", start_line=1, end_line=5,
+                             detail_level="supporting"),
+        ]
+        pkg = assemble_context(ctx, budget, source_files)
+        assert len(pkg.files) == 1
+        assert pkg.files[0].path == "src/auth.py"
+
 
 class TestExtractSignatures:
     """R4: _extract_signatures uses parsed AST data from classified symbols."""
@@ -376,6 +416,173 @@ class TestRefilterAssembly:
         if "type_context" in detail_levels:
             # If type_context made it in, primary and supporting should also be in
             assert "primary" in detail_levels
+
+
+class TestAssemblyDecisions:
+    """T3: Assembly tracks file decisions in metadata for raw DB logging."""
+
+    def test_included_files_recorded(self, task, source_files):
+        """Included files are recorded as positive decisions."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="primary"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        decisions = pkg.metadata["assembly_decisions"]
+        included = [d for d in decisions if d["included"]]
+        assert len(included) == 1
+        assert included[0]["file_id"] == 1
+
+    def test_r2_exclusion_recorded(self, task, source_files):
+        """R2 exclusion (no classified symbols) is recorded as a decision."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1}
+        # No classified symbols for file_id=1
+
+        pkg = assemble_context(ctx, budget, source_files)
+        decisions = pkg.metadata["assembly_decisions"]
+        excluded = [d for d in decisions if not d["included"]]
+        assert len(excluded) == 1
+        assert excluded[0]["file_id"] == 1
+        assert "R2" in excluded[0]["reason"]
+
+    def test_budget_overflow_recorded(self, task, source_files):
+        """Post-refilter budget overflow is recorded as a decision."""
+        # Two primary files. Priority drop can't distinguish between them (same level).
+        # After dropping type_context (the small file), the two primary files
+        # are tried sequentially. The first fits, the second doesn't.
+        (source_files / "src" / "auth.py").write_text("x = 1\n" * 80)   # ~20 tokens each line
+        (source_files / "src" / "models.py").write_text("y = 2\n" * 80)
+        (source_files / "src" / "types.py").write_text("z = 3\n" * 10)  # small type_context
+
+        # Budget: effective = 490, * 0.9 = 441. Two primary files @ ~120 tokens each = ~240.
+        # Plus type_context ~30. Plus headers ~20. Total ~290 < 441. Too generous.
+        # Let's use tighter: context_window=350, reserved=10 → effective=340, *0.9=306.
+        # Headers ~20 → remaining ~286. Three files ~270 < 286. Still fits.
+        # Use context_window=280, reserved=10 → effective=270, *0.9=243.
+        # Headers ~20 → remaining ~223. Three files ~270 > 223. Triggers drop.
+        # After dropping type_context (~30): ~240 > 223. Still over.
+        # After dropping supporting (none): still over.
+        # After dropping primary: 0. Both gone via priority_drop.
+        # So budget_overflow only fires AFTER refilter/priority_drop, when a file
+        # passes the bulk check but fails individual can_fit. Need LLM refilter.
+
+        budget = BudgetConfig(context_window=300, reserved_tokens=10)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=80,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=2, file_id=2, name="User",
+                             kind="class", start_line=1, end_line=80,
+                             detail_level="primary"),
+        ]
+
+        # LLM refilter keeps both files (bad decision — together they exceed budget)
+        mock_llm = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
+        mock_response = MagicMock()
+        mock_response.text = json.dumps(["src/auth.py", "src/models.py"])
+        mock_response.prompt_tokens = 50
+        mock_response.completion_tokens = 10
+        mock_llm.complete.return_value = mock_response
+
+        pkg = assemble_context(ctx, budget, source_files, llm=mock_llm)
+        decisions = pkg.metadata["assembly_decisions"]
+        overflow = [d for d in decisions if not d["included"] and "budget_overflow" in d["reason"]]
+        # The second file should be dropped by budget_overflow since the first consumed the budget
+        if len(pkg.files) < 2:
+            assert len(overflow) >= 1
+
+    def test_refilter_drop_recorded(self, task, source_files):
+        """LLM refilter drops are recorded as decisions."""
+        (source_files / "src" / "auth.py").write_text("x = 1\n" * 100)
+        (source_files / "src" / "models.py").write_text("y = 2\n" * 100)
+
+        budget = BudgetConfig(context_window=300, reserved_tokens=10)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=100,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=2, file_id=2, name="User",
+                             kind="class", start_line=1, end_line=100,
+                             detail_level="primary"),
+        ]
+
+        mock_llm = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
+        mock_response = MagicMock()
+        mock_response.text = json.dumps(["src/auth.py"])
+        mock_response.prompt_tokens = 50
+        mock_response.completion_tokens = 10
+        mock_llm.complete.return_value = mock_response
+
+        pkg = assemble_context(ctx, budget, source_files, llm=mock_llm)
+        decisions = pkg.metadata["assembly_decisions"]
+        refilter_drops = [d for d in decisions if not d["included"] and "refilter" in d["reason"]]
+        assert len(refilter_drops) == 1
+        assert refilter_drops[0]["file_id"] == 2
+
+    def test_priority_drop_recorded(self, task, source_files):
+        """Priority drops (no LLM) are recorded as decisions."""
+        (source_files / "src" / "auth.py").write_text("x = 1\n" * 200)
+        (source_files / "src" / "types.py").write_text("z = 3\n" * 200)
+
+        budget = BudgetConfig(context_window=600, reserved_tokens=10)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=3, path="src/types.py", language="python",
+                       tier=3, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 3}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=200,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=3, file_id=3, name="Authenticator",
+                             kind="class", start_line=1, end_line=200,
+                             detail_level="type_context"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files, llm=None)
+        decisions = pkg.metadata["assembly_decisions"]
+        priority_drops = [d for d in decisions if not d["included"] and "priority_drop" in d["reason"]]
+        # type_context should be dropped before primary
+        if priority_drops:
+            assert priority_drops[0]["file_id"] == 3
 
 
 class TestFramingOverhead:

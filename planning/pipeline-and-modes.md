@@ -248,30 +248,57 @@ This may be implemented as a dedicated `cra bootstrap <repo-path>` command or as
 
 ### 5.7 Solve Orchestrator — Recursive Planning Pipeline
 
-`cra solve` (without `--plan`) invokes a solve orchestrator that composes multiple atomic plan and implement mode passes into a multi-part task execution. The orchestrator is deterministic logic — no LLM calls, no model autonomy. It sequences passes, routes outputs between them, and manages progress state.
+`cra solve` (without `--plan`) invokes a solve orchestrator that composes multiple atomic plan and implement mode passes into a multi-part task execution. The orchestrator is deterministic logic — it sequences passes, routes outputs between them, and manages progress state.
+
+#### 5.7.0 Core Design Thesis
+
+The primary bottleneck is not coding capability but planning quality. **Qwen2.5-Coder-3B is an excellent coder for its size** — given a small enough, well-scoped task with the right context, it will produce correct code reliably. The planner's job (Qwen3-4B) is to decompose work into pieces small enough that the coder can't fail.
+
+This means the system's performance ceiling is set by the planner, not the coder. The planner uses the full N-prompt pipeline (task analysis → scope → precision → execute) for both meta-planning and part-planning — arguably the component that most needs carefully curated context, since decomposition errors cascade into every downstream step.
+
+**Granularity minimization**: Start with the smallest possible task granularity (single file, minimal edits per step) and iterate. The goal is to find the floor where further decomposition stops improving coder success rate. Larger files will strain the coder's context window; smaller tasks are always safer. Granularity can always be relaxed later if success rates are high.
 
 #### 5.7.1 Pass Hierarchy
 
-The orchestrator decomposes work through four types of atomic pipeline passes, each of which is a complete N-prompt pipeline invocation (task analysis → retrieval → execute):
+The orchestrator decomposes work through five types of atomic passes. The first four are complete N-prompt pipeline invocations (task analysis → retrieval → execute). The fifth (testing) is deterministic validation.
 
-1. **Meta-plan pass** (plan mode): Decomposes the full task into logical parts with dependency ordering. Input: original task description. Output: `MetaPlan` with ordered `MetaPlanPart` entries.
+1. **Meta-plan pass** (plan mode, Qwen3-4B): Decomposes the full task into logical parts with dependency ordering. Input: original task description. Output: `MetaPlan` with ordered `MetaPlanPart` entries.
 
-2. **Part-plan pass** (plan mode, per part): Produces a step-by-step plan for one part, with context from completed parts. Input: part description + cumulative diff from prior parts. Output: `PartPlan` with ordered `PlanStep` entries.
+2. **Part-plan pass** (plan mode, Qwen3-4B, per part): Produces a step-by-step plan for one part, with context from completed parts. Input: part description + cumulative diff from prior parts. Output: `PartPlan` with ordered `PlanStep` entries. Each step must be small enough for the coder to execute reliably.
 
-3. **Step implementation pass** (implement mode, per step): Executes one step with its plan as context. Input: step description + part plan + cumulative diff. Output: `StepResult` with the applied diff.
+3. **Step implementation pass** (implement mode, Qwen2.5-Coder-3B, per step): Executes one step with its plan as context. Input: step description + part plan + cumulative diff. Output: `StepResult` with the applied diff.
 
-4. **Adjustment pass** (plan mode, after each step): Revises remaining steps given implementation results. Input: original part plan + step results so far + cumulative diff. Output: `PlanAdjustment` with revised remaining steps.
+4. **Testing pass** (mandatory, deterministic, after every step): Runs the test suite and captures results. Input: current working tree state. Output: test pass/fail, test output, lint output, type check output. Results are logged to raw DB (`validation_results` table) and fed as input to the adjustment pass.
+
+5. **Adjustment pass** (plan mode, Qwen3-4B, after each step): Revises remaining steps given implementation results and test outcomes. Input: original part plan + step results so far + **test results** + cumulative diff. Output: `PlanAdjustment` with revised remaining steps.
 
 #### 5.7.2 Execution Flow
 
 ```
+meta_plan = run_plan_pass(task_description)               # Qwen3-4B, N-prompt pipeline
+
 for each part in meta_plan.parts (dependency order):
-    part_plan = run_plan_pass(part, cumulative_diff)
+    part_plan = run_plan_pass(part, cumulative_diff)       # Qwen3-4B, N-prompt pipeline
+
     for each step in part_plan.steps:
-        step_result = run_implement_pass(step, part_plan, cumulative_diff)
+        step_result = run_implement_pass(step, part_plan, cumulative_diff)  # Qwen2.5-Coder-3B
+        test_result = run_tests()                                           # mandatory
+
+        if test_result.failed:
+            # Coder gets one retry with failure context
+            step_result = run_implement_pass(step, part_plan, cumulative_diff,
+                                             failure_context=test_result)   # Qwen2.5-Coder-3B
+            test_result = run_tests()                                       # mandatory
+
         cumulative_diff += step_result.diff
-        adjustment = run_plan_pass(remaining_steps, step_result, cumulative_diff)
+
+        # Planner reviews diff + test results, adjusts remaining steps
+        adjustment = run_plan_pass(remaining_steps, step_result,            # Qwen3-4B
+                                   test_result, cumulative_diff)
         part_plan.steps = adjustment.revised_steps
+
+    # After part completes, planner may update meta-plan (rare)
+    meta_plan = maybe_update_meta_plan(meta_plan, part_result, cumulative_diff)
 ```
 
 The orchestrator makes all control flow decisions. The model sees only one pass at a time — it has no awareness of the orchestrator, no ability to request more passes, and no memory between passes beyond what the orchestrator explicitly provides as context.
@@ -281,9 +308,12 @@ The orchestrator makes all control flow decisions. The model sees only one pass 
 - **No model autonomy**: The orchestrator controls all sequencing, routing, and termination. Models produce outputs; the orchestrator iterates over them.
 - **Each pass is stateless**: From the model's perspective, every pass is a fresh pipeline invocation with curated context. Cross-pass continuity comes from the orchestrator feeding previous outputs as context, not from model memory.
 - **Plans are data, not instructions**: The orchestrator iterates over `MetaPlan` and `PartPlan` as data structures. The model never "follows a plan" — it receives a plan as context for generating output.
-- **Adjustment always runs**: After every step implementation, the adjustment pass runs unconditionally. If nothing changed, the model outputs the same remaining steps. This is a function call, not a decision.
+- **Mandatory testing**: Testing runs after every step implementation, unconditionally. Test results serve four purposes: (1) validation gate for the coder, (2) input signal for the planner's adjustment pass, (3) training data in raw DB, (4) auditability for the traceability chain. There is no "skip tests" path.
+- **Coder retry before planner escalation**: When tests fail, the coder gets at least one retry with the failure context (test output, error messages, failing test names). Only after retry failure does the planner's adjustment pass decide how to proceed (re-scope the step, break it smaller, or mark it failed).
+- **Adjustment always runs**: After every step implementation (including retries), the adjustment pass runs unconditionally. If nothing changed, the model outputs the same remaining steps. This is a function call, not a decision.
 - **Partial success is an explicit outcome**: If a step fails and retries are exhausted, the orchestrator records what completed and what didn't. It does not retry the entire task or silently discard progress.
 - **Natural degradation**: Single-part or single-step tasks flow through the same orchestrator — a meta-plan with one part, a part-plan with one step. No separate "simple mode."
+- **Everything is training data**: Every pass (meta-plan, part-plan, implementation, test results, adjustment) is logged to raw DB with full I/O. Plans are stored in raw DB — they are future training data for the self-improvement loop, not ephemeral artifacts.
 
 #### 5.7.4 Data Structures
 
@@ -319,10 +349,18 @@ Each pass type produces distinct training pairs with different quality signals:
 |-----------|---------------|----------------|
 | Meta-plan | task → decomposition | did all parts succeed? was the decomposition the right granularity? |
 | Part-plan | part + context → steps | did the steps lead to successful implementation? |
-| Step implementation | step + plan → code | did the code pass validation? |
-| Adjustment | plan + results → revised plan | did revised steps succeed better than the original would have? |
+| Step implementation | step + plan → code | did tests pass? did the coder need a retry? |
+| Testing | implementation → test results | pass/fail, specific failures, coverage delta |
+| Coder retry | step + plan + failure context → fixed code | did the retry succeed? what failure info was most useful? |
+| Adjustment | plan + step results + test results → revised plan | did revised steps succeed better than the original would have? |
 
-Adjustment data is particularly valuable — it captures what plans look like after encountering implementation reality, providing natural preference pairs for DPO training (original plan vs. adjusted plan, with step outcome as the quality signal).
+**Three high-value training signal sources**:
+
+1. **Adjustment data**: Captures what plans look like after encountering implementation reality, providing natural preference pairs for DPO training (original plan vs. adjusted plan, with step outcome as the quality signal).
+
+2. **Coder retry data**: Pairs of (first attempt, failure context, successful retry) reveal what context the coder was missing and what failure information is most actionable. This directly trains the retrieval pipeline to provide better context.
+
+3. **Test results as quality labels**: Every implementation attempt gets a deterministic quality label from the test suite. No human annotation needed — the tests are the ground truth. This makes test-linked training data the highest-confidence signal in the corpus.
 
 #### 5.7.8 CLI Integration
 
@@ -352,8 +390,8 @@ Defaults are enforced in config — no hardcoded values in orchestrator logic.
 3. **Handoff**: Phase 2 returns `ContextPackage` + session handle to caller.
 4. **Phase 3 inherits**: writes retry context, refinement requests.
 5. **Close**: Phase 3 closes the DB connection after the task run completes.
-6. **Archive** (optional): read closed session file as raw bytes, insert into raw DB `session_archives` as BLOB.
-7. **Delete**: remove the session SQLite file.
+6. **Archive**: pipeline `finally` block reads the closed session file as raw bytes and inserts into raw DB `session_archives` as BLOB.
+7. **Delete**: pipeline `finally` block removes the session SQLite file after archival.
 
 ---
 
@@ -386,7 +424,7 @@ When Phase 3 determines context is insufficient during the retry loop:
 1. Phase 3 classifies the attempt failure as `insufficient_context` with concrete evidence (missing files, symbols, tests, error signatures).
 2. Phase 3 writes `refinement_request` (serialized `RefinementRequest`) and `attempt_summary` to session DB.
 3. Phase 3 calls Phase 2 re-entry with the same `task_id` and session handle.
-4. Phase 2 reads `final_context` and `refinement_request` from session DB.
+4. Phase 2 reads `task_query` and `refinement_request` from session DB, merges them, and logs the merge decision to raw DB (`call_type="refinement_merge"`).
 5. Phase 2 expands context to cover missing items, re-runs stages as needed, logs new decisions to raw DB.
 6. Phase 2 writes updated `final_context` and `stage_progress` back to session DB.
 7. Phase 2 returns a new `ContextPackage`.

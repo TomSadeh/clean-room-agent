@@ -139,12 +139,13 @@ class PythonParser:
             elif child.type == "function_definition":
                 self._handle_function(child, source, symbols, parent_name)
             elif child.type == "decorated_definition":
-                # The actual definition is inside the decorated_definition
+                # The actual definition is inside the decorated_definition.
+                # Pass the decorated_definition node so start_line includes decorators.
                 for sub in child.children:
                     if sub.type == "class_definition":
-                        self._handle_class(sub, source, symbols, parent_name)
+                        self._handle_class(sub, source, symbols, parent_name, decorated_node=child)
                     elif sub.type == "function_definition":
-                        self._handle_function(sub, source, symbols, parent_name)
+                        self._handle_function(sub, source, symbols, parent_name, decorated_node=child)
             elif child.type == "expression_statement" and parent_name is None:
                 # Module-level assignments
                 self._handle_module_assignment(child, source, symbols)
@@ -155,13 +156,16 @@ class PythonParser:
         source: bytes,
         symbols: list[ExtractedSymbol],
         parent_name: str | None,
+        decorated_node=None,
     ) -> None:
         name_node = node.child_by_field_name("name")
         if name_node is None:
             return
         name = _node_text(name_node, source)
-        start_line = node.start_point[0] + 1
-        end_line = node.end_point[0] + 1
+        # T11: use decorated_definition start to include decorators in line range
+        outer = decorated_node if decorated_node is not None else node
+        start_line = outer.start_point[0] + 1
+        end_line = outer.end_point[0] + 1
 
         # Build signature: the first line of the class definition (up to the colon)
         signature = self._extract_definition_line(node, source)
@@ -186,13 +190,16 @@ class PythonParser:
         source: bytes,
         symbols: list[ExtractedSymbol],
         parent_name: str | None,
+        decorated_node=None,
     ) -> None:
         name_node = node.child_by_field_name("name")
         if name_node is None:
             return
         name = _node_text(name_node, source)
-        start_line = node.start_point[0] + 1
-        end_line = node.end_point[0] + 1
+        # T11: use decorated_definition start to include decorators in line range
+        outer = decorated_node if decorated_node is not None else node
+        start_line = outer.start_point[0] + 1
+        end_line = outer.end_point[0] + 1
         kind = "method" if parent_name is not None else "function"
 
         signature = self._extract_definition_line(node, source)
@@ -231,11 +238,22 @@ class PythonParser:
                     ))
 
     def _extract_definition_line(self, node, source: bytes) -> str:
-        """Extract the first line of a definition (up to and including the colon)."""
+        """Extract the definition header (everything before the body).
+
+        R4/T12: Uses tree-sitter AST body node position to extract the full
+        signature including multi-line parameter lists, not just the first line.
+        """
+        body = node.child_by_field_name("body")
+        if body is not None:
+            # Extract from node start to body start, trim trailing whitespace and colon
+            header_bytes = source[node.start_byte:body.start_byte]
+            header = header_bytes.decode("utf-8", errors="replace").rstrip()
+            # Normalize internal whitespace: collapse multiple spaces/newlines
+            # but preserve the structure
+            return header
+        # Fallback for nodes without a body field
         full_text = _node_text(node, source)
-        # Take up to the first colon followed by newline or end
-        first_line = full_text.split("\n")[0]
-        return first_line
+        return full_text.split("\n")[0]
 
     def _extract_module_docstring(
         self,

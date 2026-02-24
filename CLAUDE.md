@@ -34,7 +34,7 @@ Three separate SQLite files, not three schemas in one file. Independent WAL jour
 
 2. **Curated DB** (`curated.sqlite`) - deterministic indexing output (AST, deps, git metadata) plus explicitly promoted LLM enrichment data plus active adapter metadata. This is the "clean room" the model reads from. Phase 1 indexing populates it directly. Phase 2 reads from it (read-only). Phase 3 has no direct curated DB access -- all context arrives via Phase 2's `ContextPackage`. Phase 4 writes only adapter metadata. Cold-startable from `cra index` alone.
 
-3. **Session DB** (`session_<task_id>.sqlite`) - ephemeral per-task working memory. Created per task run, discarded after (optionally archived to raw). Intentionally minimal: key-value store. Phase 2 creates it, Phase 3 inherits and closes it.
+3. **Session DB** (`session_<task_id>.sqlite`) - ephemeral per-task working memory. Created per task run, archived to raw DB (`session_archives`) and deleted after pipeline completion. Intentionally minimal: key-value store. Phase 2 creates it, Phase 3 inherits and closes it.
 
 **Connection factory**: `get_connection(role, *, repo_path, task_id=None, read_only=False)` where role is `"curated"`, `"raw"`, or `"session"`. `repo_path` is keyword-only, points to the repository root. `read_only=True` is required for Phase 2 curated reads. Single point of DB management.
 

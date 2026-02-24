@@ -130,7 +130,8 @@ class TestRunPipeline:
         assert package.task.task_id == "test-pipeline-001"
 
     @patch("clean_room_agent.retrieval.pipeline.LLMClient")
-    def test_session_state_saved(self, mock_llm_class, pipeline_repo):
+    def test_session_archived_and_deleted(self, mock_llm_class, pipeline_repo):
+        """T13: session DB is archived to raw DB and file is deleted after pipeline."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
         mock_llm_class.return_value = _make_mock_llm_instance()
@@ -151,17 +152,20 @@ class TestRunPipeline:
             config=_make_config(),
         )
 
-        # Verify session DB has expected keys
-        session_conn = get_connection("session", repo_path=tmp_path, task_id=task_id)
+        # Session file should be deleted
+        session_file = tmp_path / ".clean_room" / "sessions" / f"session_{task_id}.sqlite"
+        assert not session_file.exists(), "Session file should be deleted after archival"
+
+        # Session should be archived in raw DB
+        raw_conn = get_connection("raw", repo_path=tmp_path)
         try:
-            task_query = get_state(session_conn, "task_query")
-            assert task_query is not None
-            final_ctx = get_state(session_conn, "final_context")
-            assert final_ctx is not None
-            progress = get_state(session_conn, "stage_progress")
-            assert progress is not None
+            archive = raw_conn.execute(
+                "SELECT * FROM session_archives WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            assert archive is not None
+            assert len(archive["session_blob"]) > 0
         finally:
-            session_conn.close()
+            raw_conn.close()
 
     @patch("clean_room_agent.retrieval.pipeline.LLMClient")
     def test_raw_db_logging(self, mock_llm_class, pipeline_repo):
@@ -300,6 +304,121 @@ class TestRunPipeline:
                 task_id="test-error-002",
                 config=_make_config(),
             )
+
+
+class TestPipelineTraceability:
+    """T1/T2/T3: Verify full traceability of LLM calls and decisions in raw DB."""
+
+    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    def test_system_prompt_logged(self, mock_llm_class, pipeline_repo):
+        """T1: system prompts are persisted to raw DB retrieval_llm_calls."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        task_id = "test-sysprompt-001"
+
+        run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=task_id,
+            config=_make_config(),
+        )
+
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        try:
+            calls = raw_conn.execute(
+                "SELECT * FROM retrieval_llm_calls WHERE task_id = ?", (task_id,)
+            ).fetchall()
+            assert len(calls) >= 1
+            # Every call should have a system_prompt recorded (not NULL)
+            for call in calls:
+                assert call["system_prompt"] is not None, (
+                    f"Call {call['call_type']} has NULL system_prompt"
+                )
+        finally:
+            raw_conn.close()
+
+    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    def test_token_counts_logged(self, mock_llm_class, pipeline_repo):
+        """T6: prompt_tokens and completion_tokens are captured from LLM responses."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        task_id = "test-tokens-001"
+
+        run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=task_id,
+            config=_make_config(),
+        )
+
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        try:
+            calls = raw_conn.execute(
+                "SELECT * FROM retrieval_llm_calls WHERE task_id = ?", (task_id,)
+            ).fetchall()
+            assert len(calls) >= 1
+            # Mock returns prompt_tokens=50, completion_tokens=20
+            for call in calls:
+                assert call["prompt_tokens"] == 50, (
+                    f"Call {call['call_type']} has wrong prompt_tokens: {call['prompt_tokens']}"
+                )
+                assert call["completion_tokens"] == 20, (
+                    f"Call {call['call_type']} has wrong completion_tokens: {call['completion_tokens']}"
+                )
+        finally:
+            raw_conn.close()
+
+    @patch("clean_room_agent.retrieval.pipeline.LLMClient")
+    def test_assembly_decisions_logged(self, mock_llm_class, pipeline_repo):
+        """T3: assembly file decisions are logged to raw DB retrieval_decisions."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        mock_llm_class.return_value = _make_mock_llm_instance()
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        task_id = "test-assembly-dec-001"
+
+        run_pipeline(
+            raw_task="Fix the main function in src/main.py",
+            repo_path=tmp_path,
+            stage_names=["scope", "precision"],
+            budget=budget,
+            mode="plan",
+            task_id=task_id,
+            config=_make_config(),
+        )
+
+        raw_conn = get_connection("raw", repo_path=tmp_path)
+        try:
+            decisions = raw_conn.execute(
+                "SELECT * FROM retrieval_decisions WHERE task_id = ? AND stage = 'assembly'",
+                (task_id,),
+            ).fetchall()
+            # Should have at least the included files from assembly
+            assert len(decisions) >= 1
+            # At least one should be included=True
+            included = [d for d in decisions if d["included"]]
+            assert len(included) >= 1
+        finally:
+            raw_conn.close()
 
 
 class TestResumeTaskFromSession:

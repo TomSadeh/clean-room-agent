@@ -149,6 +149,7 @@ index_runs (
 -- Phase 1: LLM enrichment outputs (full record including prompt/response)
 enrichment_outputs (
   id INTEGER PRIMARY KEY,
+  task_id TEXT,                   -- nullable; NULL for standalone cra enrich, set when pipeline-driven
   file_id INTEGER NOT NULL,
   model TEXT NOT NULL,
   purpose TEXT,
@@ -157,19 +158,21 @@ enrichment_outputs (
   concepts TEXT,                  -- JSON
   public_api_surface TEXT,        -- JSON
   complexity_notes TEXT,
+  system_prompt TEXT,             -- the system prompt sent with this call
   raw_prompt TEXT NOT NULL,
   raw_response TEXT NOT NULL,
   promoted INTEGER NOT NULL DEFAULT 0,
   timestamp TEXT NOT NULL
 )
 
--- Phase 2: LLM calls during retrieval (task analysis + stage judgment calls)
+-- Phase 2: LLM calls during retrieval (task analysis + stage judgment + assembly refilter)
 retrieval_llm_calls (
   id INTEGER PRIMARY KEY,
   task_id TEXT NOT NULL,
-  call_type TEXT NOT NULL,       -- "task_analysis", "scope_judgment", "precision_judgment", etc.
-  stage_name TEXT,               -- NULL for task_analysis, stage name for stage calls
+  call_type TEXT NOT NULL,       -- "task_analysis", "scope", "precision", "assembly_refilter", etc.
+  stage_name TEXT,               -- NULL for task_analysis, stage name for stage/assembly calls
   model TEXT NOT NULL,
+  system_prompt TEXT,            -- the system prompt sent with this call
   prompt TEXT NOT NULL,
   response TEXT NOT NULL,
   prompt_tokens INTEGER,
@@ -178,12 +181,14 @@ retrieval_llm_calls (
   timestamp TEXT NOT NULL
 )
 
--- Phase 2: per-file retrieval decisions
+-- Phase 2: per-file and per-symbol retrieval decisions
 retrieval_decisions (
   id INTEGER PRIMARY KEY,
   task_id TEXT NOT NULL,
   stage TEXT NOT NULL,
   file_id INTEGER NOT NULL,
+  symbol_id INTEGER,              -- NULL for file-level decisions, set for symbol-level
+  detail_level TEXT,              -- NULL for file-level; primary/supporting/type_context/excluded for symbols
   tier TEXT,
   included INTEGER NOT NULL,
   reason TEXT,

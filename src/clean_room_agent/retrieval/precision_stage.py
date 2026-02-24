@@ -4,6 +4,7 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
+from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 from clean_room_agent.retrieval.utils import parse_json_response
@@ -101,10 +102,10 @@ def classify_symbols(
     if not candidates:
         return []
 
-    # Calculate batch size from available context
+    # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
-    system_overhead = len(PRECISION_SYSTEM) // 4
-    header_overhead = len(task_header) // 4
+    system_overhead = estimate_tokens_conservative(PRECISION_SYSTEM)
+    header_overhead = estimate_tokens_conservative(task_header)
     available = llm.config.context_window - llm.config.max_tokens - system_overhead - header_overhead
     batch_size = max(1, available // _TOKENS_PER_SYMBOL)
 
@@ -135,7 +136,13 @@ def classify_symbols(
     results = []
     for c in candidates:
         key = (c["name"], c["file_path"], c["start_line"])
-        cl = class_map.get(key, {})
+        cl = class_map.get(key)
+        if cl is None:
+            logger.warning(
+                "R2: LLM omitted %s in %s:%d from precision classification — defaulting to excluded",
+                c["name"], c["file_path"], c["start_line"],
+            )
+            cl = {}
         detail_level = cl.get("detail_level", "excluded")
         if detail_level not in ("primary", "supporting", "type_context", "excluded"):
             logger.warning("R2: invalid detail_level %r for %s — defaulting to excluded", detail_level, c["name"])

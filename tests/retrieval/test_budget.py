@@ -3,10 +3,13 @@
 import pytest
 
 from clean_room_agent.retrieval.budget import (
+    CHARS_PER_TOKEN,
+    CHARS_PER_TOKEN_CONSERVATIVE,
     SAFETY_MARGIN,
     BudgetTracker,
     estimate_framing_tokens,
     estimate_tokens,
+    estimate_tokens_conservative,
 )
 from clean_room_agent.retrieval.dataclasses import BudgetConfig
 
@@ -94,6 +97,96 @@ class TestBudgetTracker:
         tracker = BudgetTracker(config)
         with pytest.raises(ValueError, match="negative"):
             tracker.consume(-1)
+
+
+class TestEstimateTokensConservative:
+    """T5: conservative estimator for batch sizing and input validation."""
+
+    def test_empty_string(self):
+        assert estimate_tokens_conservative("") == 1
+
+    def test_three_chars(self):
+        assert estimate_tokens_conservative("abc") == 1
+
+    def test_six_chars(self):
+        assert estimate_tokens_conservative("abcdef") == 2
+
+    def test_always_gte_planning_estimate(self):
+        """Conservative estimate must always be >= planning estimate."""
+        for text in ["short", "x" * 100, "y" * 4000, "z" * 12000]:
+            assert estimate_tokens_conservative(text) >= estimate_tokens(text)
+
+    def test_uses_conservative_ratio(self):
+        text = "x" * 3000
+        assert estimate_tokens_conservative(text) == 3000 // CHARS_PER_TOKEN_CONSERVATIVE
+
+    def test_conservative_is_stricter(self):
+        """Conservative ratio produces larger token estimates (fewer chars per token)."""
+        assert CHARS_PER_TOKEN_CONSERVATIVE < CHARS_PER_TOKEN
+
+
+class TestTokenEstimationConsistency:
+    """T5: verify batch sizing and LLM client validation use the same threshold.
+
+    The invariant: a prompt sized to fit at the conservative estimate must not
+    be rejected by LLMClient.complete()'s input validation, which uses the
+    same conservative ratio.
+    """
+
+    def test_constants_match_client(self):
+        """Budget constants re-exported from token_estimation match client's."""
+        from clean_room_agent.token_estimation import (
+            CHARS_PER_TOKEN_CONSERVATIVE as SOURCE_CONST,
+        )
+        # budget.py re-exports the same constant
+        assert CHARS_PER_TOKEN_CONSERVATIVE == SOURCE_CONST
+        # The constant that client.py uses comes from the same source module
+        from clean_room_agent.llm.client import CHARS_PER_TOKEN_CONSERVATIVE as CLIENT_CONST
+        assert CLIENT_CONST == SOURCE_CONST
+
+    def test_overhead_estimation_uses_conservative_ratio(self):
+        """Batch sizing overhead (system + header) uses the same ratio as LLMClient.
+
+        Before T5 fix, batch sizing used chars//4 for overhead while
+        LLMClient.complete() validated at chars//3, so a batch sized to fit
+        at //4 could be rejected at //3.
+        """
+        system_text = "You are a code retrieval judge." * 10  # realistic system prompt
+        header_text = "Task: refactor authentication\nIntent: split module\n\nCandidates:\n"
+
+        # The overhead estimates used by batch sizing
+        system_overhead = estimate_tokens_conservative(system_text)
+        header_overhead = estimate_tokens_conservative(header_text)
+
+        # These must be >= what the client would compute
+        # Client computes: len(total) // CHARS_PER_TOKEN_CONSERVATIVE
+        # Since estimate_tokens_conservative = max(1, len//3), the sum of
+        # individual estimates may differ from total estimate by at most
+        # 1 per component (from max(1,...) and integer truncation).
+        # But crucially, the RATIO is the same.
+        client_system = len(system_text) // CHARS_PER_TOKEN_CONSERVATIVE
+        client_header = len(header_text) // CHARS_PER_TOKEN_CONSERVATIVE
+
+        # Conservative overhead should be >= what client would compute
+        # (max(1,...) can only increase, never decrease)
+        assert system_overhead >= client_system
+        assert header_overhead >= client_header
+
+    def test_old_ratio_would_underestimate(self):
+        """Demonstrate that the old chars//4 ratio underestimates vs client's chars//3.
+
+        This is the bug T5 fixed: batch sizing at //4 created larger batches
+        than the client would accept at //3.
+        """
+        text = "x" * 12000  # large enough to see the gap clearly
+
+        old_estimate = len(text) // 4      # 3000 tokens (what batch sizing used before)
+        new_estimate = len(text) // CHARS_PER_TOKEN_CONSERVATIVE  # 4000 tokens (what client uses)
+
+        # The old estimate is 25% lower — batches sized at //4 could exceed
+        # the client's //3 threshold by up to 33%
+        assert old_estimate < new_estimate
+        assert new_estimate == estimate_tokens_conservative(text)
 
 
 class TestEstimateFramingTokens:

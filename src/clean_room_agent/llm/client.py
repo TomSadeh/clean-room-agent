@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from clean_room_agent.token_estimation import CHARS_PER_TOKEN_CONSERVATIVE
+
 
 @dataclass
 class ModelConfig:
@@ -61,8 +63,8 @@ class LLMClient:
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
         """Send a completion request to Ollama. Fail-fast, no retry."""
         # R3: Budget-validate input before sending
-        # R3: conservative estimate (chars/3) for rejection to avoid undercounting
-        input_tokens = (len(prompt) + (len(system) if system else 0)) // 3
+        # Conservative estimate to avoid undercounting (matches batch sizing)
+        input_tokens = (len(prompt) + (len(system) if system else 0)) // CHARS_PER_TOKEN_CONSERVATIVE
         available = self.config.context_window - self.config.max_tokens
         if input_tokens > available:
             raise ValueError(

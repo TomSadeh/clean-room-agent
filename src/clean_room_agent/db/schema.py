@@ -145,6 +145,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS enrichment_outputs (
             id INTEGER PRIMARY KEY,
+            task_id TEXT,
             file_id INTEGER NOT NULL,
             model TEXT NOT NULL,
             purpose TEXT,
@@ -153,6 +154,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             concepts TEXT,
             public_api_surface TEXT,
             complexity_notes TEXT,
+            system_prompt TEXT,
             raw_prompt TEXT NOT NULL,
             raw_response TEXT NOT NULL,
             promoted INTEGER NOT NULL DEFAULT 0,
@@ -165,6 +167,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             call_type TEXT NOT NULL,
             stage_name TEXT,
             model TEXT NOT NULL,
+            system_prompt TEXT,
             prompt TEXT NOT NULL,
             response TEXT NOT NULL,
             prompt_tokens INTEGER,
@@ -178,6 +181,8 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             task_id TEXT NOT NULL,
             stage TEXT NOT NULL,
             file_id INTEGER NOT NULL,
+            symbol_id INTEGER,
+            detail_level TEXT,
             tier TEXT,
             included INTEGER NOT NULL,
             reason TEXT,

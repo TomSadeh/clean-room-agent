@@ -10,6 +10,7 @@ from clean_room_agent.retrieval.budget import (
     BudgetTracker,
     estimate_framing_tokens,
     estimate_tokens,
+    estimate_tokens_conservative,
 )
 from clean_room_agent.retrieval.dataclasses import (
     BudgetConfig,
@@ -54,6 +55,7 @@ def assemble_context(
       supporting, then primary). No within-level downgrades.
     """
     tracker = BudgetTracker(budget)
+    assembly_decisions: list[dict] = []
 
     # R5: account for task/intent header overhead before file assembly
     task_header = f"# Task\n{context.task.raw_task}\n"
@@ -77,6 +79,10 @@ def assemble_context(
     for fid in context.included_file_ids:
         if fid not in file_detail:
             logger.warning("R2: file_id=%d has no classified symbols — excluding from context", fid)
+            assembly_decisions.append({
+                "file_id": fid, "included": False,
+                "reason": "R2: no classified symbols — default exclude",
+            })
 
     # 3. Build file info from scoped_files
     file_info: dict[int, dict] = {}
@@ -107,7 +113,12 @@ def assemble_context(
         try:
             source = abs_path.read_text(encoding="utf-8", errors="replace")
         except (OSError, IOError) as e:
-            logger.warning("Cannot read %s: %s", info["path"], e)
+            if detail == "primary":
+                raise RuntimeError(
+                    f"R1: cannot read primary file '{info['path']}': {e}. "
+                    f"Primary files must be readable — fix the file or re-run retrieval."
+                ) from e
+            logger.warning("Cannot read %s: %s — skipping (detail=%s)", info["path"], e, detail)
             continue
 
         rendered = _render_at_level(source, detail, fid, context, kb=kb)
@@ -128,16 +139,30 @@ def assemble_context(
     # 6. Check if total fits in budget
     total_tokens = sum(rf["tokens"] for rf in rendered_files)
 
-    if total_tokens > tracker.effective_limit:
+    if total_tokens > tracker.remaining:
         # Budget exceeded — re-filter
+        files_before = list(rendered_files)
         if llm is not None:
-            keep_paths = _refilter_files(rendered_files, tracker.effective_limit, context, llm)
+            keep_paths = _refilter_files(rendered_files, tracker.remaining, context, llm)
             rendered_files = [rf for rf in rendered_files if rf["path"] in keep_paths]
+            for rf in files_before:
+                if rf["path"] not in keep_paths:
+                    assembly_decisions.append({
+                        "file_id": rf["file_id"], "included": False,
+                        "reason": f"refilter: LLM excluded (detail={rf['detail']}, tokens={rf['tokens']})",
+                    })
         else:
             # No LLM fallback: drop entire files in reverse priority order
             logger.warning("R1: budget exceeded (%d > %d) without LLM — dropping files by priority",
-                           total_tokens, tracker.effective_limit)
-            rendered_files = _drop_by_priority(rendered_files, tracker.effective_limit)
+                           total_tokens, tracker.remaining)
+            rendered_files = _drop_by_priority(rendered_files, tracker.remaining)
+            kept_ids = {rf["file_id"] for rf in rendered_files}
+            for rf in files_before:
+                if rf["file_id"] not in kept_ids:
+                    assembly_decisions.append({
+                        "file_id": rf["file_id"], "included": False,
+                        "reason": f"priority_drop: budget exceeded (detail={rf['detail']}, tokens={rf['tokens']})",
+                    })
 
     # 7. Build final file contents, consuming budget
     file_contents: list[FileContent] = []
@@ -147,6 +172,10 @@ def assemble_context(
                 "R1: dropping '%s' — cannot fit %d tokens in remaining %d budget",
                 rf["path"], rf["tokens"], tracker.remaining,
             )
+            assembly_decisions.append({
+                "file_id": rf["file_id"], "included": False,
+                "reason": f"budget_overflow: {rf['tokens']} tokens exceeds remaining {tracker.remaining}",
+            })
             continue
 
         tracker.consume(rf["tokens"])
@@ -160,6 +189,13 @@ def assemble_context(
             included_symbols=file_symbols.get(rf["file_id"], []),
         ))
 
+    # Record included files as positive decisions
+    for fc in file_contents:
+        assembly_decisions.append({
+            "file_id": fc.file_id, "included": True,
+            "reason": f"included: detail={fc.detail_level}, tokens={fc.token_estimate}",
+        })
+
     return ContextPackage(
         task=context.task,
         files=file_contents,
@@ -169,6 +205,7 @@ def assemble_context(
             "files_considered": len(file_info),
             "files_included": len(file_contents),
             "budget_remaining": tracker.remaining,
+            "assembly_decisions": assembly_decisions,
         },
     )
 
@@ -196,8 +233,8 @@ def _refilter_files(
         f"Select the subset of files to keep within budget."
     )
 
-    # R3: validate prompt size before sending
-    prompt_tokens = estimate_tokens(prompt) + estimate_tokens(REFILTER_SYSTEM)
+    # R3: validate prompt size before sending (conservative to match LLMClient gate)
+    prompt_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(REFILTER_SYSTEM)
     available = llm.config.context_window - llm.config.max_tokens
     if prompt_tokens > available:
         logger.warning(

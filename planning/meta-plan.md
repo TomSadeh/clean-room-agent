@@ -85,11 +85,15 @@ The loop: work on real tasks -> log everything -> analyze what's weak -> curate 
 
 ### Phase 3: Code Agent
 
-**Builds**: Plan mode execute stage + implement mode execute stage. Prompt builder, response parser, patch application (git worktree isolation), validation, retry loop, refinement handoff to Phase 2, solve orchestrator.
+**Builds**: Plan mode execute stage + implement mode execute stage. Prompt builder, response parser, patch application (git worktree isolation), mandatory test validation, coder retry with failure context, adjustment pass (plan update from diff + test results), refinement handoff to Phase 2, solve orchestrator.
+
+**Core thesis**: Qwen2.5-Coder-3B codes reliably given small enough tasks. The planner (Qwen3-4B) uses the full N-prompt pipeline to decompose work into pieces the coder can't fail on. Planning quality is the bottleneck, not coding capability. The planner uses the same N-prompt pipeline strategy as the coder — arguably the component that most needs curated context.
+
+**Orchestration loop**: meta-plan (4B, N-prompt) → for each part: part-plan (4B, N-prompt) → for each step: implement (3B, N-prompt) → test (mandatory) → retry with failure context if tests fail → adjustment (4B, reviews diff + test results, updates plan). Plans, test results, and adjustments all logged to raw DB as training data.
 
 **CLI commands**: `cra plan`, `cra solve`
 
-**Gate**: `cra plan` produces actionable plans. `cra solve` produces valid patches. All activity logged to raw DB with full I/O and outcome linkage.
+**Gate**: `cra plan` produces actionable plans. `cra solve` produces valid patches with passing tests. All activity logged to raw DB with full I/O and outcome linkage. Every orchestrator pass (meta-plan, part-plan, implementation, test, adjustment) traceable via `task_id`.
 
 ### Phase 4: Self-Improvement Loop
 
@@ -135,8 +139,10 @@ Two base models, each serving a different role:
 | Task Analysis | reasoning | Qwen3-4B |
 | Scope judgment | reasoning | Qwen3-4B |
 | Precision judgment | reasoning | Qwen3-4B |
-| Execute -- Plan | reasoning | Qwen3-4B |
-| Execute -- Code | coding | Qwen2.5-Coder-3B |
+| Execute -- Plan (meta-plan, part-plan) | reasoning | Qwen3-4B |
+| Execute -- Code (step implementation) | coding | Qwen2.5-Coder-3B |
+| Execute -- Adjustment (plan update) | reasoning | Qwen3-4B |
+| Testing | deterministic | N/A (test runner) |
 | Enrichment | reasoning | Qwen3-4B |
 | Train-Plan stages | reasoning | Qwen3-4B |
 | Curate-Data stages | reasoning | Qwen3-4B |
@@ -408,7 +414,11 @@ Core data structures defined in shared modules, used across phases:
 - **Must**: Search-and-replace as the single output format for code generation.
 - **Must**: Plan mode produces structured plan artifacts consumable by implement mode.
 - **Must**: Multi-model routing via config (coding + reasoning models).
-- **Must**: Solve orchestrator composes atomic plan/implement passes (meta-plan -> part-plan -> step implementation -> adjustment).
+- **Must**: Solve orchestrator composes atomic plan/implement passes (meta-plan -> part-plan -> step implementation -> test -> retry if failed -> adjustment).
+- **Must**: Testing is mandatory after every step implementation. No "skip tests" path.
+- **Must**: Coder gets at least one retry with failure context (test output, errors) before escalating to the planner.
+- **Must**: Adjustment pass receives diff + test results as input. All adjustment LLM calls logged.
+- **Must**: Plans, test results, and adjustments stored in raw DB as training data.
 - **Must**: `--plan` bypasses orchestrator for single atomic implement pass. `--meta-plan` skips meta-plan pass only.
 - **Must**: Orchestrator logs to `orchestrator_runs` and `orchestrator_passes` in raw DB.
 - **Must**: Partial success is an explicit outcome -- orchestrator records completed and incomplete parts/steps.

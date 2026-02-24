@@ -6,10 +6,11 @@ import time
 from pathlib import Path
 
 from clean_room_agent.config import require_models_config
-from clean_room_agent.db.connection import get_connection
+from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
     insert_retrieval_decision,
     insert_retrieval_llm_call,
+    insert_session_archive,
     insert_task_run,
     update_task_run,
 )
@@ -51,6 +52,8 @@ class _LoggingLLMClient:
             "prompt": prompt,
             "system": system,
             "response": response.text,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
             "elapsed_ms": elapsed,
         })
         return response
@@ -90,6 +93,8 @@ def run_pipeline(
     execute_model_config = router.resolve("reasoning" if mode == "plan" else "coding")
 
     # 3. Open connections
+    # T17: Pipeline writes raw DB (audit trail) and session DB (ephemeral).
+    # Curated DB is read-only here — no cross-DB atomicity risk in Phase 2/3.
     curated_conn = get_connection("curated", repo_path=repo_path, read_only=True)
     raw_conn = get_connection("raw", repo_path=repo_path)
     session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
@@ -126,8 +131,31 @@ def run_pipeline(
 
         # 7. Task analysis
         if refinement_request is not None:
-            # Resume from session
+            # Resume from session — log the deterministic merge decision
             task_query = _resume_task_from_session(session_conn, refinement_request, raw_task, task_id, mode, repo_id)
+            insert_retrieval_llm_call(
+                raw_conn, task_id, "refinement_merge", "deterministic",
+                prompt=json.dumps({
+                    "refinement_request": {
+                        "missing_files": refinement_request.missing_files,
+                        "missing_symbols": refinement_request.missing_symbols,
+                        "error_patterns": refinement_request.error_patterns,
+                    },
+                }),
+                response=json.dumps({
+                    "intent_summary": task_query.intent_summary,
+                    "task_type": task_query.task_type,
+                    "mentioned_files": task_query.mentioned_files,
+                    "mentioned_symbols": task_query.mentioned_symbols,
+                    "keywords": task_query.keywords,
+                    "error_patterns": task_query.error_patterns,
+                }),
+                prompt_tokens=None,
+                completion_tokens=None,
+                latency_ms=0,
+                stage_name="task_analysis",
+            )
+            raw_conn.commit()
         else:
             reasoning_config = router.resolve("reasoning", "task_analysis")
             with LLMClient(reasoning_config) as llm:
@@ -141,8 +169,10 @@ def run_pipeline(
                     insert_retrieval_llm_call(
                         raw_conn, task_id, "task_analysis", reasoning_config.model,
                         call["prompt"], call["response"],
-                        None, None, call["elapsed_ms"],
+                        call["prompt_tokens"], call["completion_tokens"],
+                        call["elapsed_ms"],
                         stage_name="task_analysis",
+                        system_prompt=call["system"],
                     )
                 raw_conn.commit()
 
@@ -202,8 +232,10 @@ def run_pipeline(
                     insert_retrieval_llm_call(
                         raw_conn, task_id, stage_name, stage_config.model,
                         call["prompt"], call["response"],
-                        None, None, call["elapsed_ms"],
+                        call["prompt_tokens"], call["completion_tokens"],
+                        call["elapsed_ms"],
                         stage_name=stage_name,
+                        system_prompt=call["system"],
                     )
 
             # Log decisions only for files new or changed in this stage
@@ -215,6 +247,16 @@ def run_pipeline(
                         tier=str(sf.tier), reason=sf.reason,
                     )
                     logged_file_ids.add(sf.file_id)
+
+            # T16: Log symbol-level decisions if precision stage populated them
+            for sym in context.classified_symbols:
+                insert_retrieval_decision(
+                    raw_conn, task_id, stage_name, sym.file_id,
+                    included=(sym.detail_level != "excluded"),
+                    reason=sym.reason,
+                    symbol_id=sym.symbol_id,
+                    detail_level=sym.detail_level,
+                )
             raw_conn.commit()
 
             # Save stage output to session
@@ -227,7 +269,29 @@ def run_pipeline(
         # 10. Context assembly (pass LLM for R1 re-filter if budget exceeded)
         assembly_config = router.resolve("reasoning")
         with LLMClient(assembly_config) as assembly_llm:
-            package = assemble_context(context, budget, repo_path, llm=assembly_llm, kb=kb)
+            logging_assembly_llm = _LoggingLLMClient(assembly_llm)
+            package = assemble_context(context, budget, repo_path, llm=logging_assembly_llm, kb=kb)
+
+            # Log any assembly refilter LLM calls to raw DB
+            for call in logging_assembly_llm.calls:
+                insert_retrieval_llm_call(
+                    raw_conn, task_id, "assembly_refilter", assembly_config.model,
+                    call["prompt"], call["response"],
+                    call["prompt_tokens"], call["completion_tokens"],
+                    call["elapsed_ms"],
+                    stage_name="assembly",
+                    system_prompt=call["system"],
+                )
+
+        # Log assembly-stage file decisions to raw DB
+        for decision in package.metadata.get("assembly_decisions", []):
+            insert_retrieval_decision(
+                raw_conn, task_id, "assembly", decision["file_id"],
+                included=decision["included"],
+                reason=decision["reason"],
+            )
+        raw_conn.commit()
+
         package.metadata["stage_timings"] = dict(context.stage_timings)
 
         # 11. Save final context to session
@@ -256,8 +320,21 @@ def run_pipeline(
         raise
     finally:
         curated_conn.close()
-        raw_conn.close()
         session_conn.close()
+
+        # Archive session DB to raw, then delete the file
+        session_file = _db_path(repo_path, "session", task_id)
+        if session_file.exists():
+            try:
+                session_blob = session_file.read_bytes()
+                insert_session_archive(raw_conn, task_id, session_blob)
+                raw_conn.commit()
+                session_file.unlink()
+                logger.debug("Archived and removed session DB for task %s", task_id)
+            except Exception as archive_err:
+                logger.warning("Failed to archive session DB: %s", archive_err)
+
+        raw_conn.close()
 
 
 def _resume_task_from_session(

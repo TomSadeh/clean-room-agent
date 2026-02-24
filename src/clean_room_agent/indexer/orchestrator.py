@@ -308,7 +308,10 @@ def _do_index(
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    # Log to raw DB
+    # T17: Curated is committed first here because indexing data IS the curated DB —
+    # both are deterministic and rebuildable from source via `cra index`. The raw DB
+    # entry is metadata only (run stats). A crash between commits loses the audit trail
+    # for this run but curated data is consistent and re-indexing will produce the same result.
     raw_queries.insert_index_run(
         raw_conn,
         repo_path=str(repo_path),

@@ -1,13 +1,27 @@
 """Token budget estimation and tracking."""
 
 from clean_room_agent.retrieval.dataclasses import BudgetConfig
+from clean_room_agent.token_estimation import (
+    CHARS_PER_TOKEN,
+    CHARS_PER_TOKEN_CONSERVATIVE,
+)
 
 SAFETY_MARGIN = 0.9
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count from text. Conservative: ~4 chars per token."""
-    return max(1, len(text) // 4)
+    """Estimate token count from text. ~4 chars per token for budget planning."""
+    return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def estimate_tokens_conservative(text: str) -> int:
+    """Conservative token estimate for input validation and batch sizing.
+
+    Uses ~3 chars per token to match LLMClient.complete() rejection threshold.
+    Use this when computing batch sizes or validating prompt size against
+    context window limits, to ensure prompts won't be rejected downstream.
+    """
+    return max(1, len(text) // CHARS_PER_TOKEN_CONSERVATIVE)
 
 
 def estimate_framing_tokens(path: str, language: str, detail_level: str) -> int:
@@ -19,7 +33,7 @@ def estimate_framing_tokens(path: str, language: str, detail_level: str) -> int:
     open_tag = f"<code lang=\"{language}\">\n"
     close_tag = "</code>\n"
     framing = header + open_tag + close_tag
-    return len(framing) // 4
+    return len(framing) // CHARS_PER_TOKEN
 
 
 class BudgetTracker:

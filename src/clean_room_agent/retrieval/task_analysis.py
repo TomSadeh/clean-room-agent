@@ -120,9 +120,13 @@ def resolve_seeds(
     for name in signals.get("symbols", []):
         matches = kb.search_symbols_by_name(repo_id, name)
         if matches:
-            # R6: prefer exact matches; cap per pattern to avoid explosion from LIKE wildcards
+            # R6: prefer exact matches; for LIKE results, order by name length
+            # (shorter = more specific match) before capping
             exact = [s for s in matches if s.name == name]
-            selected = exact if exact else matches
+            if exact:
+                selected = exact
+            else:
+                selected = sorted(matches, key=lambda s: len(s.name))
             symbol_ids.extend(s.id for s in selected[:10])
         else:
             logger.debug("Unresolved symbol: %s", name)

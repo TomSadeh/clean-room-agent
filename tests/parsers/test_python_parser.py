@@ -192,3 +192,105 @@ class TestSignatures:
         result = make_result()
         by_name = {s.name: s for s in result.symbols}
         assert "MAX_SIZE = 1024" in by_name["MAX_SIZE"].signature
+
+
+class TestDecoratedDefinitions:
+    """T11: decorated symbols should include decorator lines in their range."""
+
+    DECORATED_SOURCE = b'''
+@dataclass
+class Config:
+    """Configuration."""
+    name: str = "default"
+
+@staticmethod
+def standalone():
+    pass
+
+class Outer:
+    @property
+    def value(self):
+        return 42
+
+    @classmethod
+    def create(cls):
+        return cls()
+'''
+
+    def test_decorated_class_start_line(self):
+        parser = PythonParser()
+        result = parser.parse(self.DECORATED_SOURCE, "decorated.py")
+        by_name = {s.name: s for s in result.symbols}
+        config = by_name["Config"]
+        # @dataclass is on line 2, class Config on line 3
+        assert config.start_line == 2  # includes the decorator
+
+    def test_decorated_function_start_line(self):
+        parser = PythonParser()
+        result = parser.parse(self.DECORATED_SOURCE, "decorated.py")
+        by_name = {s.name: s for s in result.symbols}
+        standalone = by_name["standalone"]
+        # @staticmethod is on line 7, def standalone on line 8
+        assert standalone.start_line == 7  # includes the decorator
+
+    def test_decorated_method_start_line(self):
+        parser = PythonParser()
+        result = parser.parse(self.DECORATED_SOURCE, "decorated.py")
+        by_name = {s.name: s for s in result.symbols}
+        value = by_name["value"]
+        # @property is on line 12, def value on line 13
+        assert value.start_line == 12  # includes the decorator
+
+    def test_undecorated_start_line_unchanged(self):
+        parser = PythonParser()
+        result = parser.parse(self.DECORATED_SOURCE, "decorated.py")
+        by_name = {s.name: s for s in result.symbols}
+        outer = by_name["Outer"]
+        # class Outer: is on line 11, no decorator
+        assert outer.start_line == 11
+
+
+class TestMultiLineSignatures:
+    """T12: multi-line signatures should include full parameter list."""
+
+    MULTILINE_SOURCE = b'''
+def simple(x: int) -> bool:
+    return True
+
+def complex_func(
+    param1: str,
+    param2: int,
+    param3: list,
+) -> bool:
+    return True
+
+class Base(
+    Protocol,
+):
+    pass
+'''
+
+    def test_single_line_signature(self):
+        parser = PythonParser()
+        result = parser.parse(self.MULTILINE_SOURCE, "multi.py")
+        by_name = {s.name: s for s in result.symbols}
+        sig = by_name["simple"].signature
+        assert "def simple(x: int) -> bool:" in sig
+
+    def test_multiline_function_signature(self):
+        parser = PythonParser()
+        result = parser.parse(self.MULTILINE_SOURCE, "multi.py")
+        by_name = {s.name: s for s in result.symbols}
+        sig = by_name["complex_func"].signature
+        # Should contain all parameters, not just first line
+        assert "param1" in sig
+        assert "param2" in sig
+        assert "param3" in sig
+        assert "-> bool:" in sig
+
+    def test_multiline_class_signature(self):
+        parser = PythonParser()
+        result = parser.parse(self.MULTILINE_SOURCE, "multi.py")
+        by_name = {s.name: s for s in result.symbols}
+        sig = by_name["Base"].signature
+        assert "Protocol" in sig

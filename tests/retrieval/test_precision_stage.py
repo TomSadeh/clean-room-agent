@@ -146,6 +146,31 @@ class TestClassifySymbols:
         result = classify_symbols(candidates, task, mock_llm)
         assert result[0].detail_level == "excluded"  # R2: invalid -> excluded (default-deny)
 
+    def test_omitted_candidate_defaults_to_excluded(self):
+        """T18/R2: LLM omitting a candidate produces a warning and defaults to excluded."""
+        # LLM response only classifies "login", omits "helper"
+        mock_llm = _mock_llm_with_response(json.dumps([
+            {"name": "login", "file_path": "auth.py", "start_line": 1, "detail_level": "primary", "reason": "changed"},
+        ]))
+
+        candidates = [
+            {
+                "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
+                "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
+                "signature": "def login()", "connections": [],
+            },
+            {
+                "symbol_id": 2, "file_id": 10, "file_path": "auth.py",
+                "name": "helper", "kind": "function", "start_line": 15, "end_line": 20,
+                "signature": "def helper()", "connections": [],
+            },
+        ]
+        task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
+
+        result = classify_symbols(candidates, task, mock_llm)
+        helper_cs = next(cs for cs in result if cs.name == "helper")
+        assert helper_cs.detail_level == "excluded"
+
     def test_key_collision_same_name_different_lines(self):
         """B4: Two symbols named __init__ at different lines are classified independently."""
         mock_llm = _mock_llm_with_response(json.dumps([
