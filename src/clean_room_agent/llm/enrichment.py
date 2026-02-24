@@ -5,7 +5,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from clean_room_agent.config import load_config, require_models_config
 from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db.queries import upsert_file_metadata
 from clean_room_agent.db.raw_queries import insert_enrichment_output
@@ -34,10 +33,16 @@ class EnrichmentResult:
     files_promoted: int
 
 
-def enrich_repository(repo_path: Path, promote: bool = False) -> EnrichmentResult:
-    """Run LLM enrichment on all indexed files."""
-    config = load_config(repo_path)
-    models_config = require_models_config(config)
+def enrich_repository(
+    repo_path: Path, models_config: dict, promote: bool = False
+) -> EnrichmentResult:
+    """Run LLM enrichment on all indexed files.
+
+    Args:
+        repo_path: Root of the target repository.
+        models_config: The [models] config dict (caller validates via require_models_config).
+        promote: If True, copy enrichment data to curated DB.
+    """
     router = ModelRouter(models_config)
     model_config = router.resolve("reasoning")
     client = LLMClient(model_config)
@@ -46,7 +51,18 @@ def enrich_repository(repo_path: Path, promote: bool = False) -> EnrichmentResul
     raw_conn = get_connection("raw", repo_path=repo_path)
 
     try:
-        files = curated_conn.execute("SELECT * FROM files").fetchall()
+        # Scope to the repo at this path (multi-repo safe)
+        repo_row = curated_conn.execute(
+            "SELECT id FROM repos WHERE path = ?", (str(repo_path),)
+        ).fetchone()
+        if not repo_row:
+            raise RuntimeError(
+                f"No indexed repo found at {repo_path}. Run 'cra index' first."
+            )
+        repo_id = repo_row["id"]
+        files = curated_conn.execute(
+            "SELECT * FROM files WHERE repo_id = ?", (repo_id,)
+        ).fetchall()
         enriched = 0
         skipped = 0
         promoted = 0
@@ -70,8 +86,7 @@ def enrich_repository(repo_path: Path, promote: bool = False) -> EnrichmentResul
                 response = client.complete(prompt, system=ENRICHMENT_SYSTEM)
                 parsed = _parse_enrichment_response(response.text)
             except Exception as e:
-                logger.error("Enrichment failed for %s: %s (raw response: %s)",
-                             file_path, e, getattr(e, 'response_text', 'N/A'))
+                logger.error("Enrichment failed for %s: %s", file_path, e)
                 raise
 
             # Write to raw DB
@@ -115,6 +130,7 @@ def enrich_repository(repo_path: Path, promote: bool = False) -> EnrichmentResul
             files_promoted=promoted,
         )
     finally:
+        client.close()
         curated_conn.close()
         raw_conn.close()
 
@@ -153,13 +169,10 @@ def _build_prompt(
     # Add source preview (first 100 lines)
     abs_path = repo_path / file_path
     if abs_path.exists():
-        try:
-            source = abs_path.read_text(errors="replace")
-            lines = source.split("\n")[:100]
-            parts.append("Source preview (first 100 lines):")
-            parts.append("\n".join(lines))
-        except OSError:
-            pass
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+        lines = source.split("\n")[:100]
+        parts.append("Source preview (first 100 lines):")
+        parts.append("\n".join(lines))
 
     return "\n".join(parts)
 
@@ -167,10 +180,17 @@ def _build_prompt(
 def _parse_enrichment_response(text: str) -> dict:
     """Parse JSON from the LLM response."""
     text = text.strip()
-    # Strip markdown code fencing if present
+    # Strip markdown code fencing if present (only opening and closing fences)
     if text.startswith("```"):
         lines = text.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
+        # Remove opening fence (first line)
+        lines = lines[1:]
+        # Remove closing fence (last non-empty line)
+        while lines and lines[-1].strip() in ("```", ""):
+            if lines[-1].strip() == "```":
+                lines.pop()
+                break
+            lines.pop()
         text = "\n".join(lines)
     try:
         return json.loads(text)

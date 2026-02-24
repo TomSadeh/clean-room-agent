@@ -45,10 +45,10 @@ def _check_git_available() -> None:
             text=True,
             check=False,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise RuntimeError(
             "git not found on PATH. Install git to use indexing features."
-        )
+        ) from e
     if result.returncode != 0:
         raise RuntimeError(
             "git not found on PATH. Install git to use indexing features."
@@ -56,17 +56,18 @@ def _check_git_available() -> None:
 
 
 def get_remote_url(repo_path: Path) -> str | None:
-    """Return the remote.origin.url for the repo, or None if unavailable."""
-    try:
-        result = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(repo_path),
-        )
-    except FileNotFoundError:
-        return None
+    """Return the remote.origin.url for the repo, or None if no remote is configured.
+
+    Raises RuntimeError if git is not available (delegates to _check_git_available).
+    """
+    _check_git_available()
+    result = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(repo_path),
+    )
     if result.returncode != 0:
         return None
     url = result.stdout.strip()
@@ -137,6 +138,7 @@ def extract_git_history(
     repo_path: Path,
     file_index: set[str],
     max_commits: int = 500,
+    remote_url: str | None = None,
 ) -> GitHistory:
     """Extract git history, file-commit associations, and co-change pairs.
 
@@ -145,6 +147,8 @@ def extract_git_history(
         file_index: Set of relative file paths currently tracked in the repo.
             Only these files are included in file_commit_map and co-change analysis.
         max_commits: Maximum number of commits to examine.
+        remote_url: Pre-fetched remote URL (avoids redundant subprocess call).
+            If None, fetched internally.
 
     Returns:
         GitHistory with commits, file associations, co-change pairs, and remote URL.
@@ -177,7 +181,7 @@ def extract_git_history(
                 commits=[],
                 file_commit_map={},
                 co_change_counts={},
-                remote_url=get_remote_url(repo_path),
+                remote_url=remote_url if remote_url is not None else get_remote_url(repo_path),
             )
         raise RuntimeError(
             f"git log failed (exit {result.returncode}): {result.stderr.strip()}"
@@ -214,7 +218,8 @@ def extract_git_history(
         if count >= CO_CHANGE_MIN_COUNT
     }
 
-    remote_url = get_remote_url(repo_path)
+    if remote_url is None:
+        remote_url = get_remote_url(repo_path)
 
     return GitHistory(
         commits=commits,

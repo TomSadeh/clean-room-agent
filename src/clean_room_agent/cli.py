@@ -75,8 +75,8 @@ def enrich(repo_path, promote):
 
     repo = Path(repo_path).resolve()
     config = load_config(repo)
-    require_models_config(config)
-    result = enrich_repository(repo, promote=promote)
+    models_config = require_models_config(config)
+    result = enrich_repository(repo, models_config, promote=promote)
     click.echo(f"Enriched {result.files_enriched} files ({result.files_skipped} skipped)")
     if promote:
         click.echo(f"Promoted {result.files_promoted} to curated DB")

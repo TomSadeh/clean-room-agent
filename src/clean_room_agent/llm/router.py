@@ -15,9 +15,12 @@ class ModelRouter:
         if "provider" not in models_config:
             raise RuntimeError("Missing 'provider' in [models] config")
         self._provider = models_config["provider"]
+
+        # Temperature per role: read from config, default to 0.0 (deterministic)
+        temps = models_config.get("temperature", {})
         self._temperature = {
-            "coding": 0.0,
-            "reasoning": 0.0,
+            "coding": temps.get("coding", 0.0),
+            "reasoning": temps.get("reasoning", 0.0),
         }
 
         if not self._base_url:

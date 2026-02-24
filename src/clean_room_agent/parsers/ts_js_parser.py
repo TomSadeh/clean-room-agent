@@ -1,5 +1,6 @@
 """Tree-sitter parser for TypeScript and JavaScript."""
 
+import json
 import re
 
 import tree_sitter_javascript as tsjs
@@ -11,7 +12,6 @@ from clean_room_agent.parsers.base import (
     ExtractedDocstring,
     ExtractedImport,
     ExtractedSymbol,
-    LanguageParser,
     ParseResult,
 )
 
@@ -180,7 +180,7 @@ class TSJSParser:
         return docstrings
 
     def _clean_jsdoc(self, text: str) -> str:
-        """Strip JSDoc comment markers."""
+        """Strip JSDoc comment markers, preserving paragraph breaks."""
         lines = text.split("\n")
         cleaned = []
         for line in lines:
@@ -191,13 +191,16 @@ class TSJSParser:
                 continue
             elif line.startswith("*"):
                 line = line[1:].strip()
-            if line:
-                cleaned.append(line)
+            cleaned.append(line)
+        # Strip leading/trailing empty lines, keep internal ones
+        while cleaned and not cleaned[0]:
+            cleaned.pop(0)
+        while cleaned and not cleaned[-1]:
+            cleaned.pop()
         return "\n".join(cleaned)
 
     def _parse_jsdoc_tags(self, content: str) -> str:
         """Extract JSDoc tags into JSON string."""
-        import json
         tags = {}
         for match in _JSDOC_TAG.finditer(content):
             tag, value = match.group(1), match.group(2).strip()

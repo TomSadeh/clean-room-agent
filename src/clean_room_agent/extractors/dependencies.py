@@ -1,13 +1,10 @@
 """Import resolution to file-level dependency edges."""
 
 import json
-import logging
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from clean_room_agent.parsers.base import ExtractedImport
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,7 +40,7 @@ def resolve_dependencies(
         elif language in ("typescript", "javascript"):
             targets = _resolve_ts_js_import(imp, file_path, file_index, repo_path)
         else:
-            continue
+            raise ValueError(f"Unsupported language for dependency resolution: {language!r}")
 
         kind = "type_ref" if imp.is_type_only else "import"
         for target in targets:
@@ -209,27 +206,27 @@ def _resolve_ts_js_baseurl(
 
 
 def _has_base_url(repo_path: Path) -> bool:
-    """Check if tsconfig.json has a baseUrl."""
+    """Check if tsconfig.json has a baseUrl.
+
+    Raises on malformed tsconfig.json (fail-fast).
+    """
     tsconfig = repo_path / "tsconfig.json"
     if not tsconfig.exists():
         return False
-    try:
-        data = json.loads(tsconfig.read_text())
-        return bool(data.get("compilerOptions", {}).get("baseUrl"))
-    except (json.JSONDecodeError, OSError):
-        return False
+    data = json.loads(tsconfig.read_text())
+    return bool(data.get("compilerOptions", {}).get("baseUrl"))
 
 
 def _read_tsconfig_paths(repo_path: Path) -> tuple[str, dict]:
-    """Read baseUrl and paths from tsconfig.json."""
+    """Read baseUrl and paths from tsconfig.json.
+
+    Raises on malformed tsconfig.json (fail-fast).
+    """
     tsconfig = repo_path / "tsconfig.json"
     if not tsconfig.exists():
         return "", {}
-    try:
-        data = json.loads(tsconfig.read_text())
-        opts = data.get("compilerOptions", {})
-        base_url = opts.get("baseUrl", "")
-        paths = opts.get("paths", {})
-        return base_url, paths
-    except (json.JSONDecodeError, OSError):
-        return "", {}
+    data = json.loads(tsconfig.read_text())
+    opts = data.get("compilerOptions", {})
+    base_url = opts.get("baseUrl", "")
+    paths = opts.get("paths", {})
+    return base_url, paths

@@ -97,9 +97,8 @@ def _walk_repo(repo_path: Path, gitignore_spec: pathspec.PathSpec | None):
         current = stack.pop()
         try:
             entries = sorted(current.iterdir(), key=lambda p: p.name)
-        except PermissionError:
-            logger.warning("Permission denied: %s", current)
-            continue
+        except PermissionError as e:
+            raise PermissionError(f"Cannot read directory {current}: {e}") from e
 
         dirs: list[Path] = []
         files: list[Path] = []

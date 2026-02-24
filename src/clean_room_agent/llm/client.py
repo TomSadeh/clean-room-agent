@@ -18,8 +18,8 @@ class ModelConfig:
 @dataclass
 class LLMResponse:
     text: str
-    prompt_tokens: int
-    completion_tokens: int
+    prompt_tokens: int | None
+    completion_tokens: int | None
     latency_ms: int
 
 
@@ -28,13 +28,18 @@ class LLMClient:
 
     def __init__(self, config: ModelConfig):
         self.config = config
+        if config.provider != "ollama":
+            raise RuntimeError(
+                f"LLM provider '{config.provider}' is not implemented in this MVP client."
+            )
+        self._http = httpx.Client(timeout=300.0)
+
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        self._http.close()
 
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
         """Send a completion request to Ollama. Fail-fast, no retry."""
-        if self.config.provider != "ollama":
-            raise RuntimeError(
-                f"LLM provider '{self.config.provider}' is not implemented in this MVP client."
-            )
         url = f"{self.config.base_url}/api/generate"
         payload = {
             "model": self.config.model,
@@ -49,9 +54,8 @@ class LLMClient:
             payload["system"] = system
 
         start = time.monotonic()
-        with httpx.Client(timeout=300.0) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
+        response = self._http.post(url, json=payload)
+        response.raise_for_status()
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         data = response.json()
@@ -61,7 +65,7 @@ class LLMClient:
             )
         return LLMResponse(
             text=data["response"],
-            prompt_tokens=data.get("prompt_eval_count", 0),
-            completion_tokens=data.get("eval_count", 0),
+            prompt_tokens=data.get("prompt_eval_count"),
+            completion_tokens=data.get("eval_count"),
             latency_ms=elapsed_ms,
         )
