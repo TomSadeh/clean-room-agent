@@ -5,7 +5,7 @@ the core transparency principle and Context Curation Rules (R1-R6) from CLAUDE.m
 
 ---
 
-## P3 — Low Priority
+## P2 — Medium Priority
 
 ### T20. `_LoggingLLMClient` is pipeline-internal, not system-wide
 
@@ -13,16 +13,22 @@ The wrapper is defined inside `pipeline.py` and only used in `run_pipeline()`. A
 calling `LLMClient.complete()` outside the pipeline bypasses logging. As Phase 3/4 add
 more LLM call sites, unlogged calls become more likely.
 
+**Elevated from P3:** Fragmented logging violates traceability completeness. All LLM call
+sites currently log correctly, but through different paths — consolidation needed before
+Phase 3 adds more call sites.
+
 **Consider:** Making logging intrinsic to `LLMClient.complete()` via callback or
 making `LoggedLLMClient` the only way to obtain an `LLMClient` during pipeline execution.
 
-### T21. Context window is global, not per-model override
+### ~~T21. Context window is global, not per-model override~~ — FIXED
 
-`ModelRouter` uses a single `context_window` from config applied to all `ModelConfig`
-instances. If stage overrides route to a model with a different context window, the
-global value is still used.
+`ModelRouter` now supports `context_window` as int (global) or dict (per-role), matching
+the `max_tokens` pattern. Stage overrides can be a string (model tag, inherits role's
+context_window) or a dict with `model` and optional `context_window`.
 
-**Location:** `llm/router.py:15-16`
+---
+
+## P3 — Low Priority
 
 ### T22. `__del__` with `except Exception: pass`
 
@@ -50,12 +56,10 @@ that bytes match.
 
 ### Test Gaps (from prior review)
 
-These are test coverage improvements — not bugs. The codebase has 433 passing tests.
+These are test coverage improvements — not bugs. The codebase has 464 passing tests.
 
-**Critical — tests that can't fail or miss code paths:**
+**Critical — tests that miss code paths:**
 - `enrich_repository()` has zero test coverage
-- `test_tier_3_co_changes` has zero assertions
-- `test_keywords_ordered_by_length` is vacuously true
 
 **Missing public API tests:**
 - `get_file_by_id`, `get_symbol_by_id` — no direct test

@@ -138,3 +138,96 @@ class TestModelRouter:
         router = ModelRouter(self.config)
         with pytest.raises(ValueError, match="Unknown role"):
             router.resolve("invalid_role", stage_name="scope")
+
+
+class TestContextWindowPerRole:
+    """T21: context_window must be per-role, not global-only."""
+
+    def setup_method(self):
+        self.base = {
+            "coding": "qwen2.5-coder:3b",
+            "reasoning": "qwen3:4b",
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+        }
+
+    def test_int_applies_to_both_roles(self):
+        config = {**self.base, "context_window": 32768}
+        router = ModelRouter(config)
+        assert router.resolve("coding").context_window == 32768
+        assert router.resolve("reasoning").context_window == 32768
+
+    def test_dict_per_role(self):
+        config = {**self.base, "context_window": {"coding": 16384, "reasoning": 32768}}
+        router = ModelRouter(config)
+        assert router.resolve("coding").context_window == 16384
+        assert router.resolve("reasoning").context_window == 32768
+
+    def test_dict_missing_role_raises(self):
+        config = {**self.base, "context_window": {"coding": 16384}}
+        with pytest.raises(RuntimeError, match="context_window dict missing 'reasoning'"):
+            ModelRouter(config)
+
+    def test_invalid_type_raises(self):
+        config = {**self.base, "context_window": "32768"}
+        with pytest.raises(RuntimeError, match="must be an int or dict"):
+            ModelRouter(config)
+
+    def test_override_inherits_role_context_window(self):
+        """Override without context_window uses the role's value."""
+        config = {
+            **self.base,
+            "context_window": {"coding": 16384, "reasoning": 32768},
+            "overrides": {"scope": "qwen3:4b-scope-v1"},
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.model == "qwen3:4b-scope-v1"
+        assert mc.context_window == 32768
+
+    def test_override_dict_with_context_window(self):
+        """Override dict can specify its own context_window."""
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {
+                "scope": {"model": "qwen3:4b-scope-v1", "context_window": 65536},
+            },
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.model == "qwen3:4b-scope-v1"
+        assert mc.context_window == 65536
+
+    def test_override_dict_without_context_window_inherits(self):
+        """Override dict without context_window falls back to role."""
+        config = {
+            **self.base,
+            "context_window": {"coding": 16384, "reasoning": 32768},
+            "overrides": {
+                "scope": {"model": "qwen3:4b-scope-v1"},
+            },
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.context_window == 32768
+
+    def test_override_dict_missing_model_raises(self):
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {"scope": {"context_window": 65536}},
+        }
+        router = ModelRouter(config)
+        with pytest.raises(RuntimeError, match="missing 'model' key"):
+            router.resolve("reasoning", stage_name="scope")
+
+    def test_override_invalid_type_raises(self):
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {"scope": 42},
+        }
+        router = ModelRouter(config)
+        with pytest.raises(RuntimeError, match="must be a string or dict"):
+            router.resolve("reasoning", stage_name="scope")

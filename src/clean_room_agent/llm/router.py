@@ -22,7 +22,23 @@ class ModelRouter:
 
         if "context_window" not in models_config:
             raise RuntimeError("Missing 'context_window' in [models] config")
-        self._context_window = models_config["context_window"]
+
+        # context_window per role: int (both roles) or dict with both role keys
+        cw = models_config["context_window"]
+        if isinstance(cw, int):
+            self._context_window = {"coding": cw, "reasoning": cw}
+        elif isinstance(cw, dict):
+            for role in self._VALID_ROLES:
+                if role not in cw:
+                    raise RuntimeError(
+                        f"context_window dict missing '{role}' key. "
+                        f"Provide both 'coding' and 'reasoning', or use a single int."
+                    )
+            self._context_window = {"coding": cw["coding"], "reasoning": cw["reasoning"]}
+        else:
+            raise RuntimeError(
+                f"'context_window' must be an int or dict, got {type(cw).__name__}"
+            )
 
         if "provider" not in models_config:
             raise RuntimeError("Missing 'provider' in [models] config")
@@ -60,22 +76,40 @@ class ModelRouter:
 
         Resolution order:
         1. [models.overrides] has a key matching stage_name -> use that model tag
+           Override can be a string (model tag) or dict with 'model' and optional 'context_window'.
         2. No stage override -> use [models].<role> (coding or reasoning)
         3. [models] section missing the role -> hard error
+
+        context_window resolution: override-specific > role-specific > (fail-fast if missing)
         """
         if role not in self._VALID_ROLES:
             raise ValueError(f"Unknown role: {role!r}. Must be 'coding' or 'reasoning'.")
 
         # Check stage override first
         if stage_name and stage_name in self._overrides:
-            model_tag = self._overrides[stage_name]
+            override = self._overrides[stage_name]
+            if isinstance(override, str):
+                model_tag = override
+                cw = self._context_window[role]
+            elif isinstance(override, dict):
+                if "model" not in override:
+                    raise RuntimeError(
+                        f"Override for stage '{stage_name}' is a dict but missing 'model' key."
+                    )
+                model_tag = override["model"]
+                cw = override.get("context_window", self._context_window[role])
+            else:
+                raise RuntimeError(
+                    f"Override for stage '{stage_name}' must be a string or dict, "
+                    f"got {type(override).__name__}"
+                )
             return ModelConfig(
                 model=model_tag,
                 base_url=self._base_url,
                 provider=self._provider,
                 temperature=self._temperature[role],
                 max_tokens=self._max_tokens[role],
-                context_window=self._context_window,
+                context_window=cw,
             )
 
         # Role-based default
@@ -88,5 +122,5 @@ class ModelRouter:
             provider=self._provider,
             temperature=self._temperature[role],
             max_tokens=self._max_tokens[role],
-            context_window=self._context_window,
+            context_window=self._context_window[role],
         )

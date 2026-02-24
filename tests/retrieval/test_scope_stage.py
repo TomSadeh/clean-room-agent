@@ -77,17 +77,20 @@ class TestExpandScope:
 
     def test_tier_3_co_changes(self, populated_kb):
         kb, repo_id, fids = populated_kb
+        # Add a co-change between auth and config (no dependency edge between them)
+        # so config can only appear as tier 3, not deduped by tier 2.
+        upsert_co_change(kb._conn, fids["auth"], fids["config"], "def456", count=3)
+        kb._conn.commit()
+
         task = TaskQuery(
             raw_task="fix auth", task_id="t1", mode="plan", repo_id=repo_id,
             seed_file_ids=[fids["auth"]], keywords=[],
         )
         results = expand_scope(task, kb, repo_id)
         tier3 = [sf for sf in results if sf.tier == 3]
-        # auth co-changes with test_auth (count=5, >= min 2)
         tier3_ids = {sf.file_id for sf in tier3}
-        # test_auth may be tier 2 (imported_by) instead of tier 3; lower tier wins
-        # If test_auth is already tier 2, it won't appear as tier 3
-        # This is correct behavior - dedup with lower tier wins
+        # config co-changes with auth (count=3 >= min 2) and has no dep edge -> tier 3
+        assert fids["config"] in tier3_ids
 
     def test_dedup_lower_tier_wins(self, populated_kb):
         kb, repo_id, fids = populated_kb
@@ -274,10 +277,10 @@ class TestR6OrderedCaps:
         )
         results = expand_scope(task, kb, repo_id)
         tier4 = [sf for sf in results if sf.tier == 4]
-        # Should get results — longer keyword searched first
-        if tier4:
-            # Longer/more specific keyword matches should be prioritized
-            assert any(sf.file_id in (fids["utils"], fids["config"]) for sf in tier4)
+        # Metadata search with "auth" matches config ("auth") and utils ("authentication_handler")
+        assert len(tier4) >= 1, "Expected tier 4 metadata matches"
+        tier4_ids = {sf.file_id for sf in tier4}
+        assert tier4_ids <= {fids["utils"], fids["config"]}
 
 
 class TestParseJsonResponse:
