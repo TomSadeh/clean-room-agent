@@ -65,6 +65,155 @@ class TestCuratedQueries:
         ).fetchone()
         assert row["count"] == 2
 
+    def test_insert_symbol_reference(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        caller = queries.insert_symbol(curated_conn, fid, "main", "function", 1, 10)
+        callee = queries.insert_symbol(curated_conn, fid, "helper", "function", 12, 20)
+        ref_id = queries.insert_symbol_reference(curated_conn, caller, callee, "call")
+        curated_conn.commit()
+        assert ref_id is not None
+        row = curated_conn.execute(
+            "SELECT * FROM symbol_references WHERE id = ?", (ref_id,)
+        ).fetchone()
+        assert row["caller_symbol_id"] == caller
+        assert row["callee_symbol_id"] == callee
+        assert row["reference_kind"] == "call"
+
+    def test_insert_file_commit(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        cid = queries.insert_commit(curated_conn, rid, "aaa111", "2024-01-01T00:00:00Z")
+        queries.insert_file_commit(curated_conn, fid, cid)
+        curated_conn.commit()
+        row = curated_conn.execute(
+            "SELECT * FROM file_commits WHERE file_id = ? AND commit_id = ?",
+            (fid, cid),
+        ).fetchone()
+        assert row is not None
+
+    def test_insert_file_commit_ignores_duplicate(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        cid = queries.insert_commit(curated_conn, rid, "aaa111", "2024-01-01T00:00:00Z")
+        queries.insert_file_commit(curated_conn, fid, cid)
+        queries.insert_file_commit(curated_conn, fid, cid)  # no error
+        curated_conn.commit()
+        count = curated_conn.execute("SELECT COUNT(*) FROM file_commits").fetchone()[0]
+        assert count == 1
+
+    def test_upsert_file_metadata_insert_and_update(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        queries.upsert_file_metadata(curated_conn, fid, purpose="entry point", domain="cli")
+        curated_conn.commit()
+        row = curated_conn.execute(
+            "SELECT * FROM file_metadata WHERE file_id = ?", (fid,)
+        ).fetchone()
+        assert row["purpose"] == "entry point"
+        assert row["domain"] == "cli"
+
+        # Update with new values
+        queries.upsert_file_metadata(curated_conn, fid, purpose="main entry", module="core")
+        curated_conn.commit()
+        row = curated_conn.execute(
+            "SELECT * FROM file_metadata WHERE file_id = ?", (fid,)
+        ).fetchone()
+        assert row["purpose"] == "main entry"
+        assert row["module"] == "core"
+        # Only one row, not two
+        count = curated_conn.execute("SELECT COUNT(*) FROM file_metadata").fetchone()[0]
+        assert count == 1
+
+    def test_upsert_co_change_explicit_count(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        f1 = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        f2 = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        queries.upsert_co_change(curated_conn, f1, f2, "abc", count=5)
+        curated_conn.commit()
+        row = curated_conn.execute(
+            "SELECT count FROM co_changes WHERE file_a_id = ? AND file_b_id = ?",
+            (min(f1, f2), max(f1, f2)),
+        ).fetchone()
+        assert row["count"] == 5
+
+        # Overwrite with explicit count
+        queries.upsert_co_change(curated_conn, f1, f2, "def", count=10)
+        curated_conn.commit()
+        row = curated_conn.execute(
+            "SELECT count, last_commit_hash FROM co_changes WHERE file_a_id = ? AND file_b_id = ?",
+            (min(f1, f2), max(f1, f2)),
+        ).fetchone()
+        assert row["count"] == 10
+        assert row["last_commit_hash"] == "def"
+
+    def test_clear_file_children_preserves_file_row(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        queries.insert_symbol(curated_conn, fid, "foo", "function", 1, 5)
+        queries.insert_docstring(curated_conn, fid, "doc", "plain")
+        queries.insert_inline_comment(curated_conn, fid, 3, "# note", "general")
+        queries.upsert_file_metadata(curated_conn, fid, purpose="test")
+        curated_conn.commit()
+
+        queries.clear_file_children(curated_conn, fid)
+        curated_conn.commit()
+
+        # File row still exists
+        assert curated_conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        # All children gone
+        assert curated_conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+        assert curated_conn.execute("SELECT COUNT(*) FROM docstrings").fetchone()[0] == 0
+        assert curated_conn.execute("SELECT COUNT(*) FROM inline_comments").fetchone()[0] == 0
+        assert curated_conn.execute("SELECT COUNT(*) FROM file_metadata").fetchone()[0] == 0
+
+    def test_clear_file_children_keeps_incoming_deps(self, curated_conn):
+        """When re-indexing file B, deps A->B from other files must survive."""
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fa = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        fb = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        queries.insert_dependency(curated_conn, fa, fb, "import")  # A -> B
+        queries.insert_dependency(curated_conn, fb, fa, "import")  # B -> A
+        curated_conn.commit()
+
+        queries.clear_file_children(curated_conn, fb)
+        curated_conn.commit()
+
+        # B's outgoing dep (B->A) is deleted
+        assert curated_conn.execute(
+            "SELECT COUNT(*) FROM dependencies WHERE source_file_id = ?", (fb,)
+        ).fetchone()[0] == 0
+        # A's dep pointing to B is preserved
+        assert curated_conn.execute(
+            "SELECT COUNT(*) FROM dependencies WHERE source_file_id = ? AND target_file_id = ?",
+            (fa, fb),
+        ).fetchone()[0] == 1
+
+    def test_clear_file_children_cleans_symbol_references(self, curated_conn):
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fa = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        fb = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        sa = queries.insert_symbol(curated_conn, fa, "func_a", "function", 1, 5)
+        sb = queries.insert_symbol(curated_conn, fb, "func_b", "function", 1, 5)
+        queries.insert_symbol_reference(curated_conn, sa, sb, "call")  # A calls B
+        queries.insert_symbol_reference(curated_conn, sb, sa, "call")  # B calls A
+        curated_conn.commit()
+
+        queries.clear_file_children(curated_conn, fb)
+        curated_conn.commit()
+
+        # Both refs are gone (B's symbol is involved in both)
+        assert curated_conn.execute(
+            "SELECT COUNT(*) FROM symbol_references"
+        ).fetchone()[0] == 0
+        # A's symbol still exists, B's symbol is deleted
+        assert curated_conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE file_id = ?", (fa,)
+        ).fetchone()[0] == 1
+        assert curated_conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE file_id = ?", (fb,)
+        ).fetchone()[0] == 0
+
     def test_delete_file_data(self, curated_conn):
         rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
         fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
@@ -78,6 +227,22 @@ class TestCuratedQueries:
 
         assert curated_conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         assert curated_conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+
+    def test_delete_file_data_cleans_incoming_deps(self, curated_conn):
+        """delete_file_data should remove incoming deps from other files."""
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fa = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        fb = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        queries.insert_dependency(curated_conn, fa, fb, "import")  # A -> B
+        curated_conn.commit()
+
+        queries.delete_file_data(curated_conn, fb)
+        curated_conn.commit()
+
+        # B's file row is gone
+        assert curated_conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        # The A -> B dep is also gone
+        assert curated_conn.execute("SELECT COUNT(*) FROM dependencies").fetchone()[0] == 0
 
     def test_insert_commit_deduplicates_by_repo_and_hash(self, curated_conn):
         rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)

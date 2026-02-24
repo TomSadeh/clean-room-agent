@@ -111,7 +111,7 @@ class TestTypeScriptParser:
         result = self.parser.parse(SAMPLE_TS, "test.ts")
         methods = [s for s in result.symbols if s.parent_name == "HelloGreeter"]
         method_names = {m.name for m in methods}
-        assert "constructor" in method_names or "greet" in method_names
+        assert "greet" in method_names
 
     def test_docstring_extraction(self):
         result = self.parser.parse(SAMPLE_TS, "test.ts")

@@ -68,3 +68,29 @@ class TestModelRouter:
         )
         mc = router.resolve("reasoning")
         assert mc.provider == "openai_compat"
+
+    def test_custom_temperature(self):
+        config = {
+            **self.config,
+            "temperature": {"coding": 0.2, "reasoning": 0.7},
+        }
+        router = ModelRouter(config)
+        mc_coding = router.resolve("coding")
+        mc_reasoning = router.resolve("reasoning")
+        assert mc_coding.temperature == 0.2
+        assert mc_reasoning.temperature == 0.7
+
+    def test_default_temperature_is_zero(self):
+        router = ModelRouter(self.config)
+        mc = router.resolve("coding")
+        assert mc.temperature == 0.0
+
+    def test_override_inherits_role_temperature(self):
+        config = {
+            **self.config,
+            "temperature": {"reasoning": 0.5},
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.model == "qwen3:4b-scope-v1"
+        assert mc.temperature == 0.5

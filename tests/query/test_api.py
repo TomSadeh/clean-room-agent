@@ -79,11 +79,14 @@ class TestSymbolQueries:
     def test_get_symbols_for_file(self, kb):
         api, rid, f1, *_ = kb
         symbols = api.get_symbols_for_file(f1)
-        assert len(symbols) >= 3
+        names = {s.name for s in symbols}
+        assert names == {"main", "MyClass", "__init__"}
 
     def test_get_symbols_by_kind(self, kb):
         api, rid, f1, *_ = kb
         funcs = api.get_symbols_for_file(f1, kind="function")
+        assert len(funcs) == 1
+        assert funcs[0].name == "main"
         assert all(s.kind == "function" for s in funcs)
 
     def test_search_symbols_by_name(self, kb):
@@ -172,3 +175,38 @@ class TestCompositeQueries:
         api, *_ = kb
         adapter = api.get_adapter_for_stage("scope")
         assert adapter is None
+
+
+class TestErrorPaths:
+    def test_get_symbol_neighbors_invalid_direction(self, kb):
+        api, rid, f1, f2, f3, s1, *_ = kb
+        with pytest.raises(ValueError, match="direction must be"):
+            api.get_symbol_neighbors(s1, "siblings")
+
+    def test_get_dependencies_invalid_direction(self, kb):
+        api, rid, f1, *_ = kb
+        with pytest.raises(ValueError, match="direction must be"):
+            api.get_dependencies(f1, "exports")
+
+    def test_get_file_context_missing_file(self, kb):
+        api, *_ = kb
+        ctx = api.get_file_context(99999)
+        assert ctx is None
+
+
+class TestDependencySubgraphDepth:
+    def test_depth_zero(self, kb):
+        api, rid, f1, *_ = kb
+        deps = api.get_dependency_subgraph([f1], depth=0)
+        assert deps == []
+
+    def test_depth_two_expands(self, kb):
+        """With f1->f2 and f3->f2, depth=2 from f1 should reach f3."""
+        api, rid, f1, f2, f3, *_ = kb
+        deps = api.get_dependency_subgraph([f1], depth=2)
+        all_file_ids = set()
+        for d in deps:
+            all_file_ids.add(d.source_file_id)
+            all_file_ids.add(d.target_file_id)
+        # f1 imports f2, f3 imports f2 — depth 2 should discover f3->f2 edge
+        assert f3 in all_file_ids

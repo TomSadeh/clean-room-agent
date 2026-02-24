@@ -83,3 +83,12 @@ class TestTSJSDeps:
         deps = resolve_dependencies([imp], "src/main.ts", "typescript", file_index, tmp_path)
         targets = {d.target_path for d in deps}
         assert "src/utils.ts" in targets
+
+
+class TestUnsupportedLanguage:
+    def test_unsupported_language_raises(self, tmp_path):
+        import pytest
+
+        imp = ExtractedImport(module="foo", names=[])
+        with pytest.raises(ValueError, match="Unsupported language"):
+            resolve_dependencies([imp], "main.rs", "rust", {"main.rs"}, tmp_path)

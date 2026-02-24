@@ -74,13 +74,16 @@ class TestSymbolExtraction:
 class TestDocstringExtraction:
     def test_docstring_extraction(self):
         result = make_result()
-        symbol_names = [d.symbol_name for d in result.docstrings]
-        # Module docstring (symbol_name=None), class, __init__, greet, helper
-        assert None in symbol_names  # module docstring
-        assert "MyClass" in symbol_names
-        assert "__init__" in symbol_names
-        assert "greet" in symbol_names
-        assert "helper" in symbol_names
+        by_sym = {d.symbol_name: d for d in result.docstrings}
+        assert None in by_sym  # module docstring
+        assert "MyClass" in by_sym
+        assert "A sample class." in by_sym["MyClass"].content
+        assert "__init__" in by_sym
+        assert "Initialize with name." in by_sym["__init__"].content
+        assert "greet" in by_sym
+        assert "Return greeting." in by_sym["greet"].content
+        assert "helper" in by_sym
+        assert "Helper function." in by_sym["helper"].content
 
     def test_module_docstring(self):
         result = make_result()
