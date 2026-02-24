@@ -46,11 +46,11 @@ logger = logging.getLogger(__name__)
 _MAX_CUMULATIVE_DIFF_CHARS = 50_000
 
 
-def _cap_cumulative_diff(diff: str) -> str:
+def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
     """Truncate cumulative diff to prevent unbounded context growth."""
-    if len(diff) <= _MAX_CUMULATIVE_DIFF_CHARS:
+    if len(diff) <= max_chars:
         return diff
-    truncated = diff[-_MAX_CUMULATIVE_DIFF_CHARS:]
+    truncated = diff[-max_chars:]
     # Align to the next complete block boundary (starts with "--- ")
     first_block = truncated.find("\n--- ")
     if first_block >= 0:
@@ -174,6 +174,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
         )
 
     max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
+    max_diff_chars = orch_config.get("max_cumulative_diff_chars", _MAX_CUMULATIVE_DIFF_CHARS)
 
     plan_budget = _resolve_budget(config, "reasoning")
     impl_budget = _resolve_budget(config, "coding")
@@ -419,7 +420,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         diff_text += f"--- {edit.file_path}\n"
                         diff_text += f"-{edit.search}\n"
                         diff_text += f"+{edit.replacement}\n"
-                    cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                    cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
                     set_state(session_conn, f"step_result:{part.id}:{step.id}", {
                         "success": True, "edits_count": len(step_result.edits),
                     })
@@ -649,7 +650,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             diff_text += f"--- {edit.file_path}\n"
                             diff_text += f"-{edit.search}\n"
                             diff_text += f"+{edit.replacement}\n"
-                        cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                        cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
                         set_state(session_conn, f"test_step_result:{part.id}:{test_step.id}", {
                             "success": True, "edits_count": len(test_step_result.edits),
                         })
@@ -778,6 +779,7 @@ def run_single_pass(
         raise RuntimeError(
             "Missing max_retries_per_step in [orchestrator] section of config.toml."
         )
+    max_diff_chars = orch_config.get("max_cumulative_diff_chars", _MAX_CUMULATIVE_DIFF_CHARS)
 
     # Load plan artifact
     plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -862,7 +864,7 @@ def run_single_pass(
                 diff_text = ""
                 for edit in step_result.edits:
                     diff_text += f"--- {edit.file_path}\n-{edit.search}\n+{edit.replacement}\n"
-                cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text)
+                cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=True, artifact=step_result,

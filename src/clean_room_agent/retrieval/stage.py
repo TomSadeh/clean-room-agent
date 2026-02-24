@@ -23,6 +23,8 @@ class StageContext:
     classified_symbols: list[ClassifiedSymbol] = field(default_factory=list)
     tokens_used: int = 0
     stage_timings: dict[str, int] = field(default_factory=dict)
+    # Ephemeral per-run config; NOT serialized to session DB.
+    retrieval_params: dict = field(default_factory=dict)
 
     def get_relevant_file_ids(self) -> set[int]:
         """Return file IDs of files marked relevant (not excluded)."""
@@ -59,6 +61,7 @@ class StageContext:
                     "detail_level": cs.detail_level,
                     "reason": cs.reason,
                     "signature": cs.signature,
+                    "group_id": cs.group_id,
                 }
                 for cs in self.classified_symbols
             ],

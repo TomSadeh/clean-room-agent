@@ -9,6 +9,8 @@ from clean_room_agent.retrieval.dataclasses import TaskQuery
 
 logger = logging.getLogger(__name__)
 
+MAX_SYMBOL_MATCHES = 10
+
 KNOWN_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
 STOP_WORDS = frozenset({
@@ -103,6 +105,8 @@ def resolve_seeds(
     signals: dict,
     kb: KnowledgeBase,
     repo_id: int,
+    *,
+    max_symbol_matches: int = MAX_SYMBOL_MATCHES,
 ) -> tuple[list[int], list[int]]:
     """Resolve extracted signals to DB IDs.
 
@@ -127,7 +131,7 @@ def resolve_seeds(
                 selected = exact
             else:
                 selected = sorted(matches, key=lambda s: len(s.name))
-            symbol_ids.extend(s.id for s in selected[:10])
+            symbol_ids.extend(s.id for s in selected[:max_symbol_matches])
         else:
             logger.debug("Unresolved symbol: %s", name)
 
@@ -182,10 +186,15 @@ def analyze_task(
     llm: LLMClient,
     repo_file_tree: str = "",
     environment_brief: str = "",
+    retrieval_params: dict | None = None,
 ) -> TaskQuery:
     """Full task analysis: extract signals, resolve seeds, enrich intent."""
     signals = extract_task_signals(raw_task)
-    file_ids, symbol_ids = resolve_seeds(signals, kb, repo_id)
+    rp = retrieval_params or {}
+    file_ids, symbol_ids = resolve_seeds(
+        signals, kb, repo_id,
+        max_symbol_matches=rp.get("max_symbol_matches", MAX_SYMBOL_MATCHES),
+    )
     intent = enrich_task_intent(
         raw_task, signals, llm,
         repo_file_tree=repo_file_tree,

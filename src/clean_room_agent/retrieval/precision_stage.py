@@ -11,6 +11,9 @@ from clean_room_agent.retrieval.utils import parse_json_response
 
 logger = logging.getLogger(__name__)
 
+MAX_CALLEES = 5
+MAX_CALLERS = 5
+
 PRECISION_SYSTEM = (
     "You are Jane, a code precision analyst. Given a task description and a list of symbols, "
     "classify each symbol's relevance to the task. "
@@ -29,6 +32,9 @@ def extract_precision_symbols(
     file_ids: set[int],
     task: TaskQuery,
     kb: KnowledgeBase,
+    *,
+    max_callees: int = MAX_CALLEES,
+    max_callers: int = MAX_CALLERS,
 ) -> list[dict]:
     """Extract candidate symbols from included files with edge info.
 
@@ -68,11 +74,11 @@ def extract_precision_symbols(
                 # R6c: order neighbors by whether their file is in included set, then cap
                 callees = kb.get_symbol_neighbors(sym.id, "callees")
                 callees.sort(key=lambda c: (c.file_id not in file_ids, c.name))
-                for c in callees[:5]:
+                for c in callees[:max_callees]:
                     entry["connections"].append(f"calls {c.name}")
                 callers = kb.get_symbol_neighbors(sym.id, "callers")
                 callers.sort(key=lambda c: (c.file_id not in file_ids, c.name))
-                for c in callers[:5]:
+                for c in callers[:max_callers]:
                     entry["connections"].append(f"called by {c.name}")
             else:
                 # TS/JS: name matching against task keywords/symbols
@@ -183,8 +189,11 @@ class PrecisionStage:
         task: TaskQuery,
         llm: LLMClient,
     ) -> StageContext:
+        rp = context.retrieval_params
         candidates = extract_precision_symbols(
             context.included_file_ids, task, kb,
+            max_callees=rp.get("max_callees", MAX_CALLEES),
+            max_callers=rp.get("max_callers", MAX_CALLERS),
         )
         classified = classify_symbols(candidates, task, llm)
 

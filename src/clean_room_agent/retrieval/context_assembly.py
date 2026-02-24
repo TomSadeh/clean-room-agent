@@ -164,6 +164,14 @@ def assemble_context(
                         "reason": f"priority_drop: budget exceeded (detail={rf['detail']}, tokens={rf['tokens']})",
                     })
 
+    # 6b. Group integrity: partial groups → drop entire group (R2 default-deny)
+    rendered_files, group_drops = _enforce_group_integrity(rendered_files, context.classified_symbols)
+    for drop in group_drops:
+        assembly_decisions.append({
+            "file_id": drop["file_id"], "included": False,
+            "reason": drop["reason"],
+        })
+
     # 7. Build final file contents, consuming budget
     file_contents: list[FileContent] = []
     for rf in rendered_files:
@@ -208,6 +216,57 @@ def assemble_context(
             "assembly_decisions": assembly_decisions,
         },
     )
+
+
+def _enforce_group_integrity(
+    rendered_files: list[dict],
+    classified_symbols: list,
+) -> tuple[list[dict], list[dict]]:
+    """Enforce group integrity: if a group is partially included, drop the entire group.
+
+    R2 default-deny: partial groups cannot provide the full context needed for
+    dedup/extract-pattern work.
+
+    Returns (filtered_files, drop_decisions).
+    """
+    from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol
+
+    # Build group → required file_ids mapping
+    group_files: dict[str, set[int]] = {}
+    for cs in classified_symbols:
+        if isinstance(cs, ClassifiedSymbol) and cs.group_id is not None:
+            group_files.setdefault(cs.group_id, set()).add(cs.file_id)
+
+    if not group_files:
+        return rendered_files, []
+
+    included_file_ids = {rf["file_id"] for rf in rendered_files}
+
+    # Find groups that are partially included
+    drop_file_ids: set[int] = set()
+    for group_id, required_fids in group_files.items():
+        present = required_fids & included_file_ids
+        if present and present != required_fids:
+            # Partially included → drop entire group
+            logger.warning(
+                "R2: group %s partially included (%d/%d files) — dropping all group files",
+                group_id, len(present), len(required_fids),
+            )
+            drop_file_ids |= present
+
+    if not drop_file_ids:
+        return rendered_files, []
+
+    drops: list[dict] = []
+    for rf in rendered_files:
+        if rf["file_id"] in drop_file_ids:
+            drops.append({
+                "file_id": rf["file_id"],
+                "reason": "group_integrity: partial group dropped (R2 default-deny)",
+            })
+
+    filtered = [rf for rf in rendered_files if rf["file_id"] not in drop_file_ids]
+    return filtered, drops
 
 
 def _refilter_files(

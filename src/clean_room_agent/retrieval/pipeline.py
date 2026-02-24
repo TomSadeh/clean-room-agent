@@ -151,6 +151,7 @@ def run_pipeline(
                     raw_task, task_id, mode, kb, repo_id, llm,
                     repo_file_tree=repo_file_tree,
                     environment_brief=brief_text,
+                    retrieval_params=config.get("retrieval", {}),
                 )
                 elapsed = int((time.monotonic() - start) * 1000)
 
@@ -226,6 +227,7 @@ def run_pipeline(
             repo_id=repo_id,
             repo_path=str(repo_path),
         )
+        context.retrieval_params = config.get("retrieval", {})
         # Seed tier 0 files from plan
         for fid in plan_file_ids:
             f = kb.get_file_by_id(fid)

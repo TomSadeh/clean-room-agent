@@ -57,7 +57,11 @@ def _find_symbol_id_for_attachment(
     return None
 
 
-def index_repository(repo_path: Path, continue_on_error: bool = False) -> IndexResult:
+def index_repository(
+    repo_path: Path,
+    continue_on_error: bool = False,
+    indexer_config: dict | None = None,
+) -> IndexResult:
     """Index a repository into the curated and raw databases.
 
     Pipeline:
@@ -81,7 +85,7 @@ def index_repository(repo_path: Path, continue_on_error: bool = False) -> IndexR
     try:
         curated_conn = get_connection("curated", repo_path=repo_path)
         raw_conn = get_connection("raw", repo_path=repo_path)
-        return _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start)
+        return _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start, indexer_config)
     finally:
         if raw_conn is not None:
             raw_conn.close()
@@ -95,14 +99,20 @@ def _do_index(
     raw_conn: sqlite3.Connection,
     continue_on_error: bool,
     start: float,
+    indexer_config: dict | None = None,
 ) -> IndexResult:
+    ic = indexer_config or {}
+
     # Register repo
     remote_url = get_remote_url(repo_path)
     repo_id = queries.upsert_repo(curated_conn, str(repo_path), remote_url)
     curated_conn.commit()
 
     # Scan files
-    scanned = scan_repo(repo_path)
+    scan_kwargs = {}
+    if "max_file_size" in ic:
+        scan_kwargs["max_file_size"] = ic["max_file_size"]
+    scanned = scan_repo(repo_path, **scan_kwargs)
     scanned_map = {fi.path: fi for fi in scanned}
 
     # Get existing files from DB
@@ -294,7 +304,14 @@ def _do_index(
     curated_conn.commit()
 
     # Extract git history (pass remote_url to avoid redundant subprocess call)
-    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
+    git_kwargs: dict = {}
+    if "max_commits" in ic:
+        git_kwargs["max_commits"] = ic["max_commits"]
+    if "co_change_max_files" in ic:
+        git_kwargs["co_change_max_files"] = ic["co_change_max_files"]
+    if "co_change_min_count" in ic:
+        git_kwargs["co_change_min_count"] = ic["co_change_min_count"]
+    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url, **git_kwargs)
 
     if git_history:
         for commit in git_history.commits:

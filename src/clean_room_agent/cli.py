@@ -43,6 +43,7 @@ def index(repo_path, continue_on_error, verbose):
     import logging
     from pathlib import Path
 
+    from clean_room_agent.config import load_config
     from clean_room_agent.indexer.orchestrator import index_repository
 
     if verbose:
@@ -51,7 +52,12 @@ def index(repo_path, continue_on_error, verbose):
         logging.basicConfig(level=logging.INFO)
 
     repo = Path(repo_path).resolve()
-    result = index_repository(repo, continue_on_error=continue_on_error)
+    config = load_config(repo)
+    result = index_repository(
+        repo,
+        continue_on_error=continue_on_error,
+        indexer_config=(config or {}).get("indexer"),
+    )
 
     click.echo(f"Indexed {repo}")
     click.echo(f"  Files scanned:   {result.files_scanned}")

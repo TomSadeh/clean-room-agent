@@ -88,6 +88,7 @@ class ClassifiedSymbol:
     detail_level: str = "excluded"  # primary, supporting, type_context, excluded
     reason: str = ""
     signature: str = ""
+    group_id: str | None = None
 
     def __post_init__(self):
         if self.detail_level not in VALID_DETAIL_LEVELS:

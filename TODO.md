@@ -316,10 +316,36 @@ git reset on failure (cleaner than file-level rollback), cumulative diff from gi
 instead of string accumulation. The orchestrator currently does file-level patch/rollback
 which is fragile; git gives atomic rollback for free.
 
-### Magic Numbers (from prior review)
+### ~~Magic Numbers (from prior review)~~ — DONE
 
-Budget-derived or LLM-decided values that are hardcoded. Functional but could be
-improved for configurability. See git history for the full table (commit `a803eb2`).
+Extracted to named constants with config overrides via `[retrieval]` and `[indexer]`
+sections. Algorithmic caps (max_deps, max_callees, etc.) remain as defaults but are
+overridable per-project. Safety constants (token estimation, batch sizing) stay hardcoded.
+
+### Scope inheritance across orchestrator checkpoints
+
+Currently each sub-task in the orchestrator runs a fully isolated retrieval pipeline.
+The meta_plan retrieval discovers relevant files and symbols, but that knowledge is
+discarded — each subsequent part_plan, code step, adjustment, and test step re-discovers
+from scratch using only its narrow task description and plan_artifact Tier 0 seeds.
+
+**Problem:** Isolated retrieval is wasteful (re-discovers the same files N times) and
+occasionally blind (a step's narrow description misses files the broad meta_plan found).
+But hard-constraining all steps to the meta_plan's scope prevents discovery of files that
+only become relevant after code changes or validation failures.
+
+**Design direction:** Soft inheritance — meta_plan scope provides strong seeds (not
+boundaries) for subsequent retrievals. Steps can narrow freely and expand when there's
+evidence (mentioned in step description, revealed by cumulative_diff, pointed to by
+validation errors). Specific checkpoints to consider:
+
+1. **Meta_plan → part/step retrievals**: inherited scope as Tier 1 seeds
+2. **After validation failure**: error patterns + failing file paths as additional seeds
+3. **After cumulative_diff growth**: newly-touched files as seeds for subsequent steps
+4. **Adjustment pass**: adjustment may identify new files needed for revised steps
+
+Needs live testing before design — run the orchestrator on real tasks and observe where
+isolated retrieval makes wrong decisions vs where inheritance would have helped.
 
 ### Phase 1 Legacy
 

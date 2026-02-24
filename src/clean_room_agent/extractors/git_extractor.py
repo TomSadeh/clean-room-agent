@@ -150,6 +150,9 @@ def extract_git_history(
     file_index: set[str],
     max_commits: int = 500,
     remote_url: str | None = None,
+    *,
+    co_change_max_files: int = CO_CHANGE_MAX_FILES,
+    co_change_min_count: int = CO_CHANGE_MIN_COUNT,
 ) -> GitHistory:
     """Extract git history, file-commit associations, and co-change pairs.
 
@@ -213,7 +216,7 @@ def extract_git_history(
         tracked_files = sorted(
             f for f in commit.changed_files if f in normalized_index
         )
-        if len(tracked_files) > CO_CHANGE_MAX_FILES:
+        if len(tracked_files) > co_change_max_files:
             continue
         if len(tracked_files) < 2:
             continue
@@ -226,7 +229,7 @@ def extract_git_history(
     co_change_counts = {
         pair: count
         for pair, count in co_change_counts.items()
-        if count >= CO_CHANGE_MIN_COUNT
+        if count >= co_change_min_count
     }
 
     if remote_url is None:

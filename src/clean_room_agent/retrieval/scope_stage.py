@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 MAX_DEPS = 30
 MAX_CO_CHANGES = 20
 MAX_METADATA = 20
+MAX_KEYWORDS = 5
 
 SCOPE_JUDGMENT_SYSTEM = (
     "You are Jane, a code retrieval judge. Given a task description and a list of candidate files, "
@@ -33,6 +34,7 @@ def expand_scope(
     max_deps: int = MAX_DEPS,
     max_co_changes: int = MAX_CO_CHANGES,
     max_metadata: int = MAX_METADATA,
+    max_keywords: int = MAX_KEYWORDS,
 ) -> list[ScopedFile]:
     """Deterministic tiered expansion from seeds.
 
@@ -139,7 +141,7 @@ def expand_scope(
     # Tier 4: metadata search (enrichment)
     if task.keywords:
         # R6b: order keywords by length (longer = more specific) before capping
-        ordered_keywords = sorted(task.keywords, key=len, reverse=True)[:5]
+        ordered_keywords = sorted(task.keywords, key=len, reverse=True)[:max_keywords]
         meta_candidates: list[tuple[int, str, str, str, int]] = []  # (fid, path, lang, reason, kw_specificity)
         for kw_idx, kw in enumerate(ordered_keywords):
             matches = kb.search_files_by_metadata(repo_id, concepts=kw)
@@ -261,7 +263,14 @@ class ScopeStage:
             sf.file_id for sf in context.scoped_files if sf.tier == 0
         ] or None
 
-        candidates = expand_scope(task, kb, context.repo_id, plan_file_ids)
+        rp = context.retrieval_params
+        candidates = expand_scope(
+            task, kb, context.repo_id, plan_file_ids,
+            max_deps=rp.get("max_deps", MAX_DEPS),
+            max_co_changes=rp.get("max_co_changes", MAX_CO_CHANGES),
+            max_metadata=rp.get("max_metadata", MAX_METADATA),
+            max_keywords=rp.get("max_keywords", MAX_KEYWORDS),
+        )
         judged = judge_scope(candidates, task, llm)
 
         context.scoped_files = judged

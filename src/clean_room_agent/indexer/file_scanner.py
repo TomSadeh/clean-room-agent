@@ -123,7 +123,7 @@ def _walk_repo(repo_path: Path, gitignore_spec: pathspec.PathSpec | None):
             yield rel, f
 
 
-def scan_repo(repo_path: Path) -> list[FileInfo]:
+def scan_repo(repo_path: Path, *, max_file_size: int = MAX_FILE_SIZE) -> list[FileInfo]:
     """Scan a repository and return FileInfo for every indexable source file.
 
     Files are filtered by language (extension), skip patterns, .gitignore,
@@ -143,7 +143,7 @@ def scan_repo(repo_path: Path) -> list[FileInfo]:
             continue
 
         size = abs_path.stat().st_size
-        if size > MAX_FILE_SIZE:
+        if size > max_file_size:
             logger.warning("Skipping oversized file (%d bytes): %s", size, rel_path)
             continue
 

@@ -101,6 +101,21 @@ max_adjustment_rounds = 3
 
 [stages]
 default = "scope,precision"
+
+# [retrieval]
+# max_deps = 30              # tier-2 dependency cap
+# max_co_changes = 20        # tier-3 co-change cap
+# max_metadata = 20          # tier-4 metadata cap
+# max_keywords = 5           # keywords used for metadata search
+# max_symbol_matches = 10    # LIKE symbol matches per name
+# max_callees = 5            # callee connections per symbol
+# max_callers = 5            # caller connections per symbol
+
+# [indexer]
+# max_file_size = 1048576    # skip files larger than this (bytes)
+# co_change_max_files = 50   # skip commits touching more files
+# co_change_min_count = 2    # minimum co-change count to keep
+# max_commits = 500          # git log depth
 ```
 
 `cra init [repo-path]` creates a default config template. Users edit it to provide model, budget, and other settings.
