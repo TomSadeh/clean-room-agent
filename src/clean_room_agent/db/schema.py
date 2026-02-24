@@ -115,7 +115,8 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
         );
 
         -- Indexes
-        CREATE INDEX IF NOT EXISTS idx_files_repo_path ON files(repo_id, path);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_repos_path ON repos(path);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_files_repo_path ON files(repo_id, path);
         CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
         CREATE INDEX IF NOT EXISTS idx_symbol_refs_caller ON symbol_references(caller_symbol_id);

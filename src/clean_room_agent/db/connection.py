@@ -51,7 +51,8 @@ def get_connection(
         raise ValueError("task_id is required for session connections")
 
     db_file = _db_path(repo_path, role, task_id)
-    db_file.parent.mkdir(parents=True, exist_ok=True)
+    if not read_only:
+        db_file.parent.mkdir(parents=True, exist_ok=True)
 
     if read_only:
         uri = f"file:{db_file.as_posix()}?mode=ro"

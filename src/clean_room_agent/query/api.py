@@ -142,6 +142,7 @@ class KnowledgeBase:
     def get_dependency_subgraph(self, file_ids: list[int], depth: int) -> list[Dependency]:
         """BFS expansion from seed files up to `depth` hops."""
         seen_files = set(file_ids)
+        seen_dep_ids: set[int] = set()
         all_deps = []
         frontier = set(file_ids)
 
@@ -157,6 +158,9 @@ class KnowledgeBase:
             new_frontier = set()
             for r in rows:
                 dep = self._row_to_dep(r)
+                if dep.id in seen_dep_ids:
+                    continue
+                seen_dep_ids.add(dep.id)
                 all_deps.append(dep)
                 for fid in (dep.source_file_id, dep.target_file_id):
                     if fid not in seen_files:

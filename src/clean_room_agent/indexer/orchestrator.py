@@ -1,11 +1,12 @@
 """Indexing orchestrator: coordinates scanning, parsing, and DB population."""
 
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from clean_room_agent.db.connection import get_connection, ensure_schema
+from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db import queries, raw_queries
 from clean_room_agent.extractors.dependencies import resolve_dependencies
 from clean_room_agent.extractors.git_extractor import extract_git_history, get_remote_url
@@ -76,10 +77,6 @@ def index_repository(repo_path: Path, continue_on_error: bool = False) -> IndexR
     curated_conn = get_connection("curated", repo_path=repo_path)
     raw_conn = get_connection("raw", repo_path=repo_path)
 
-    # Ensure schemas exist (idempotent)
-    ensure_schema(curated_conn, "curated")
-    ensure_schema(raw_conn, "raw")
-
     try:
         return _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start)
     finally:
@@ -87,7 +84,13 @@ def index_repository(repo_path: Path, continue_on_error: bool = False) -> IndexR
         raw_conn.close()
 
 
-def _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start):
+def _do_index(
+    repo_path: Path,
+    curated_conn: sqlite3.Connection,
+    raw_conn: sqlite3.Connection,
+    continue_on_error: bool,
+    start: float,
+) -> IndexResult:
     # Register repo
     remote_url = get_remote_url(repo_path)
     repo_id = queries.upsert_repo(curated_conn, str(repo_path), remote_url)
@@ -115,10 +118,13 @@ def _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start):
 
     unchanged_paths = common_paths - changed_paths
 
-    # Delete removed and changed files from curated DB
-    for p in removed_paths | changed_paths:
+    # Delete removed files entirely, clear child data for changed files
+    for p in removed_paths:
         file_id = existing_map[p][0]
         queries.delete_file_data(curated_conn, file_id)
+    for p in changed_paths:
+        file_id = existing_map[p][0]
+        queries.clear_file_children(curated_conn, file_id)
     curated_conn.commit()
 
     # Upsert all scanned files and parse new/changed
@@ -147,12 +153,12 @@ def _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start):
             source = fi.abs_path.read_bytes()
             result = parser.parse(source, fi.path)
             all_parse_results[p] = result
-        except Exception:
+        except Exception as e:
             parse_errors += 1
             if continue_on_error:
                 logger.exception("Parse error for %s", p)
                 continue
-            raise
+            raise RuntimeError(f"Failed to parse {p}: {e}") from e
 
         file_id = file_id_map[p]
 
@@ -240,11 +246,22 @@ def _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start):
         result = all_parse_results[p]
         file_id = file_id_map[p]
 
-        # Build local symbol name -> id map for this file
+        # Build local symbol name -> id map for this file.
+        # Skip ambiguous names (e.g., __init__ in multiple classes) to avoid
+        # silently linking references to the wrong symbol.
         file_symbols = curated_conn.execute(
             "SELECT id, name FROM symbols WHERE file_id = ?", (file_id,)
         ).fetchall()
-        local_sym_map = {r["name"]: r["id"] for r in file_symbols}
+        local_sym_map: dict[str, int] = {}
+        _ambiguous: set[str] = set()
+        for r in file_symbols:
+            name = r["name"]
+            if name in local_sym_map:
+                _ambiguous.add(name)
+            else:
+                local_sym_map[name] = r["id"]
+        for name in _ambiguous:
+            del local_sym_map[name]
 
         for ref in result.references:
             caller_id = local_sym_map.get(ref.caller_symbol)
@@ -256,12 +273,8 @@ def _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start):
                 )
     curated_conn.commit()
 
-    # Extract git history
-    try:
-        git_history = extract_git_history(repo_path, file_index)
-    except RuntimeError:
-        logger.warning("Git history extraction failed, skipping")
-        git_history = None
+    # Extract git history (pass remote_url to avoid redundant subprocess call)
+    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
 
     if git_history:
         for commit in git_history.commits:

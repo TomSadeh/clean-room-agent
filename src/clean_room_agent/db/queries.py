@@ -219,18 +219,28 @@ def upsert_file_metadata(
     public_api_surface: str | None = None,
     complexity_notes: str | None = None,
 ) -> None:
-    """Insert or replace file metadata (from enrichment promotion)."""
+    """Insert or update file metadata (from enrichment promotion)."""
     conn.execute(
-        "INSERT OR REPLACE INTO file_metadata "
+        "INSERT INTO file_metadata "
         "(file_id, purpose, module, domain, concepts, public_api_surface, complexity_notes) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(file_id) DO UPDATE SET "
+        "purpose = excluded.purpose, module = excluded.module, domain = excluded.domain, "
+        "concepts = excluded.concepts, public_api_surface = excluded.public_api_surface, "
+        "complexity_notes = excluded.complexity_notes",
         (file_id, purpose, module, domain, concepts, public_api_surface, complexity_notes),
     )
 
 
-def delete_file_data(conn: sqlite3.Connection, file_id: int) -> None:
-    """Delete all data associated with a file (cascade)."""
-    # Order matters: children before parents
+def clear_file_children(conn: sqlite3.Connection, file_id: int) -> None:
+    """Delete child data owned by a file, keeping the file row itself.
+
+    Use this when re-indexing a changed file so the file_id is preserved.
+    Only deletes data that "belongs" to this file:
+    - Outgoing dependencies (source_file_id), NOT incoming from other files
+    - Symbol references involving this file's symbols
+    - Co-changes, file_commits, docstrings, comments, metadata, symbols
+    """
     conn.execute(
         "DELETE FROM symbol_references WHERE caller_symbol_id IN "
         "(SELECT id FROM symbols WHERE file_id = ?) "
@@ -239,7 +249,7 @@ def delete_file_data(conn: sqlite3.Connection, file_id: int) -> None:
     )
     conn.execute("DELETE FROM docstrings WHERE file_id = ?", (file_id,))
     conn.execute("DELETE FROM inline_comments WHERE file_id = ?", (file_id,))
-    conn.execute("DELETE FROM dependencies WHERE source_file_id = ? OR target_file_id = ?", (file_id, file_id))
+    conn.execute("DELETE FROM dependencies WHERE source_file_id = ?", (file_id,))
     conn.execute("DELETE FROM file_commits WHERE file_id = ?", (file_id,))
     conn.execute(
         "DELETE FROM co_changes WHERE file_a_id = ? OR file_b_id = ?",
@@ -247,4 +257,15 @@ def delete_file_data(conn: sqlite3.Connection, file_id: int) -> None:
     )
     conn.execute("DELETE FROM file_metadata WHERE file_id = ?", (file_id,))
     conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
+
+
+def delete_file_data(conn: sqlite3.Connection, file_id: int) -> None:
+    """Delete a file and all its associated data (full cascade).
+
+    Use this when a file has been removed from the repository.
+    Also cleans up incoming dependencies from other files (target side).
+    """
+    clear_file_children(conn, file_id)
+    # Clean up incoming deps from other files that reference this file
+    conn.execute("DELETE FROM dependencies WHERE target_file_id = ?", (file_id,))
     conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
