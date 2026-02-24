@@ -109,7 +109,7 @@ Save this plan to `planning/phase1-implementation.md` for audit trail.
   - `read_only=True` uses `?mode=ro` URI
   - Applies schema on first creation (idempotent)
 - `db/schema.py` — `create_curated_schema(conn)` (13 tables + indexes per meta-plan 4.5), `create_raw_schema(conn)` (13 tables per meta-plan 4.5-4.7), `create_session_schema(conn)` (1 KV table per meta-plan 4.7)
-- `db/queries.py` — Curated helpers: `upsert_repo`, `upsert_file`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `delete_file_data` (cascade)
+- `db/queries.py` — Curated helpers: `upsert_repo`, `upsert_file`, `insert_symbol`, `insert_docstring`, `insert_inline_comment`, `insert_dependency`, `insert_symbol_reference`, `insert_commit`, `insert_file_commit`, `upsert_co_change`, `upsert_file_metadata`, `clear_file_children` (re-index), `delete_file_data` (cascade)
 - `db/raw_queries.py` — Raw helpers: `insert_index_run`, `insert_enrichment_output`
 - `cli.py` — Click group with stub commands
 - Tests for connection, schema, queries

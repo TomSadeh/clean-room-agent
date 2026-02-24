@@ -128,7 +128,7 @@ adapter_metadata (
 )
 ```
 
-**Indexes**: `files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `UNIQUE commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`, `adapter_metadata(stage_name, active)`.
+**Indexes**: `UNIQUE repos(path)`, `UNIQUE files(repo_id, path)`, `symbols(file_id)`, `symbols(name)`, `symbol_references(caller_symbol_id)`, `symbol_references(callee_symbol_id)`, `dependencies(source_file_id)`, `dependencies(target_file_id)`, `UNIQUE commits(repo_id, hash)`, `file_metadata(domain)`, `file_metadata(module)`, `adapter_metadata(stage_name, active)`.
 
 ---
 

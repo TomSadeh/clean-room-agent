@@ -57,16 +57,17 @@ Used by all four phases:
 @dataclass
 class LLMResponse:
     text: str
-    prompt_tokens: int
-    completion_tokens: int
+    prompt_tokens: int | None   # None if provider omits token counts
+    completion_tokens: int | None
     latency_ms: int
 
 class LLMClient:
     def __init__(self, config: ModelConfig): ...
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse: ...
+    def close(self) -> None: ...
 ```
 
-The `LLMClient` is instantiated per-call with the resolved model config. It is a thin transport layer.
+The `LLMClient` is instantiated with the resolved model config. It holds a persistent HTTP connection (connection pooling) and must be closed when no longer needed. Provider validation (Ollama-only for MVP) happens at construction time.
 
 ### 3.3 Model Routing
 
@@ -99,7 +100,13 @@ Resolution order:
 - **Coding** (code generation): `temperature = 0.0` (deterministic)
 - **Reasoning** (task analysis, scope, precision, plan, enrichment): `temperature = 0.0`
 
-Both default to deterministic. Users can override via config.
+Both default to deterministic (0.0). Users can override per-role via `[models.temperature]` in config:
+
+```toml
+[models.temperature]
+coding = 0.0
+reasoning = 0.0
+```
 
 ---
 
