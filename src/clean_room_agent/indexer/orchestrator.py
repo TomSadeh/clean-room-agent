@@ -1,5 +1,6 @@
 """Indexing orchestrator: coordinates scanning, parsing, and DB population."""
 
+import hashlib
 import logging
 import sqlite3
 import time
@@ -155,6 +156,16 @@ def _do_index(
         try:
             parser = get_parser(fi.language)
             source = fi.abs_path.read_bytes()
+            # T24: Verify hash matches scan to detect file changes between
+            # scan and parse (TOCTOU).  Fail-fast rather than silently parsing
+            # content that doesn't match the recorded hash.
+            actual_hash = hashlib.sha256(source).hexdigest()
+            if actual_hash != fi.content_hash:
+                raise RuntimeError(
+                    f"File {fi.path} changed between scan and parse "
+                    f"(hash {fi.content_hash[:12]}→{actual_hash[:12]}). "
+                    f"Re-run indexing."
+                )
             result = parser.parse(source, fi.path)
             all_parse_results[p] = result
         except Exception as e:
@@ -287,15 +298,18 @@ def _do_index(
 
     if git_history:
         for commit in git_history.commits:
+            # Only insert commits that touch at least one indexed file (T23).
+            # Commits touching only excluded files would create orphan rows.
+            tracked_files = [fp for fp in commit.changed_files if fp in file_id_map]
+            if not tracked_files:
+                continue
             commit_id = queries.insert_commit(
                 curated_conn, repo_id, commit.hash, commit.timestamp,
                 commit.author, commit.message, commit.files_changed,
                 commit.insertions, commit.deletions,
             )
-            for fp in commit.changed_files:
-                fid = file_id_map.get(fp)
-                if fid:
-                    queries.insert_file_commit(curated_conn, fid, commit_id)
+            for fp in tracked_files:
+                queries.insert_file_commit(curated_conn, file_id_map[fp], commit_id)
 
         for (fa, fb), count in git_history.co_change_counts.items():
             fa_id = file_id_map.get(fa)

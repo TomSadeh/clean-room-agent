@@ -201,6 +201,20 @@ class TestJudgeScope:
         result = judge_scope(candidates, task, mock_llm)
         assert result[0].relevance == "irrelevant"
 
+    def test_invalid_verdict_defaults_irrelevant(self):
+        """R2: LLM returning an invalid verdict string defaults to irrelevant."""
+        mock_llm = _mock_llm_with_response(json.dumps([
+            {"path": "dep.py", "verdict": "maybe_useful", "reason": "unsure"},
+        ]))
+
+        candidates = [
+            ScopedFile(file_id=2, path="dep.py", language="python", tier=2),
+        ]
+        task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
+
+        result = judge_scope(candidates, task, mock_llm)
+        assert result[0].relevance == "irrelevant"
+
 
 class TestJudgeScopeBatching:
     def test_batch_boundary(self):

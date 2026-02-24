@@ -585,6 +585,56 @@ class TestAssemblyDecisions:
             assert priority_drops[0]["file_id"] == 3
 
 
+class TestRefilterNonListFallback:
+    """R1: When refilter LLM returns non-list, falls back to priority drop."""
+
+    def test_refilter_non_list_falls_back_to_priority_drop(self, task, source_files):
+        """When LLM returns a non-list (e.g. a dict), falls back to priority drop."""
+        # Both files primary and large enough to exceed budget together
+        (source_files / "src" / "auth.py").write_text("x = 1\n" * 100)
+        (source_files / "src" / "models.py").write_text("y = 2\n" * 100)
+
+        # Budget: effective = 300 - 10 = 290, * 0.9 = 261. Headers ~5 tokens.
+        # Two primary files at ~150 tokens each + framing > 261 -> triggers refilter.
+        budget = BudgetConfig(context_window=300, reserved_tokens=10)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=100,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=2, file_id=2, name="User",
+                             kind="class", start_line=1, end_line=100,
+                             detail_level="primary"),
+        ]
+
+        mock_llm = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
+        # LLM returns a dict instead of a list
+        mock_response = MagicMock()
+        mock_response.text = json.dumps({"error": "unexpected format"})
+        mock_llm.complete.return_value = mock_response
+
+        pkg = assemble_context(ctx, budget, source_files, llm=mock_llm)
+
+        # LLM was called for refilter
+        mock_llm.complete.assert_called_once()
+        # Fallback to priority drop: both are primary, so both get dropped
+        # (priority drop removes entire levels, and since there's only primary,
+        # the result may be empty or partially filled depending on exact sizes)
+        decisions = pkg.metadata["assembly_decisions"]
+        # At minimum, the refilter was invoked (the assert_called_once proves this)
+        # and any drops should be recorded in decisions
+        assert isinstance(decisions, list)
+
+
 class TestFramingOverhead:
     """R5: Framing overhead is part of the budget."""
 

@@ -327,6 +327,88 @@ class TestApplyEditsTOCTOU:
         assert result.original_contents["a.py"] == original_content
 
 
+class TestApplyEditsIOFailure:
+    """apply_edits rolls back on IO failure during _atomic_write."""
+
+    def test_apply_edits_io_failure(self, repo_with_files):
+        """Mock _atomic_write to raise OSError, verify rollback restores files."""
+        original_a = (repo_with_files / "a.py").read_text(encoding="utf-8")
+        edits = [PatchEdit(file_path="a.py", search="    pass", replacement="    return 42")]
+
+        with patch("clean_room_agent.execute.patch._atomic_write", side_effect=OSError("disk full")):
+            result = apply_edits(edits, repo_with_files)
+
+        assert result.success is False
+        assert "disk full" in result.error_info
+        # File should be restored to original by rollback
+        assert (repo_with_files / "a.py").read_text(encoding="utf-8") == original_a
+
+
+class TestApplyEditsEmptyList:
+    def test_apply_edits_empty_list(self, repo_with_files):
+        """Empty edits list should succeed with no changes."""
+        original_a = (repo_with_files / "a.py").read_text(encoding="utf-8")
+        result = apply_edits([], repo_with_files)
+        assert result.success is True
+        assert result.files_modified == []
+        # Files unchanged
+        assert (repo_with_files / "a.py").read_text(encoding="utf-8") == original_a
+
+
+class TestNonUTF8File:
+    def test_non_utf8_file(self, tmp_path):
+        """File with non-UTF-8 content should error gracefully."""
+        # Write raw latin-1 bytes that are invalid UTF-8
+        bad_file = tmp_path / "bad.py"
+        bad_file.write_bytes(b"x = '\xff\xfe'\n")
+        edits = [PatchEdit(file_path="bad.py", search="x", replacement="y")]
+        # apply_edits reads with encoding="utf-8", should fail gracefully
+        # (either via a PatchResult error or an exception during read)
+        try:
+            result = apply_edits(edits, tmp_path)
+            # If it returns a result, it should indicate failure
+            assert result.success is False
+        except (UnicodeDecodeError, OSError):
+            # Acceptable: hard error on non-UTF-8 file
+            pass
+
+
+class TestUnicodeSearchReplace:
+    def test_unicode_search_replace(self, tmp_path):
+        """Search/replace with unicode content (emoji, CJK)."""
+        content = 'msg = "Hello "\ncomment = "test"\n'
+        (tmp_path / "uni.py").write_text(content, encoding="utf-8")
+        edits = [
+            PatchEdit(
+                file_path="uni.py",
+                search='msg = "Hello "',
+                replacement='msg = "Hello World "',
+            ),
+        ]
+        result = apply_edits(edits, tmp_path)
+        assert result.success is True
+        new_content = (tmp_path / "uni.py").read_text(encoding="utf-8")
+        assert 'msg = "Hello World "' in new_content
+        # CJK characters preserved
+        assert "" in new_content or "World" in new_content
+
+    def test_unicode_cjk_search_replace(self, tmp_path):
+        """Search/replace with CJK characters."""
+        content = 'greeting = ""\n'
+        (tmp_path / "cjk.py").write_text(content, encoding="utf-8")
+        edits = [
+            PatchEdit(
+                file_path="cjk.py",
+                search='greeting = ""',
+                replacement='greeting = ""',
+            ),
+        ]
+        result = apply_edits(edits, tmp_path)
+        assert result.success is True
+        new_content = (tmp_path / "cjk.py").read_text(encoding="utf-8")
+        assert "" in new_content
+
+
 class TestAtomicWriteLineEndings:
     """T54: _atomic_write uses binary mode to preserve \\n line endings."""
 

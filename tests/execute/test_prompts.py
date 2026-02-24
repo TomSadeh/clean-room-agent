@@ -141,6 +141,30 @@ class TestBuildPlanPrompt:
                 pass_type="meta_plan", model_config=small_model_config,
             )
 
+    def test_build_plan_prompt_empty_files(self, model_config):
+        """build_plan_prompt with empty ContextPackage.files list."""
+        task = TaskQuery(
+            raw_task="Analyze codebase",
+            task_id="test-empty",
+            mode="plan",
+            repo_id=1,
+        )
+        context = ContextPackage(
+            task=task,
+            files=[],
+            total_token_estimate=0,
+            budget=BudgetConfig(context_window=32768, reserved_tokens=4096),
+        )
+        system, user = build_plan_prompt(
+            context, "Analyze codebase",
+            pass_type="meta_plan", model_config=model_config,
+        )
+        assert system == META_PLAN_SYSTEM
+        # Should still contain the task description
+        assert "Analyze codebase" in user
+        # Should not contain any file sections (no ## header)
+        assert "## " not in user
+
 
 class TestBuildImplementPrompt:
     def test_basic(self, context_package, model_config):

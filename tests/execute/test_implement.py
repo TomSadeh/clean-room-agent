@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from clean_room_agent.execute.dataclasses import PlanStep, StepResult, ValidationResult
+from clean_room_agent.execute.dataclasses import PartPlan, PlanStep, StepResult, ValidationResult
 from clean_room_agent.execute.implement import execute_implement
 from clean_room_agent.llm.client import LLMResponse, ModelConfig
 from clean_room_agent.retrieval.dataclasses import (
@@ -137,3 +137,69 @@ class TestExecuteImplement:
         result = execute_implement(
             context_package, step, llm,         )
         assert result.raw_response == raw
+
+    def test_with_plan_context(self, context_package):
+        """execute_implement with plan=PartPlan includes plan constraints in prompt."""
+        response = '''<edit file="a.py">
+<search>x</search>
+<replacement>y</replacement>
+</edit>'''
+        llm = _make_llm(response)
+        step = PlanStep(id="s1", description="Implement handler")
+        plan = PartPlan(
+            part_id="p1",
+            task_summary="Add REST endpoint",
+            steps=[step, PlanStep(id="s2", description="Add tests")],
+            rationale="Standard pattern",
+        )
+        result = execute_implement(
+            context_package, step, llm,
+            plan=plan,
+        )
+        assert result.success is True
+        user_prompt = llm.complete.call_args[0][0]
+        assert "<plan_constraints>" in user_prompt
+        assert "Add REST endpoint" in user_prompt
+        assert "(current)" in user_prompt
+        assert "s2" in user_prompt
+
+
+class TestExecuteImplementBudgetOverflow:
+    def test_budget_overflow_raises(self):
+        """Prompt exceeding model budget raises ValueError."""
+        task = TaskQuery(
+            raw_task="Fix bug",
+            task_id="test-budget",
+            mode="implement",
+            repo_id=1,
+        )
+        large_content = "y = 2\n" * 5000
+        context = ContextPackage(
+            task=task,
+            files=[
+                FileContent(
+                    file_id=1, path="src/big.py", language="python",
+                    content=large_content, token_estimate=10000,
+                    detail_level="primary",
+                ),
+            ],
+            total_token_estimate=10000,
+            budget=BudgetConfig(context_window=1024, reserved_tokens=256),
+        )
+        response = '''<edit file="a.py">
+<search>x</search>
+<replacement>y</replacement>
+</edit>'''
+        llm = MagicMock()
+        llm.complete.return_value = LLMResponse(
+            text=response, prompt_tokens=100, completion_tokens=50, latency_ms=500,
+        )
+        llm.config = ModelConfig(
+            model="test-model",
+            base_url="http://localhost:11434",
+            context_window=512,
+            max_tokens=256,
+        )
+        step = PlanStep(id="s1", description="Fix the bug")
+        with pytest.raises(ValueError, match="Prompt too large"):
+            execute_implement(context, step, llm)

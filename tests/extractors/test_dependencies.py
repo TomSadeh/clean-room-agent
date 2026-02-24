@@ -1,5 +1,6 @@
 """Tests for extractors/dependencies.py."""
 
+import json
 from pathlib import Path
 
 from clean_room_agent.extractors.dependencies import resolve_dependencies
@@ -83,6 +84,50 @@ class TestTSJSDeps:
         deps = resolve_dependencies([imp], "src/main.ts", "typescript", file_index, tmp_path)
         targets = {d.target_path for d in deps}
         assert "src/utils.ts" in targets
+
+
+class TestTSJSBaseUrl:
+    def test_no_tsconfig_treats_as_external(self, tmp_path):
+        """Without tsconfig.json, non-relative imports are treated as external packages."""
+        # No tsconfig.json in tmp_path
+        imp = ExtractedImport(module="@app/utils", names=["helper"], is_relative=False)
+        file_index = {"src/utils.ts", "src/main.ts"}
+        deps = resolve_dependencies([imp], "src/main.ts", "typescript", file_index, tmp_path)
+        # Without tsconfig baseUrl, non-relative import is considered external
+        assert deps == []
+
+    def test_baseurl_with_paths_mapping(self, tmp_path):
+        """tsconfig.json with baseUrl and paths mapping resolves non-relative imports."""
+        tsconfig = {
+            "compilerOptions": {
+                "baseUrl": "src",
+                "paths": {
+                    "@lib/*": ["lib/*"],
+                },
+            }
+        }
+        (tmp_path / "tsconfig.json").write_text(json.dumps(tsconfig))
+
+        imp = ExtractedImport(module="@lib/helpers", names=["doStuff"], is_relative=False)
+        file_index = {"src/lib/helpers.ts", "src/main.ts"}
+        deps = resolve_dependencies([imp], "src/main.ts", "typescript", file_index, tmp_path)
+        targets = {d.target_path for d in deps}
+        assert "src/lib/helpers.ts" in targets
+
+    def test_baseurl_without_paths(self, tmp_path):
+        """tsconfig.json with baseUrl but no paths uses baseUrl + module resolution."""
+        tsconfig = {
+            "compilerOptions": {
+                "baseUrl": "src",
+            }
+        }
+        (tmp_path / "tsconfig.json").write_text(json.dumps(tsconfig))
+
+        imp = ExtractedImport(module="utils/math", names=["add"], is_relative=False)
+        file_index = {"src/utils/math.ts", "src/main.ts"}
+        deps = resolve_dependencies([imp], "src/main.ts", "typescript", file_index, tmp_path)
+        targets = {d.target_path for d in deps}
+        assert "src/utils/math.ts" in targets
 
 
 class TestUnsupportedLanguage:

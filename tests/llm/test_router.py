@@ -54,6 +54,12 @@ class TestModelRouter:
         with pytest.raises(RuntimeError, match="coding"):
             router.resolve("coding")
 
+    def test_resolve_reasoning_not_configured(self):
+        """resolve('reasoning') when reasoning key is missing from config should raise RuntimeError."""
+        router = ModelRouter({"coding": "x", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768})
+        with pytest.raises(RuntimeError, match="reasoning"):
+            router.resolve("reasoning")
+
     def test_missing_context_window(self):
         with pytest.raises(RuntimeError, match="context_window"):
             ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434"})

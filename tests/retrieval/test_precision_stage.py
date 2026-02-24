@@ -171,6 +171,41 @@ class TestClassifySymbols:
         helper_cs = next(cs for cs in result if cs.name == "helper")
         assert helper_cs.detail_level == "excluded"
 
+    def test_llm_omits_symbol_mixed_response(self):
+        """R2: When LLM omits some symbols but classifies others, omitted ones get 'excluded'."""
+        mock_llm = _mock_llm_with_response(json.dumps([
+            {"name": "alpha", "file_path": "mod.py", "start_line": 1, "detail_level": "primary", "reason": "main target"},
+            # beta and gamma are omitted from the LLM response
+        ]))
+
+        candidates = [
+            {
+                "symbol_id": 1, "file_id": 10, "file_path": "mod.py",
+                "name": "alpha", "kind": "function", "start_line": 1, "end_line": 10,
+                "signature": "def alpha()", "connections": [],
+            },
+            {
+                "symbol_id": 2, "file_id": 10, "file_path": "mod.py",
+                "name": "beta", "kind": "function", "start_line": 15, "end_line": 20,
+                "signature": "def beta()", "connections": [],
+            },
+            {
+                "symbol_id": 3, "file_id": 10, "file_path": "mod.py",
+                "name": "gamma", "kind": "class", "start_line": 25, "end_line": 40,
+                "signature": "class gamma:", "connections": [],
+            },
+        ]
+        task = TaskQuery(raw_task="fix alpha", task_id="t1", mode="plan", repo_id=1)
+
+        result = classify_symbols(candidates, task, mock_llm)
+        assert len(result) == 3
+        alpha_cs = next(cs for cs in result if cs.name == "alpha")
+        beta_cs = next(cs for cs in result if cs.name == "beta")
+        gamma_cs = next(cs for cs in result if cs.name == "gamma")
+        assert alpha_cs.detail_level == "primary"
+        assert beta_cs.detail_level == "excluded"  # R2: omitted -> excluded
+        assert gamma_cs.detail_level == "excluded"  # R2: omitted -> excluded
+
     def test_key_collision_same_name_different_lines(self):
         """B4: Two symbols named __init__ at different lines are classified independently."""
         mock_llm = _mock_llm_with_response(json.dumps([

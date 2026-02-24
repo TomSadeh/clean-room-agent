@@ -60,9 +60,12 @@ class LLMClient:
         self._http.close()
 
     def __del__(self):
+        # Best-effort cleanup for non-context-manager usage.  The primary
+        # cleanup path is __exit__.  In __del__, the interpreter may be
+        # shutting down (modules set to None), so we cannot log or re-raise.
         try:
             self._http.close()
-        except Exception:
+        except (OSError, AttributeError, TypeError):
             pass
 
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:

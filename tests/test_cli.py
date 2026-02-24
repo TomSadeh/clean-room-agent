@@ -2,9 +2,11 @@
 
 from unittest.mock import patch
 
+import click
+import pytest
 from click.testing import CliRunner
 
-from clean_room_agent.cli import cli
+from clean_room_agent.cli import _resolve_budget, _resolve_stages, cli
 
 
 class TestCLI:
@@ -27,11 +29,49 @@ class TestCLI:
         assert gitignore.exists()
         assert ".clean_room/" in gitignore.read_text()
 
+    def test_init_existing_gitignore_already_has_marker(self, tmp_path):
+        """init when .gitignore already contains '.clean_room/' should not duplicate it."""
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("node_modules/\n.clean_room/\n")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0
+        content = gitignore.read_text()
+        # Should not duplicate the marker
+        assert content.count(".clean_room/") == 1
+
+    def test_init_existing_gitignore_without_marker(self, tmp_path):
+        """init when .gitignore exists but without '.clean_room/' appends it."""
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("node_modules/\n__pycache__/\n")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0
+        content = gitignore.read_text()
+        assert ".clean_room/" in content
+        # Original content preserved
+        assert "node_modules/" in content
+
     def test_init_already_exists(self, tmp_path):
         runner = CliRunner()
         runner.invoke(cli, ["init", str(tmp_path)])
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code != 0
+
+    def test_index_help(self):
+        """Basic help test for the index command."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["index", "--help"])
+        assert result.exit_code == 0
+        assert "--continue-on-error" in result.output
+        assert "--verbose" in result.output
+
+    def test_enrich_help(self):
+        """Basic help test for the enrich command."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["enrich", "--help"])
+        assert result.exit_code == 0
+        assert "--promote" in result.output
 
     def test_commands_registered(self):
         runner = CliRunner()
@@ -144,3 +184,105 @@ class TestSolveCLI:
         # Should fail on missing [testing] section (RuntimeError, not click output)
         assert result.exception is not None
         assert "testing" in str(result.exception).lower()
+
+
+class TestResolveBudgetDirectly:
+    """Test _resolve_budget helper directly."""
+
+    def test_resolve_budget_directly(self):
+        """Valid config returns (context_window, reserved_tokens) tuple."""
+        config = {
+            "models": {
+                "provider": "ollama",
+                "coding": "qwen2.5-coder:3b",
+                "reasoning": "qwen3:4b",
+                "base_url": "http://localhost:11434",
+                "context_window": 32768,
+            },
+            "budget": {"reserved_tokens": 4096},
+        }
+        cw, rt = _resolve_budget(config)
+        assert cw == 32768
+        assert rt == 4096
+
+    def test_resolve_budget_none_config_raises(self):
+        """None config raises UsageError."""
+        with pytest.raises(click.UsageError, match="Budget not configured"):
+            _resolve_budget(None)
+
+    def test_resolve_budget_no_reserved_tokens_raises(self):
+        """Missing reserved_tokens raises UsageError."""
+        config = {
+            "models": {
+                "provider": "ollama",
+                "coding": "m",
+                "reasoning": "m",
+                "base_url": "http://x",
+                "context_window": 32768,
+            },
+            "budget": {},
+        }
+        with pytest.raises(click.UsageError, match="reserved_tokens"):
+            _resolve_budget(config)
+
+    def test_resolve_budget_with_role(self):
+        """Specifying role resolves the correct model's context_window."""
+        config = {
+            "models": {
+                "provider": "ollama",
+                "coding": "qwen2.5-coder:3b",
+                "reasoning": "qwen3:4b",
+                "base_url": "http://localhost:11434",
+                "context_window": 32768,
+            },
+            "budget": {"reserved_tokens": 2048},
+        }
+        cw, rt = _resolve_budget(config, role="coding")
+        assert cw == 32768
+        assert rt == 2048
+
+
+class TestResolveStagesDirectly:
+    """Test _resolve_stages helper directly."""
+
+    def test_resolve_stages_directly(self):
+        """Stages resolved from config default."""
+        config = {"stages": {"default": "scope,precision"}}
+        stages = _resolve_stages(config, None)
+        assert stages == ["scope", "precision"]
+
+    def test_resolve_stages_no_config_raises(self):
+        """Missing config stages raises UsageError."""
+        with pytest.raises(click.UsageError, match="Stages not configured"):
+            _resolve_stages({}, None)
+
+    def test_resolve_stages_none_config_raises(self):
+        """None config raises UsageError."""
+        with pytest.raises(click.UsageError, match="Stages not configured"):
+            _resolve_stages(None, None)
+
+    def test_resolve_stages_strips_whitespace(self):
+        """Stage names are stripped of whitespace."""
+        config = {"stages": {"default": " scope , precision , assembly "}}
+        stages = _resolve_stages(config, None)
+        assert stages == ["scope", "precision", "assembly"]
+
+
+class TestResolveStagesFromFlag:
+    """Test _resolve_stages with stages_flag parameter."""
+
+    def test_resolve_stages_from_flag(self):
+        """CLI flag overrides config."""
+        config = {"stages": {"default": "scope,precision"}}
+        stages = _resolve_stages(config, "custom_stage1,custom_stage2")
+        assert stages == ["custom_stage1", "custom_stage2"]
+
+    def test_resolve_stages_flag_strips_whitespace(self):
+        """Flag value whitespace is stripped."""
+        stages = _resolve_stages({}, " s1 , s2 ")
+        assert stages == ["s1", "s2"]
+
+    def test_resolve_stages_flag_ignores_missing_config(self):
+        """When flag is provided, missing config does not raise."""
+        stages = _resolve_stages(None, "scope,precision")
+        assert stages == ["scope", "precision"]

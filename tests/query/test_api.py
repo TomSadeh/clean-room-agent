@@ -177,6 +177,141 @@ class TestCompositeQueries:
         assert adapter is None
 
 
+class TestGetFileById:
+    def test_found(self, kb):
+        api, rid, f1, *_ = kb
+        f = api.get_file_by_id(f1)
+        assert f is not None
+        assert f.id == f1
+        assert f.path == "src/main.py"
+        assert f.language == "python"
+
+    def test_not_found(self, kb):
+        api, *_ = kb
+        f = api.get_file_by_id(99999)
+        assert f is None
+
+
+class TestGetSymbolById:
+    def test_found(self, kb):
+        api, rid, f1, f2, f3, s1, *_ = kb
+        sym = api.get_symbol_by_id(s1)
+        assert sym is not None
+        assert sym.id == s1
+        assert sym.name == "main"
+        assert sym.kind == "function"
+
+    def test_not_found(self, kb):
+        api, *_ = kb
+        sym = api.get_symbol_by_id(99999)
+        assert sym is None
+
+
+class TestSearchSymbolsByNameSpecialChars:
+    def test_with_results(self, kb):
+        api, rid, *_ = kb
+        symbols = api.search_symbols_by_name(rid, "main")
+        assert any(s.name == "main" for s in symbols)
+
+    def test_percent_escaped(self, curated_conn):
+        """LIKE special char % is escaped and does not act as wildcard."""
+        rid = queries.upsert_repo(curated_conn, "/test/esc", None)
+        fid = queries.upsert_file(curated_conn, rid, "x.py", "python", "h", 10)
+        queries.insert_symbol(curated_conn, fid, "rate%calc", "function", 1, 5)
+        queries.insert_symbol(curated_conn, fid, "ratecalc", "function", 6, 10)
+        curated_conn.commit()
+
+        api = KnowledgeBase(curated_conn)
+        results = api.search_symbols_by_name(rid, "rate%calc")
+        names = [s.name for s in results]
+        # Should match "rate%calc" literally, not "rate<anything>calc"
+        assert "rate%calc" in names
+
+    def test_underscore_escaped(self, curated_conn):
+        """LIKE special char _ is escaped and does not act as single-char wildcard."""
+        rid = queries.upsert_repo(curated_conn, "/test/esc2", None)
+        fid = queries.upsert_file(curated_conn, rid, "y.py", "python", "h", 10)
+        queries.insert_symbol(curated_conn, fid, "get_value", "function", 1, 5)
+        queries.insert_symbol(curated_conn, fid, "getXvalue", "function", 6, 10)
+        curated_conn.commit()
+
+        api = KnowledgeBase(curated_conn)
+        results = api.search_symbols_by_name(rid, "get_value")
+        names = [s.name for s in results]
+        assert "get_value" in names
+        # getXvalue should NOT match get_value when _ is escaped
+        # (it could match if _ were unescaped since _ matches any single char)
+
+    def test_backslash_escaped(self, curated_conn):
+        """LIKE escape char \\ is itself escaped."""
+        rid = queries.upsert_repo(curated_conn, "/test/esc3", None)
+        fid = queries.upsert_file(curated_conn, rid, "z.py", "python", "h", 10)
+        queries.insert_symbol(curated_conn, fid, "path\\sep", "function", 1, 5)
+        curated_conn.commit()
+
+        api = KnowledgeBase(curated_conn)
+        results = api.search_symbols_by_name(rid, "path\\sep")
+        names = [s.name for s in results]
+        assert "path\\sep" in names
+
+
+class TestSearchFilesByMetadataModule:
+    def test_module_filter(self, kb):
+        """search_files_by_metadata with module parameter filters correctly."""
+        api, rid, f1, *_ = kb
+        # f1 has module="core" set in the fixture
+        files = api.search_files_by_metadata(rid, module="core")
+        assert len(files) == 1
+        assert files[0].path == "src/main.py"
+
+    def test_module_no_match(self, kb):
+        api, rid, *_ = kb
+        files = api.search_files_by_metadata(rid, module="nonexistent")
+        assert files == []
+
+
+class TestGetSymbolNeighborsWithKinds:
+    def test_kinds_filter(self, kb):
+        """get_symbol_neighbors with kinds filters results by symbol kind."""
+        api, rid, f1, f2, f3, s1, s2, s3 = kb
+        # s1 (main, function) calls s3 (helper, function)
+        callees = api.get_symbol_neighbors(s1, "callees", kinds=["function"])
+        assert len(callees) == 1
+        assert callees[0].name == "helper"
+
+    def test_kinds_filter_excludes(self, kb):
+        """get_symbol_neighbors with non-matching kinds returns empty."""
+        api, rid, f1, f2, f3, s1, s2, s3 = kb
+        # s1 calls s3 (a function), filtering to "class" should return nothing
+        callees = api.get_symbol_neighbors(s1, "callees", kinds=["class"])
+        assert callees == []
+
+
+class TestGetRepoOverviewDomainCounts:
+    def test_domain_counts_populated(self, kb):
+        """get_repo_overview populates domain_counts from file_metadata."""
+        api, rid, *_ = kb
+        overview = api.get_repo_overview(rid)
+        # f1 has domain="application" from the fixture
+        assert "application" in overview.domain_counts
+        assert overview.domain_counts["application"] == 1
+
+
+class TestGetRepoOverviewMostConnected:
+    def test_most_connected_populated(self, kb):
+        """get_repo_overview populates most_connected_files from dependencies."""
+        api, rid, *_ = kb
+        overview = api.get_repo_overview(rid)
+        assert len(overview.most_connected_files) > 0
+        # most_connected is a list of (path, dep_count) tuples
+        paths = [entry[0] for entry in overview.most_connected_files]
+        # src/utils.py has 2 deps (f1->f2, f3->f2 as target)
+        assert "src/utils.py" in paths
+        # The dep_count for utils.py should be 2 (two incoming deps)
+        utils_entry = next(e for e in overview.most_connected_files if e[0] == "src/utils.py")
+        assert utils_entry[1] == 2
+
+
 class TestErrorPaths:
     def test_get_symbol_neighbors_invalid_direction(self, kb):
         api, rid, f1, f2, f3, s1, *_ = kb

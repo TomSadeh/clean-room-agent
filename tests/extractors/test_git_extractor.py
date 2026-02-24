@@ -2,12 +2,14 @@
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from clean_room_agent.extractors.git_extractor import (
     CommitInfo,
     GitHistory,
+    _check_git_available,
     extract_git_history,
     get_remote_url,
 )
@@ -42,6 +44,56 @@ def _commit(repo: Path, message: str) -> None:
     """Stage all changes and commit."""
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", message)
+
+
+class TestCheckGitAvailable:
+    def test_git_not_on_path(self):
+        """When git is not on PATH, _check_git_available raises RuntimeError."""
+        import clean_room_agent.extractors.git_extractor as mod
+        # Reset the cached state so _check_git_available actually runs
+        original = mod._git_available
+        mod._git_available = None
+        try:
+            with patch("clean_room_agent.extractors.git_extractor.subprocess.run",
+                        side_effect=FileNotFoundError("git not found")):
+                with pytest.raises(RuntimeError, match="git not found on PATH"):
+                    _check_git_available()
+        finally:
+            mod._git_available = original
+
+    def test_git_nonzero_returncode(self):
+        """When git --version returns non-zero, _check_git_available raises RuntimeError."""
+        import clean_room_agent.extractors.git_extractor as mod
+        original = mod._git_available
+        mod._git_available = None
+        try:
+            mock_result = subprocess.CompletedProcess(args=["git", "--version"], returncode=1,
+                                                       stdout="", stderr="error")
+            with patch("clean_room_agent.extractors.git_extractor.subprocess.run",
+                        return_value=mock_result):
+                with pytest.raises(RuntimeError, match="git not found on PATH"):
+                    _check_git_available()
+        finally:
+            mod._git_available = original
+
+
+class TestExtractGitHistoryNonzeroReturncode:
+    def test_nonzero_returncode_raises(self):
+        """extract_git_history raises RuntimeError when git log fails with non-zero exit."""
+        import clean_room_agent.extractors.git_extractor as mod
+        original = mod._git_available
+        mod._git_available = True  # Skip the git availability check
+        try:
+            mock_result = subprocess.CompletedProcess(
+                args=["git", "log"], returncode=128,
+                stdout="", stderr="fatal: not a git repository",
+            )
+            with patch("clean_room_agent.extractors.git_extractor.subprocess.run",
+                        return_value=mock_result):
+                with pytest.raises(RuntimeError, match="git log failed"):
+                    extract_git_history(Path("/fake/repo"), set(), max_commits=10)
+        finally:
+            mod._git_available = original
 
 
 class TestExtractGitHistory:

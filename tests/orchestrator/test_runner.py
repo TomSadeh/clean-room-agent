@@ -622,6 +622,108 @@ class TestOrchestratorMissingMaxRetries:
             run_single_pass("Fix bug", tmp_path, config, plan_path=plan_file)
 
 
+class TestFlushLLMCalls:
+    """Tests for _flush_llm_calls returning correct token totals."""
+
+    def test_flush_llm_calls_returns_totals(self):
+        """_flush_llm_calls returns correct token totals from multiple calls."""
+        from clean_room_agent.orchestrator.runner import _flush_llm_calls
+
+        llm = MagicMock()
+        llm.config = MagicMock()
+        llm.config.model = "test-model"
+        llm.flush.return_value = [
+            {
+                "prompt": "p1", "system": "s1", "response": "r1",
+                "prompt_tokens": 100, "completion_tokens": 50, "elapsed_ms": 200,
+            },
+            {
+                "prompt": "p2", "system": "s2", "response": "r2",
+                "prompt_tokens": 150, "completion_tokens": 75, "elapsed_ms": 300,
+            },
+        ]
+        raw_conn = MagicMock()
+
+        total_prompt, total_completion, total_latency = _flush_llm_calls(
+            llm, raw_conn, "task-001", "execute_plan", "execute_plan",
+        )
+
+        assert total_prompt == 250
+        assert total_completion == 125
+        assert total_latency == 500
+        assert raw_conn.commit.call_count == 1
+
+    def test_flush_llm_calls_none_tokens(self):
+        """_flush_llm_calls returns None totals when some calls have None tokens."""
+        from clean_room_agent.orchestrator.runner import _flush_llm_calls
+
+        llm = MagicMock()
+        llm.config = MagicMock()
+        llm.config.model = "test-model"
+        llm.flush.return_value = [
+            {
+                "prompt": "p1", "system": "s1", "response": "r1",
+                "prompt_tokens": 100, "completion_tokens": 50, "elapsed_ms": 200,
+            },
+            {
+                "prompt": "p2", "system": "s2", "response": "r2",
+                "prompt_tokens": None, "completion_tokens": 75, "elapsed_ms": 300,
+            },
+        ]
+        raw_conn = MagicMock()
+
+        total_prompt, total_completion, total_latency = _flush_llm_calls(
+            llm, raw_conn, "task-002", "execute_impl", "execute_impl",
+        )
+
+        # prompt_tokens should be None because one call had None
+        assert total_prompt is None
+        # completion_tokens should still sum because both had values
+        assert total_completion == 125
+        assert total_latency == 500
+
+    def test_flush_llm_calls_all_none_tokens(self):
+        """_flush_llm_calls returns None when all calls have None tokens."""
+        from clean_room_agent.orchestrator.runner import _flush_llm_calls
+
+        llm = MagicMock()
+        llm.config = MagicMock()
+        llm.config.model = "test-model"
+        llm.flush.return_value = [
+            {
+                "prompt": "p1", "system": "s1", "response": "r1",
+                "prompt_tokens": None, "completion_tokens": None, "elapsed_ms": 100,
+            },
+        ]
+        raw_conn = MagicMock()
+
+        total_prompt, total_completion, total_latency = _flush_llm_calls(
+            llm, raw_conn, "task-003", "execute_plan", "execute_plan",
+        )
+
+        assert total_prompt is None
+        assert total_completion is None
+        assert total_latency == 100
+
+    def test_flush_llm_calls_empty(self):
+        """_flush_llm_calls with no calls returns zero totals."""
+        from clean_room_agent.orchestrator.runner import _flush_llm_calls
+
+        llm = MagicMock()
+        llm.config = MagicMock()
+        llm.config.model = "test-model"
+        llm.flush.return_value = []
+        raw_conn = MagicMock()
+
+        total_prompt, total_completion, total_latency = _flush_llm_calls(
+            llm, raw_conn, "task-004", "execute_plan", "execute_plan",
+        )
+
+        assert total_prompt == 0
+        assert total_completion == 0
+        assert total_latency == 0
+
+
 class TestCapCumulativeDiff:
     """T52: Cumulative diff is bounded to prevent unbounded context growth."""
 

@@ -5,7 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from clean_room_agent.execute.dataclasses import MetaPlan, PartPlan, PlanAdjustment
+from clean_room_agent.execute.dataclasses import (
+    MetaPlan,
+    PartPlan,
+    PlanAdjustment,
+    StepResult,
+    ValidationResult,
+)
 from clean_room_agent.execute.plan import execute_plan
 from clean_room_agent.llm.client import LLMResponse, ModelConfig
 from clean_room_agent.retrieval.dataclasses import (
@@ -201,3 +207,83 @@ class TestExecutePlanAdjustment:
             pass_type="adjustment",         )
         assert isinstance(result, PlanAdjustment)
         assert len(result.revised_steps) == 3
+
+    def test_with_prior_results_and_test_results(self, context_package):
+        """Adjustment pass receiving prior_results and test_results kwargs."""
+        response = json.dumps({
+            "revised_steps": [{"id": "s2", "description": "Revised step"}],
+            "rationale": "Test failed, adjusting",
+            "changes_made": ["Revised s2"],
+        })
+        llm = _make_llm(response)
+        prior_results = [
+            StepResult(success=True, raw_response="ok"),
+            StepResult(success=False, error_info="Parse error", raw_response="bad"),
+        ]
+        test_results = [
+            ValidationResult(
+                success=False,
+                test_output="FAILED test_bar",
+                failing_tests=["test_bar"],
+            ),
+        ]
+        result = execute_plan(
+            context_package, "Adjust after failure", llm,
+            pass_type="adjustment",
+            prior_results=prior_results,
+            test_results=test_results,
+        )
+        assert isinstance(result, PlanAdjustment)
+        assert result.rationale == "Test failed, adjusting"
+        # Verify the prompt includes prior_results and test_results sections
+        user_prompt = llm.complete.call_args[0][0]
+        assert "<completed_steps>" in user_prompt
+        assert "Parse error" in user_prompt
+        assert "<test_results>" in user_prompt
+        assert "test_bar" in user_prompt
+
+
+class TestExecutePlanBudgetOverflow:
+    def test_budget_overflow_raises(self):
+        """Prompt exceeding model budget raises ValueError."""
+        task = TaskQuery(
+            raw_task="Add validation",
+            task_id="test-budget",
+            mode="plan",
+            repo_id=1,
+        )
+        # Large file content to blow the budget
+        large_content = "x = 1\n" * 5000
+        context = ContextPackage(
+            task=task,
+            files=[
+                FileContent(
+                    file_id=1, path="src/big.py", language="python",
+                    content=large_content, token_estimate=10000,
+                    detail_level="primary",
+                ),
+            ],
+            total_token_estimate=10000,
+            budget=BudgetConfig(context_window=1024, reserved_tokens=256),
+        )
+        response = json.dumps({
+            "task_summary": "t",
+            "parts": [{"id": "p1", "description": "d"}],
+            "rationale": "r",
+        })
+        llm = MagicMock()
+        llm.complete.return_value = LLMResponse(
+            text=response, prompt_tokens=100, completion_tokens=50, latency_ms=500,
+        )
+        # Tiny context window: 512 total, 256 for output => 256 for input
+        llm.config = ModelConfig(
+            model="test-model",
+            base_url="http://localhost:11434",
+            context_window=512,
+            max_tokens=256,
+        )
+        with pytest.raises(ValueError, match="Prompt too large"):
+            execute_plan(
+                context, "Add validation", llm,
+                pass_type="meta_plan",
+            )
