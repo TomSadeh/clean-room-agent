@@ -60,7 +60,7 @@ class TestGetConnection:
         ro.close()
 
     def test_read_only_nonexistent_db_fails(self, tmp_repo):
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(FileNotFoundError, match="Run 'cra index' first"):
             get_connection("curated", repo_path=tmp_repo, read_only=True)
 
     def test_schema_applied_on_creation(self, tmp_repo):

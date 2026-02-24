@@ -6,7 +6,7 @@ from itertools import combinations
 from pathlib import Path
 
 
-COMMIT_SEP = "COMMIT_SEP"
+COMMIT_SEP = "---CRA_COMMIT_8f14e45f---"
 
 # Commits touching more than this many tracked files are excluded from
 # co-change calculation (bulk renames, reformats, etc.).

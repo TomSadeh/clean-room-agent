@@ -55,6 +55,10 @@ def get_connection(
         db_file.parent.mkdir(parents=True, exist_ok=True)
 
     if read_only:
+        if not db_file.exists():
+            raise FileNotFoundError(
+                f"{role} database not found at {db_file}. Run 'cra index' first."
+            )
         uri = f"file:{db_file.as_posix()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
     else:

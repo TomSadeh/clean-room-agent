@@ -127,3 +127,16 @@ class TestLLMClient:
         assert result.prompt_tokens is None
         assert result.completion_tokens is None
         client.close()
+
+    def test_context_manager(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        with LLMClient(config) as client:
+            assert client.config.model == "qwen3:4b"
+        # After exiting, the underlying httpx client should be closed
+        assert client._http.is_closed
+
+    def test_close_idempotent(self):
+        config = ModelConfig(model="qwen3:4b", base_url="http://localhost:11434")
+        client = LLMClient(config)
+        client.close()
+        client.close()  # should not raise

@@ -210,11 +210,8 @@ def _has_base_url(repo_path: Path) -> bool:
 
     Raises on malformed tsconfig.json (fail-fast).
     """
-    tsconfig = repo_path / "tsconfig.json"
-    if not tsconfig.exists():
-        return False
-    data = json.loads(tsconfig.read_text())
-    return bool(data.get("compilerOptions", {}).get("baseUrl"))
+    base_url, _ = _read_tsconfig_paths(repo_path)
+    return bool(base_url)
 
 
 def _read_tsconfig_paths(repo_path: Path) -> tuple[str, dict]:

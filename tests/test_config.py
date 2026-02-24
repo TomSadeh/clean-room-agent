@@ -1,5 +1,7 @@
 """Tests for config.py."""
 
+import tomllib
+
 import pytest
 
 from clean_room_agent.config import create_default_config, load_config, require_models_config
@@ -8,6 +10,13 @@ from clean_room_agent.config import create_default_config, load_config, require_
 class TestLoadConfig:
     def test_returns_none_when_no_config(self, tmp_path):
         assert load_config(tmp_path) is None
+
+    def test_malformed_toml_raises(self, tmp_path):
+        config_dir = tmp_path / ".clean_room"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("invalid [[ toml ===")
+        with pytest.raises(tomllib.TOMLDecodeError):
+            load_config(tmp_path)
 
     def test_loads_valid_toml(self, tmp_path):
         config_dir = tmp_path / ".clean_room"

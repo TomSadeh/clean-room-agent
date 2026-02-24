@@ -215,6 +215,37 @@ class TestCuratedQueries:
             "SELECT COUNT(*) FROM symbols WHERE file_id = ?", (fb,)
         ).fetchone()[0] == 0
 
+    def test_clear_file_children_cleans_co_changes(self, curated_conn):
+        """clear_file_children should delete co_changes involving the file."""
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fa = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        fb = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        queries.upsert_co_change(curated_conn, fa, fb, "abc123")
+        queries.upsert_co_change(curated_conn, fa, fb, "def456")
+        curated_conn.commit()
+
+        assert curated_conn.execute("SELECT COUNT(*) FROM co_changes").fetchone()[0] == 1
+
+        queries.clear_file_children(curated_conn, fa)
+        curated_conn.commit()
+
+        assert curated_conn.execute("SELECT COUNT(*) FROM co_changes").fetchone()[0] == 0
+
+    def test_clear_file_children_cleans_file_commits(self, curated_conn):
+        """clear_file_children should delete file_commits for the file."""
+        rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
+        fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)
+        cid = queries.insert_commit(curated_conn, rid, "abc123", "2024-01-01T00:00:00Z", "author", "msg")
+        queries.insert_file_commit(curated_conn, fid, cid)
+        curated_conn.commit()
+
+        assert curated_conn.execute("SELECT COUNT(*) FROM file_commits").fetchone()[0] == 1
+
+        queries.clear_file_children(curated_conn, fid)
+        curated_conn.commit()
+
+        assert curated_conn.execute("SELECT COUNT(*) FROM file_commits").fetchone()[0] == 0
+
     def test_delete_file_data(self, curated_conn):
         rid = queries.upsert_repo(curated_conn, "/tmp/repo", None)
         fid = queries.upsert_file(curated_conn, rid, "main.py", "python", "abc", 50)

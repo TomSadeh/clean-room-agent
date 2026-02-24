@@ -214,3 +214,19 @@ class TestDependencySubgraphDepth:
             all_file_ids.add(d.target_file_id)
         # f1 imports f2, f3 imports f2 — depth 2 discovers f3 via bidirectional BFS
         assert f3 in all_file_ids
+
+    def test_circular_deps_terminate(self, curated_conn):
+        """BFS must terminate when circular dependencies exist (A->B->A)."""
+        rid = queries.upsert_repo(curated_conn, "/test/cycle", None)
+        fa = queries.upsert_file(curated_conn, rid, "a.py", "python", "aaa", 10)
+        fb = queries.upsert_file(curated_conn, rid, "b.py", "python", "bbb", 20)
+        queries.insert_dependency(curated_conn, fa, fb, "import")  # A -> B
+        queries.insert_dependency(curated_conn, fb, fa, "import")  # B -> A (cycle)
+        curated_conn.commit()
+
+        api = KnowledgeBase(curated_conn)
+        deps = api.get_dependency_subgraph([fa], depth=10)
+        # Should find both edges without infinite loop
+        assert len(deps) == 2
+        file_ids = {d.source_file_id for d in deps} | {d.target_file_id for d in deps}
+        assert file_ids == {fa, fb}
