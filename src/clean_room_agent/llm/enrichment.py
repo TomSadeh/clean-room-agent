@@ -45,12 +45,14 @@ def enrich_repository(
     """
     router = ModelRouter(models_config)
     model_config = router.resolve("reasoning")
-    client = LLMClient(model_config)
-
-    curated_conn = get_connection("curated", repo_path=repo_path, read_only=not promote)
-    raw_conn = get_connection("raw", repo_path=repo_path)
+    client = None
+    curated_conn = None
+    raw_conn = None
 
     try:
+        client = LLMClient(model_config)
+        curated_conn = get_connection("curated", repo_path=repo_path, read_only=not promote)
+        raw_conn = get_connection("raw", repo_path=repo_path)
         # Scope to the repo at this path (multi-repo safe)
         repo_row = curated_conn.execute(
             "SELECT id FROM repos WHERE path = ?", (str(repo_path),)
@@ -71,7 +73,9 @@ def enrich_repository(
             file_id = file_row["id"]
             file_path = file_row["path"]
 
-            # Skip already enriched files
+            # Skip already enriched files.
+            # NOTE: file_id is from curated DB; not stable across curated DB rebuilds.
+            # A full fix requires storing file_path in enrichment_outputs schema.
             existing = raw_conn.execute(
                 "SELECT id FROM enrichment_outputs WHERE file_id = ?", (file_id,)
             ).fetchone()
@@ -130,9 +134,12 @@ def enrich_repository(
             files_promoted=promoted,
         )
     finally:
-        client.close()
-        curated_conn.close()
-        raw_conn.close()
+        if client is not None:
+            client.close()
+        if curated_conn is not None:
+            curated_conn.close()
+        if raw_conn is not None:
+            raw_conn.close()
 
 
 def _build_prompt(
@@ -157,7 +164,7 @@ def _build_prompt(
 
     # Add docstring summary
     docstrings = curated_conn.execute(
-        "SELECT content FROM docstrings WHERE file_id = ? LIMIT 3", (file_id,)
+        "SELECT content FROM docstrings WHERE file_id = ? ORDER BY id LIMIT 3", (file_id,)
     ).fetchall()
     if docstrings:
         parts.append("Docstrings:")

@@ -74,14 +74,18 @@ def index_repository(repo_path: Path, continue_on_error: bool = False) -> IndexR
     start = time.monotonic()
     repo_path = repo_path.resolve()
 
-    curated_conn = get_connection("curated", repo_path=repo_path)
-    raw_conn = get_connection("raw", repo_path=repo_path)
+    curated_conn = None
+    raw_conn = None
 
     try:
+        curated_conn = get_connection("curated", repo_path=repo_path)
+        raw_conn = get_connection("raw", repo_path=repo_path)
         return _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start)
     finally:
-        curated_conn.close()
-        raw_conn.close()
+        if raw_conn is not None:
+            raw_conn.close()
+        if curated_conn is not None:
+            curated_conn.close()
 
 
 def _do_index(
@@ -163,7 +167,7 @@ def _do_index(
         file_id = file_id_map[p]
 
         # Insert symbols and keep full records for later line-aware attachment.
-        symbol_name_to_id: dict[str, int] = {}
+        symbol_name_to_id: dict[tuple[str, int], int] = {}
         symbol_records: list[dict] = []
         # First pass: non-child symbols
         for sym in result.symbols:
@@ -172,7 +176,7 @@ def _do_index(
                     curated_conn, file_id, sym.name, sym.kind,
                     sym.start_line, sym.end_line, sym.signature,
                 )
-                symbol_name_to_id[sym.name] = sid
+                symbol_name_to_id[(sym.name, sym.start_line)] = sid
                 symbol_records.append(
                     {
                         "id": sid,
@@ -185,12 +189,17 @@ def _do_index(
         # Second pass: child symbols
         for sym in result.symbols:
             if sym.parent_name is not None:
-                parent_id = symbol_name_to_id.get(sym.parent_name)
+                # Look up parent by name — find matching key with any start_line
+                parent_id = None
+                for (sn, _sl), sid in symbol_name_to_id.items():
+                    if sn == sym.parent_name:
+                        parent_id = sid
+                        break
                 sid = queries.insert_symbol(
                     curated_conn, file_id, sym.name, sym.kind,
                     sym.start_line, sym.end_line, sym.signature, parent_id,
                 )
-                symbol_name_to_id[sym.name] = sid
+                symbol_name_to_id[(sym.name, sym.start_line)] = sid
                 symbol_records.append(
                     {
                         "id": sid,
@@ -274,11 +283,7 @@ def _do_index(
     curated_conn.commit()
 
     # Extract git history (pass remote_url to avoid redundant subprocess call)
-    try:
-        git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
-    except RuntimeError:
-        logger.warning("Git history extraction failed, skipping")
-        git_history = None
+    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url)
 
     if git_history:
         for commit in git_history.commits:
@@ -310,7 +315,7 @@ def _do_index(
         files_scanned=len(scanned),
         files_changed=len(new_paths) + len(changed_paths),
         duration_ms=elapsed_ms,
-        status="success",
+        status="partial" if parse_errors > 0 and continue_on_error else "success",
     )
     raw_conn.commit()
 

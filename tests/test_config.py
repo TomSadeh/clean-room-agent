@@ -83,3 +83,17 @@ class TestCreateDefaultConfig:
         assert models["coding"] == "qwen2.5-coder:3b-instruct"
         assert models["reasoning"] == "qwen3:4b-instruct-2507"
         assert models["base_url"] == "http://localhost:11434"
+
+    def test_default_config_has_budget_section(self, tmp_path):
+        create_default_config(tmp_path)
+        config = load_config(tmp_path)
+        assert "budget" in config
+        # context_window now derives from [models].context_window (single source of truth)
+        assert "context_window" not in config["budget"]
+        assert config["budget"]["reserved_tokens"] == 4096
+
+    def test_default_config_has_stages_section(self, tmp_path):
+        create_default_config(tmp_path)
+        config = load_config(tmp_path)
+        assert "stages" in config
+        assert config["stages"]["default"] == "scope,precision"

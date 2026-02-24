@@ -12,6 +12,7 @@ class TestModelRouter:
             "reasoning": "qwen3:4b",
             "provider": "ollama",
             "base_url": "http://localhost:11434",
+            "context_window": 32768,
             "overrides": {
                 "scope": "qwen3:4b-scope-v1",
             },
@@ -46,16 +47,20 @@ class TestModelRouter:
 
     def test_missing_base_url(self):
         with pytest.raises(RuntimeError, match="base_url"):
-            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama"})
+            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "context_window": 32768})
 
     def test_missing_coding_model(self):
-        router = ModelRouter({"reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434"})
+        router = ModelRouter({"reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768})
         with pytest.raises(RuntimeError, match="coding"):
             router.resolve("coding")
 
+    def test_missing_context_window(self):
+        with pytest.raises(RuntimeError, match="context_window"):
+            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434"})
+
     def test_missing_provider(self):
         with pytest.raises(RuntimeError, match="provider"):
-            ModelRouter({"coding": "x", "reasoning": "y", "base_url": "http://localhost:11434"})
+            ModelRouter({"coding": "x", "reasoning": "y", "base_url": "http://localhost:11434", "context_window": 32768})
 
     def test_provider_passthrough(self):
         router = ModelRouter(
@@ -64,6 +69,7 @@ class TestModelRouter:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "provider": "openai_compat",
+                "context_window": 32768,
             }
         )
         mc = router.resolve("reasoning")

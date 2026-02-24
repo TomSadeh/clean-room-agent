@@ -59,7 +59,11 @@ def get_connection(
             raise FileNotFoundError(
                 f"{role} database not found at {db_file}. Run 'cra index' first."
             )
-        uri = f"file:{db_file.as_posix()}?mode=ro"
+        # RFC 8089: file:///C:/... for Windows paths
+        posix = db_file.as_posix()
+        if len(posix) >= 2 and posix[1] == ":":
+            posix = "/" + posix
+        uri = f"file://{posix}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
     else:
         conn = sqlite3.connect(str(db_file))
@@ -74,11 +78,3 @@ def get_connection(
         conn.commit()
 
     return conn
-
-
-def ensure_schema(conn: sqlite3.Connection, role: str) -> None:
-    """Explicitly apply schema to an existing connection. Idempotent."""
-    if role not in _VALID_ROLES:
-        raise ValueError(f"Invalid role {role!r}. Must be one of {_VALID_ROLES}")
-    _SCHEMA_CREATORS[role](conn)
-    conn.commit()

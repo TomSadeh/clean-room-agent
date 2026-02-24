@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from clean_room_agent.db.connection import get_connection, ensure_schema
+from clean_room_agent.db.connection import get_connection
 
 
 @pytest.fixture

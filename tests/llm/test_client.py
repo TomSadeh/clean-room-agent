@@ -140,3 +140,32 @@ class TestLLMClient:
         client = LLMClient(config)
         client.close()
         client.close()  # should not raise
+
+    def test_oversized_input_raises(self):
+        """R3b: input exceeding context_window - max_tokens should raise ValueError."""
+        config = ModelConfig(
+            model="qwen3:4b", base_url="http://localhost:11434",
+            max_tokens=1024, context_window=2048,
+        )
+        client = LLMClient(config)
+        # available = 2048 - 1024 = 1024 tokens = ~4096 chars
+        big_prompt = "x" * 5000  # ~1250 tokens > 1024 available
+        with pytest.raises(ValueError, match="Input too large"):
+            client.complete(big_prompt)
+        client.close()
+
+    def test_within_limit_succeeds(self):
+        """R3b: input within budget should proceed normally."""
+        config = ModelConfig(
+            model="qwen3:4b", base_url="http://localhost:11434",
+            max_tokens=1024, context_window=32768,
+        )
+        client = LLMClient(config)
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"response": "ok"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._http, "post", return_value=mock_response):
+            result = client.complete("short prompt")
+        assert result.text == "ok"
+        client.close()

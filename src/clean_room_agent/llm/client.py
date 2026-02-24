@@ -13,6 +13,14 @@ class ModelConfig:
     provider: str = "ollama"
     temperature: float = 0.0
     max_tokens: int = 4096
+    context_window: int = 32768
+
+    def __post_init__(self):
+        if self.max_tokens >= self.context_window:
+            raise ValueError(
+                f"max_tokens ({self.max_tokens}) must be < "
+                f"context_window ({self.context_window})"
+            )
 
 
 @dataclass
@@ -44,8 +52,27 @@ class LLMClient:
         """Close the underlying HTTP client."""
         self._http.close()
 
+    def __del__(self):
+        try:
+            self._http.close()
+        except Exception:
+            pass
+
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
         """Send a completion request to Ollama. Fail-fast, no retry."""
+        # R3: Budget-validate input before sending
+        # R3: conservative estimate (chars/3) for rejection to avoid undercounting
+        input_tokens = (len(prompt) + (len(system) if system else 0)) // 3
+        available = self.config.context_window - self.config.max_tokens
+        if input_tokens > available:
+            raise ValueError(
+                f"Input too large for model context window: ~{input_tokens} tokens "
+                f"estimated, but only {available} tokens available "
+                f"(context_window={self.config.context_window}, "
+                f"max_tokens={self.config.max_tokens}). "
+                f"Batch or pre-filter the input."
+            )
+
         url = f"{self.config.base_url}/api/generate"
         payload = {
             "model": self.config.model,

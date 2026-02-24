@@ -11,6 +11,9 @@ class ModelRouter:
         self._reasoning = models_config.get("reasoning")
         self._base_url = models_config.get("base_url")
         self._overrides = models_config.get("overrides", {})
+        if "context_window" not in models_config:
+            raise RuntimeError("Missing 'context_window' in [models] config")
+        self._context_window = models_config["context_window"]
 
         if "provider" not in models_config:
             raise RuntimeError("Missing 'provider' in [models] config")
@@ -22,6 +25,19 @@ class ModelRouter:
             "coding": temps.get("coding", 0.0),
             "reasoning": temps.get("reasoning", 0.0),
         }
+
+        # max_tokens per role: configurable
+        mt = models_config.get("max_tokens", {})
+        if isinstance(mt, int):
+            # Flat value applies to both roles
+            self._max_tokens = {"coding": mt, "reasoning": mt}
+        elif isinstance(mt, dict):
+            self._max_tokens = {
+                "coding": mt.get("coding", 4096),
+                "reasoning": mt.get("reasoning", 4096),
+            }
+        else:
+            self._max_tokens = {"coding": 4096, "reasoning": 4096}
 
         if not self._base_url:
             raise RuntimeError("Missing 'base_url' in [models] config")
@@ -42,6 +58,8 @@ class ModelRouter:
                 base_url=self._base_url,
                 provider=self._provider,
                 temperature=self._temperature.get(role, 0.0),
+                max_tokens=self._max_tokens.get(role, 4096),
+                context_window=self._context_window,
             )
 
         # Role-based default
@@ -53,6 +71,8 @@ class ModelRouter:
                 base_url=self._base_url,
                 provider=self._provider,
                 temperature=self._temperature.get(role, 0.0),
+                max_tokens=self._max_tokens.get(role, 4096),
+                context_window=self._context_window,
             )
         if role == "reasoning":
             if not self._reasoning:
@@ -62,6 +82,8 @@ class ModelRouter:
                 base_url=self._base_url,
                 provider=self._provider,
                 temperature=self._temperature.get(role, 0.0),
+                max_tokens=self._max_tokens.get(role, 4096),
+                context_window=self._context_window,
             )
 
         raise ValueError(f"Unknown role: {role!r}. Must be 'coding' or 'reasoning'.")

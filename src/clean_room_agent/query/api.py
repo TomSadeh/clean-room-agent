@@ -36,6 +36,12 @@ class KnowledgeBase:
             ).fetchall()
         return [self._row_to_file(r) for r in rows]
 
+    def get_file_by_id(self, file_id: int) -> File | None:
+        row = self._conn.execute(
+            "SELECT * FROM files WHERE id = ?", (file_id,)
+        ).fetchone()
+        return self._row_to_file(row) if row else None
+
     def get_file_by_path(self, repo_id: int, path: str) -> File | None:
         row = self._conn.execute(
             "SELECT * FROM files WHERE repo_id = ? AND path = ?",
@@ -75,6 +81,12 @@ class KnowledgeBase:
 
     # --- Symbol queries ---
 
+    def get_symbol_by_id(self, symbol_id: int) -> Symbol | None:
+        row = self._conn.execute(
+            "SELECT * FROM symbols WHERE id = ?", (symbol_id,)
+        ).fetchone()
+        return self._row_to_symbol(row) if row else None
+
     def get_symbols_for_file(self, file_id: int, kind: str | None = None) -> list[Symbol]:
         if kind:
             rows = self._conn.execute(
@@ -88,11 +100,12 @@ class KnowledgeBase:
         return [self._row_to_symbol(r) for r in rows]
 
     def search_symbols_by_name(self, repo_id: int, pattern: str) -> list[Symbol]:
+        escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         rows = self._conn.execute(
             "SELECT s.* FROM symbols s "
             "JOIN files f ON s.file_id = f.id "
-            "WHERE f.repo_id = ? AND s.name LIKE ?",
-            (repo_id, f"%{pattern}%"),
+            "WHERE f.repo_id = ? AND s.name LIKE ? ESCAPE '\\'",
+            (repo_id, f"%{escaped}%"),
         ).fetchall()
         return [self._row_to_symbol(r) for r in rows]
 

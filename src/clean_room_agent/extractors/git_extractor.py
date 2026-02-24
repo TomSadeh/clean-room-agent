@@ -1,9 +1,12 @@
 """Git history extraction: commits, file-commit associations, co-change pairs."""
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 COMMIT_SEP = "---CRA_COMMIT_8f14e45f---"
@@ -97,6 +100,7 @@ def _parse_git_log(raw_output: str) -> list[CommitInfo]:
         lines = chunk.split("\n")
         # Expected header: hash, author, subject, ISO timestamp (4 lines)
         if len(lines) < 4:
+            logger.debug("Skipping malformed git log entry: fewer than 4 header lines")
             continue
 
         commit_hash = lines[0].strip()
