@@ -1,0 +1,250 @@
+"""Curated DB insert/upsert/delete helpers."""
+
+import sqlite3
+from datetime import datetime, timezone
+
+
+def upsert_repo(conn: sqlite3.Connection, path: str, remote_url: str | None) -> int:
+    """Insert or update a repo. Returns the repo id."""
+    now = datetime.now(timezone.utc).isoformat()
+    row = conn.execute("SELECT id FROM repos WHERE path = ?", (path,)).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE repos SET remote_url = ?, indexed_at = ? WHERE id = ?",
+            (remote_url, now, row["id"]),
+        )
+        return row["id"]
+    cursor = conn.execute(
+        "INSERT INTO repos (path, remote_url, indexed_at) VALUES (?, ?, ?)",
+        (path, remote_url, now),
+    )
+    return cursor.lastrowid
+
+
+def upsert_file(
+    conn: sqlite3.Connection,
+    repo_id: int,
+    path: str,
+    language: str,
+    content_hash: str,
+    size_bytes: int,
+) -> int:
+    """Insert or update a file record. Returns the file id."""
+    row = conn.execute(
+        "SELECT id FROM files WHERE repo_id = ? AND path = ?",
+        (repo_id, path),
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE files SET language = ?, content_hash = ?, size_bytes = ? WHERE id = ?",
+            (language, content_hash, size_bytes, row["id"]),
+        )
+        return row["id"]
+    cursor = conn.execute(
+        "INSERT INTO files (repo_id, path, language, content_hash, size_bytes) VALUES (?, ?, ?, ?, ?)",
+        (repo_id, path, language, content_hash, size_bytes),
+    )
+    return cursor.lastrowid
+
+
+def insert_symbol(
+    conn: sqlite3.Connection,
+    file_id: int,
+    name: str,
+    kind: str,
+    start_line: int,
+    end_line: int,
+    signature: str | None = None,
+    parent_symbol_id: int | None = None,
+) -> int:
+    """Insert a symbol. Returns the symbol id."""
+    cursor = conn.execute(
+        "INSERT INTO symbols (file_id, name, kind, start_line, end_line, signature, parent_symbol_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (file_id, name, kind, start_line, end_line, signature, parent_symbol_id),
+    )
+    return cursor.lastrowid
+
+
+def insert_docstring(
+    conn: sqlite3.Connection,
+    file_id: int,
+    content: str,
+    format_: str | None = None,
+    parsed_fields: str | None = None,
+    symbol_id: int | None = None,
+) -> int:
+    """Insert a docstring. Returns the docstring id."""
+    cursor = conn.execute(
+        "INSERT INTO docstrings (symbol_id, file_id, content, format, parsed_fields) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (symbol_id, file_id, content, format_, parsed_fields),
+    )
+    return cursor.lastrowid
+
+
+def insert_inline_comment(
+    conn: sqlite3.Connection,
+    file_id: int,
+    line: int,
+    content: str,
+    kind: str | None = None,
+    is_rationale: bool = False,
+    symbol_id: int | None = None,
+) -> int:
+    """Insert an inline comment. Returns the comment id."""
+    cursor = conn.execute(
+        "INSERT INTO inline_comments (file_id, symbol_id, line, content, kind, is_rationale) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (file_id, symbol_id, line, content, kind, int(is_rationale)),
+    )
+    return cursor.lastrowid
+
+
+def insert_dependency(
+    conn: sqlite3.Connection,
+    source_file_id: int,
+    target_file_id: int,
+    kind: str,
+) -> int:
+    """Insert a file-level dependency edge. Returns the dependency id."""
+    cursor = conn.execute(
+        "INSERT INTO dependencies (source_file_id, target_file_id, kind) VALUES (?, ?, ?)",
+        (source_file_id, target_file_id, kind),
+    )
+    return cursor.lastrowid
+
+
+def insert_symbol_reference(
+    conn: sqlite3.Connection,
+    caller_symbol_id: int,
+    callee_symbol_id: int,
+    reference_kind: str,
+) -> int:
+    """Insert a symbol-level reference edge. Returns the reference id."""
+    cursor = conn.execute(
+        "INSERT INTO symbol_references (caller_symbol_id, callee_symbol_id, reference_kind) "
+        "VALUES (?, ?, ?)",
+        (caller_symbol_id, callee_symbol_id, reference_kind),
+    )
+    return cursor.lastrowid
+
+
+def insert_commit(
+    conn: sqlite3.Connection,
+    repo_id: int,
+    hash_: str,
+    timestamp: str,
+    author: str | None = None,
+    message: str | None = None,
+    files_changed: int | None = None,
+    insertions: int | None = None,
+    deletions: int | None = None,
+) -> int:
+    """Insert or update a git commit. Returns the commit id.
+
+    Commits are keyed by (repo_id, hash_) to avoid duplication across re-index runs.
+    """
+    existing = conn.execute(
+        "SELECT id FROM commits WHERE repo_id = ? AND hash = ?",
+        (repo_id, hash_),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE commits SET author = ?, message = ?, timestamp = ?, files_changed = ?, "
+            "insertions = ?, deletions = ? WHERE id = ?",
+            (author, message, timestamp, files_changed, insertions, deletions, existing["id"]),
+        )
+        return existing["id"]
+
+    cursor = conn.execute(
+        "INSERT INTO commits (repo_id, hash, author, message, timestamp, files_changed, insertions, deletions) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (repo_id, hash_, author, message, timestamp, files_changed, insertions, deletions),
+    )
+    return cursor.lastrowid
+
+
+def insert_file_commit(
+    conn: sqlite3.Connection,
+    file_id: int,
+    commit_id: int,
+) -> None:
+    """Associate a file with a commit."""
+    conn.execute(
+        "INSERT OR IGNORE INTO file_commits (file_id, commit_id) VALUES (?, ?)",
+        (file_id, commit_id),
+    )
+
+
+def upsert_co_change(
+    conn: sqlite3.Connection,
+    file_a_id: int,
+    file_b_id: int,
+    last_commit_hash: str | None = None,
+    *,
+    count: int | None = None,
+) -> None:
+    """Upsert a co-change pair. Enforces a < b ordering.
+
+    If count is None (default), increments by 1.
+    If count is provided, sets the count to that absolute value.
+    """
+    lo, hi = (file_a_id, file_b_id) if file_a_id < file_b_id else (file_b_id, file_a_id)
+    if count is not None:
+        conn.execute(
+            "INSERT INTO co_changes (file_a_id, file_b_id, count, last_commit_hash) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(file_a_id, file_b_id) DO UPDATE SET "
+            "count = excluded.count, last_commit_hash = excluded.last_commit_hash",
+            (lo, hi, count, last_commit_hash),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO co_changes (file_a_id, file_b_id, count, last_commit_hash) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(file_a_id, file_b_id) DO UPDATE SET "
+            "count = count + 1, last_commit_hash = excluded.last_commit_hash",
+            (lo, hi, last_commit_hash),
+        )
+
+
+def upsert_file_metadata(
+    conn: sqlite3.Connection,
+    file_id: int,
+    purpose: str | None = None,
+    module: str | None = None,
+    domain: str | None = None,
+    concepts: str | None = None,
+    public_api_surface: str | None = None,
+    complexity_notes: str | None = None,
+) -> None:
+    """Insert or replace file metadata (from enrichment promotion)."""
+    conn.execute(
+        "INSERT OR REPLACE INTO file_metadata "
+        "(file_id, purpose, module, domain, concepts, public_api_surface, complexity_notes) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (file_id, purpose, module, domain, concepts, public_api_surface, complexity_notes),
+    )
+
+
+def delete_file_data(conn: sqlite3.Connection, file_id: int) -> None:
+    """Delete all data associated with a file (cascade)."""
+    # Order matters: children before parents
+    conn.execute(
+        "DELETE FROM symbol_references WHERE caller_symbol_id IN "
+        "(SELECT id FROM symbols WHERE file_id = ?) "
+        "OR callee_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?)",
+        (file_id, file_id),
+    )
+    conn.execute("DELETE FROM docstrings WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM inline_comments WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM dependencies WHERE source_file_id = ? OR target_file_id = ?", (file_id, file_id))
+    conn.execute("DELETE FROM file_commits WHERE file_id = ?", (file_id,))
+    conn.execute(
+        "DELETE FROM co_changes WHERE file_a_id = ? OR file_b_id = ?",
+        (file_id, file_id),
+    )
+    conn.execute("DELETE FROM file_metadata WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM files WHERE id = ?", (file_id,))

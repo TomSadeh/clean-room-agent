@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.tmp/
+.ptmp/
+.scratch/
+.scratch_repo/
+.scratch_symbols/
+.scratch*/
+.claude/settings.local.json

@@ -14,7 +14,7 @@ Instead of stuffing a 200K context window and hoping the model finds what matter
 2. **Deterministic Pre-filtering + LLM Judgment** - deterministic methods (AST, deps, git, metadata queries) narrow candidates, then an LLM call per stage evaluates relevance. Not embedding similarity.
 3. **Mode-Parameterized Pipeline** - variable-length sequence of retrieval stages followed by a terminal execute stage. The pipeline structure is constant; what changes per mode is the data source, retrieval stages, and execute output. Modes: Plan (structured plans), Implement (code edits), Train-Plan (training plans), Curate-Data (training datasets).
 4. **Multi-Model Architecture** - two base models: Qwen2.5-Coder-3B for coding, Qwen3-4B for reasoning/planning. Config-only routing, no CLI model flags.
-5. **Per-Stage LoRA Adapters** (Phase 4) - one per pipeline stage, fine-tuned from logged activity and synthetic data bootstrapped from external repo commit histories. The self-improvement loop.
+5. **Per-Stage LoRA Adapters** (Phase 4) - one per pipeline stage, fine-tuned via teacher-student distillation (Qwen3.5-397B as primary teacher) and from logged activity. Planning is the critical path (hardest stage, no ground truth, requires CoT-SFT + DPO). Self-improvement guardrails: plateaus after ~2 iterations at sub-7B scale; sub-6B fails to bootstrap without external teacher signal.
 
 Target: a 32K window at ~100% signal relevance, beating a 200K window at 10-15% utilization.
 
@@ -28,7 +28,7 @@ Three separate SQLite files, not three schemas in one file. Independent WAL jour
 
 3. **Session DB** (`session_<task_id>.sqlite`) - ephemeral per-task working memory. Created per task run, discarded after (optionally archived to raw). Intentionally minimal: key-value store. Phase 2 creates it, Phase 3 inherits and closes it.
 
-**Connection factory**: `get_connection(role, task_id=None, read_only=False)` where role is `"curated"`, `"raw"`, or `"session"`. `read_only=True` is required for Phase 2 curated reads. Single point of DB management.
+**Connection factory**: `get_connection(role, *, repo_path, task_id=None, read_only=False)` where role is `"curated"`, `"raw"`, or `"session"`. `repo_path` is keyword-only, points to the repository root. `read_only=True` is required for Phase 2 curated reads. Single point of DB management.
 
 **Cold start**: `cra index` populates curated DB. Raw DB gets first real data from indexing run metadata. Session DB gets first real data in Phase 2/3.
 
@@ -46,13 +46,18 @@ The pipeline is mode-parameterized: `[Task Analysis] -> [Retrieval Stage 1, ...,
 
 **MVP configuration**: [Task Analysis] -> [Scope, Precision] -> Execute (4 prompts total). Task Analysis (always-run preamble) parses intent and identifies targets. Scope expands from seeds and filters by relevance. Precision extracts symbols and classifies detail levels. This is the initial configuration, not the architecture.
 
-The pipeline architecture (stages, context curation, budget management) is model-agnostic -- nothing in the retrieval or orchestration layers depends on a specific model or provider. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP. Above it, a `ModelRouter` resolves which model to call based on (role, stage_name), reading from config. Swapping to a different provider means reimplementing `llm/client.py` internals; no other module changes.
+The pipeline architecture (stages, context curation, budget management) is model-agnostic -- nothing in the retrieval or orchestration layers depends on a specific model or provider. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP (Phases 1-3). Above it, a `ModelRouter` resolves which model to call based on (role, stage_name), reading from config. Phase 4 shifts to vLLM (or llama-server) for per-request LoRA adapter routing, and adds remote API backends for teacher model distillation. The external `complete()` interface does not change.
 
 ## Repository Contents
 
 ```
 planning/
-  meta-plan.md                   - Single source of truth: phases, schemas, contracts, conventions
+  meta-plan.md                   - Single source of truth: phases, architecture, contracts (index to topic files)
+  schemas.md                     - Full DDL for all three databases + session key contracts
+  cli-and-config.md              - CLI commands, arguments, config file format, resolution order
+  pipeline-and-modes.md          - Retrieval stages, LLM client, budget, pipeline modes, orchestrator
+  training-strategy.md           - LoRA training targets, bootstrapping, distillation, guardrails
+  phase1-implementation.md       - Phase 1 work items (completed)
 research_reviews/
   (research reviews and analysis documents)
 archive/
@@ -96,10 +101,10 @@ Formal benchmarking and thesis validation are intentionally outside the active P
 
 ## Status
 
-Research and design phase. Next steps:
-1. Build the knowledge base and indexer (Phase 1)
+Phase 1 complete (knowledge base, indexer, enrichment, query API, CLI). Next steps:
+1. ~~Build the knowledge base and indexer (Phase 1)~~ -- DONE
 2. Build the retrieval pipeline (Phase 2)
 3. Build the code agent with plan + implement modes (Phase 3) -- MVP boundary
 4. Build the self-improvement loop (Phase 4) -- post-MVP
 
-Phase 4's bootstrapping path (synthetic training data from external repos) depends only on Phase 1 -- LoRA training can begin before Phases 2-3 are built. The self-improvement path within Phase 4 requires Phase 3 logged data.
+Phase 4's bootstrapping path (synthetic training data from external repos plus open cold-start datasets like OpenCodeInstruct and CommitPackFT) depends only on Phase 1 -- LoRA training can begin before Phases 2-3 are built. The self-improvement path within Phase 4 requires Phase 3 logged data.

@@ -1,0 +1,67 @@
+"""LLM client for Ollama HTTP transport."""
+
+import time
+from dataclasses import dataclass
+
+import httpx
+
+
+@dataclass
+class ModelConfig:
+    model: str
+    base_url: str
+    provider: str = "ollama"
+    temperature: float = 0.0
+    max_tokens: int = 4096
+
+
+@dataclass
+class LLMResponse:
+    text: str
+    prompt_tokens: int
+    completion_tokens: int
+    latency_ms: int
+
+
+class LLMClient:
+    """Thin transport layer for Ollama's /api/generate endpoint."""
+
+    def __init__(self, config: ModelConfig):
+        self.config = config
+
+    def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
+        """Send a completion request to Ollama. Fail-fast, no retry."""
+        if self.config.provider != "ollama":
+            raise RuntimeError(
+                f"LLM provider '{self.config.provider}' is not implemented in this MVP client."
+            )
+        url = f"{self.config.base_url}/api/generate"
+        payload = {
+            "model": self.config.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": self.config.temperature,
+                "num_predict": self.config.max_tokens,
+            },
+        }
+        if system:
+            payload["system"] = system
+
+        start = time.monotonic()
+        with httpx.Client(timeout=300.0) as client:
+            response = client.post(url, json=payload)
+            response.raise_for_status()
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        data = response.json()
+        if "response" not in data:
+            raise RuntimeError(
+                f"Ollama response missing 'response' field. Keys: {list(data.keys())}"
+            )
+        return LLMResponse(
+            text=data["response"],
+            prompt_tokens=data.get("prompt_eval_count", 0),
+            completion_tokens=data.get("eval_count", 0),
+            latency_ms=elapsed_ms,
+        )
