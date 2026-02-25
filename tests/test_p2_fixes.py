@@ -63,6 +63,7 @@ class TestBoundsChecks:
             "stages": {"default": "scope,precision"},
             "orchestrator": {
                 "max_retries_per_step": 1,
+                "git_workflow": False,
                 "max_cumulative_diff_chars": -1,
             },
         }
@@ -83,6 +84,7 @@ class TestBoundsChecks:
             "stages": {"default": "scope,precision"},
             "orchestrator": {
                 "max_retries_per_step": 1,
+                "git_workflow": False,
                 "max_cumulative_diff_chars": 0,
             },
         }

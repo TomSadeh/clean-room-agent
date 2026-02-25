@@ -229,6 +229,8 @@ def run_orchestrator(
     meta_plan -> parts (topo-sorted) -> steps -> implement -> test -> retry -> adjust
     """
     task_id = str(uuid.uuid4())
+    if trace_logger is not None:
+        trace_logger.update_task_id(task_id)
     models_config = require_models_config(config)
     router = ModelRouter(models_config)
     reasoning_config = router.resolve("reasoning")
@@ -262,21 +264,12 @@ def run_orchestrator(
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     # Git workflow: branch-per-task lifecycle
-    use_git = orch_config.get("git_workflow", True)
+    use_git = orch_config.get("git_workflow")
+    if use_git is None:
+        raise RuntimeError(
+            "Missing git_workflow in [orchestrator] section of config.toml."
+        )
     git = None
-    if use_git and (repo_path / ".git").exists():
-        from clean_room_agent.orchestrator.git_ops import GitWorkflow
-        git = GitWorkflow(repo_path, task_id)
-        git.create_task_branch()
-    elif use_git:
-        logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
-
-    orch_run_id = insert_orchestrator_run(
-        raw_conn, task_id, str(repo_path), task,
-        git_branch=git.branch_name if git else None,
-        git_base_ref=git.base_ref if git else None,
-    )
-    raw_conn.commit()
 
     pass_results: list[PassResult] = []
     step_final_outcomes: dict[str, bool] = {}  # step_key -> final success
@@ -287,8 +280,23 @@ def run_orchestrator(
     all_steps_count = 0
     sequence_order = 0
     status = "failed"
+    orch_run_id = None
 
     try:
+        if use_git and (repo_path / ".git").exists():
+            from clean_room_agent.orchestrator.git_ops import GitWorkflow
+            git = GitWorkflow(repo_path, task_id)
+            git.create_task_branch()
+        elif use_git:
+            logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
+
+        orch_run_id = insert_orchestrator_run(
+            raw_conn, task_id, str(repo_path), task,
+            git_branch=git.branch_name if git else None,
+            git_base_ref=git.base_ref if git else None,
+        )
+        raw_conn.commit()
+
         # === META-PLAN PASS ===
         sub_task_id = f"{task_id}:meta_plan"
         context = run_pipeline(
@@ -811,12 +819,13 @@ def run_orchestrator(
         status = "failed"
 
     finally:
-        _finalize_orchestrator_run(
-            raw_conn, orch_run_id, status,
-            total_steps=all_steps_count,
-            parts_completed=parts_completed,
-            steps_completed=steps_completed,
-        )
+        if orch_run_id is not None:
+            _finalize_orchestrator_run(
+                raw_conn, orch_run_id, status,
+                total_steps=all_steps_count,
+                parts_completed=parts_completed,
+                steps_completed=steps_completed,
+            )
 
         set_state(session_conn, "cumulative_diff", cumulative_diff)
         set_state(session_conn, "orchestrator_progress", {
@@ -870,6 +879,8 @@ def run_single_pass(
     the full orchestrator path (T67).
     """
     task_id = str(uuid.uuid4())
+    if trace_logger is not None:
+        trace_logger.update_task_id(task_id)
     models_config = require_models_config(config)
     router = ModelRouter(models_config)
     coding_config = router.resolve("coding")

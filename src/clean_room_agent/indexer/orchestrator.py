@@ -371,6 +371,7 @@ class LibraryIndexResult:
     files_new: int
     files_unchanged: int
     parse_errors: int
+    read_errors: int
     duration_ms: int
 
 
@@ -416,6 +417,7 @@ def index_libraries(
         total_new = 0
         total_unchanged = 0
         total_parse_errors = 0
+        total_read_errors = 0
 
         # Get existing library files from DB
         existing = curated_conn.execute(
@@ -432,7 +434,9 @@ def index_libraries(
                 # Compute content hash
                 try:
                     content = lf.absolute_path.read_bytes()
-                except (OSError, IOError):
+                except (OSError, IOError) as e:
+                    logger.warning("Failed to read library file %s: %s", lf.absolute_path, e)
+                    total_read_errors += 1
                     continue
                 content_hash = hashlib.sha256(content).hexdigest()
 
@@ -521,6 +525,7 @@ def index_libraries(
             files_new=total_new,
             files_unchanged=total_unchanged,
             parse_errors=total_parse_errors,
+            read_errors=total_read_errors,
             duration_ms=elapsed_ms,
         )
     finally:

@@ -104,7 +104,7 @@ def _make_config():
         "budget": {"reserved_tokens": 4096},
         "stages": {"default": "scope,precision"},
         "testing": {"test_command": "pytest tests/"},
-        "orchestrator": {"max_retries_per_step": 1},
+        "orchestrator": {"max_retries_per_step": 1, "git_workflow": False},
     }
 
 

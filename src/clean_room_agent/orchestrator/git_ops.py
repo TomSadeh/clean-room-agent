@@ -15,7 +15,7 @@ class GitWorkflow:
     def __init__(self, repo_path: Path, task_id: str):
         self._repo_path = repo_path
         self._task_id = task_id
-        self._branch_name = f"cra/task/{task_id[:12]}"
+        self._branch_name = f"cra/task/{task_id}"
         self._base_ref: str | None = None
         self._original_branch: str | None = None
 
@@ -46,6 +46,11 @@ class GitWorkflow:
         # Save original branch
         result = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
         self._original_branch = result.stdout.strip()
+
+        if self._original_branch == "HEAD":
+            raise RuntimeError(
+                "Cannot create task branch from detached HEAD — checkout a branch first"
+            )
 
         # Record base SHA
         result = self._run_git("rev-parse", "HEAD")

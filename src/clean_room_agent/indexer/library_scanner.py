@@ -7,6 +7,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from clean_room_agent.parsers.registry import get_parser
+
 logger = logging.getLogger(__name__)
 
 # Directories to skip when scanning library packages
@@ -70,28 +72,25 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
     """Auto-resolve by scanning project Python files for imports."""
     # Collect unique top-level import names from project .py files
     import_names: set[str] = set()
+    parser = get_parser("python")
     for py_file in repo_path.rglob("*.py"):
         # Skip hidden dirs and common non-source dirs
         parts = py_file.relative_to(repo_path).parts
         if any(p.startswith(".") or p in ("node_modules", "__pycache__", ".git") for p in parts):
             continue
         try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
+            source = py_file.read_bytes()
         except (OSError, IOError):
             continue
-        for line in source.splitlines():
-            line = line.strip()
-            if line.startswith("import "):
-                # "import foo" or "import foo.bar"
-                module = line.split()[1].split(".")[0].split(",")[0]
-                import_names.add(module)
-            elif line.startswith("from "):
-                # "from foo import bar" or "from foo.bar import baz"
-                parts_split = line.split()
-                if len(parts_split) >= 2:
-                    module = parts_split[1].split(".")[0]
-                    if not module.startswith("."):
-                        import_names.add(module)
+        try:
+            result = parser.parse(source, str(py_file.relative_to(repo_path)))
+        except Exception:
+            continue
+        for imp in result.imports:
+            if not imp.is_relative:
+                top_level = imp.module.split(".")[0]
+                if top_level:
+                    import_names.add(top_level)
 
     # Resolve each to site-packages
     result = []
@@ -104,12 +103,13 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
         if spec is None or spec.origin is None:
             continue
 
-        # Get package directory
+        # Get package directory or single file
         origin = Path(spec.origin)
         if origin.name == "__init__.py":
             pkg_path = origin.parent
         else:
-            pkg_path = origin.parent
+            # Single-file module (e.g. six.py) — use the file itself, not its parent
+            pkg_path = origin
 
         # Skip stdlib and project-local modules
         pkg_str = str(pkg_path)
@@ -134,8 +134,23 @@ def scan_library(
     result = []
     root = library.package_path
 
+    # Handle single-file modules (e.g. six.py)
+    if root.is_file():
+        if root.suffix == ".py":
+            try:
+                size = root.stat().st_size
+            except OSError:
+                return result
+            if size <= max_file_size:
+                result.append(LibraryFileInfo(
+                    relative_path=f"{library.package_name}/{root.name}",
+                    absolute_path=root,
+                    size_bytes=size,
+                ))
+        return result
+
     if not root.is_dir():
-        logger.warning("Library path is not a directory: %s", root)
+        logger.warning("Library path does not exist: %s", root)
         return result
 
     for py_file in root.rglob("*.py"):

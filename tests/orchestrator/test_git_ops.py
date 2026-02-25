@@ -66,8 +66,8 @@ class TestCreateTaskBranch:
         gw = GitWorkflow(tmp_path, task_id="abc123def456extra")
         branch = gw.create_task_branch()
 
-        assert branch == "cra/task/abc123def456"
-        assert _current_branch(tmp_path) == "cra/task/abc123def456"
+        assert branch == "cra/task/abc123def456extra"
+        assert _current_branch(tmp_path) == "cra/task/abc123def456extra"
         assert gw.base_ref is not None
         assert gw.original_branch == original_branch
 

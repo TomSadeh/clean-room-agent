@@ -20,7 +20,6 @@ def resolve_dependencies(
     language: str,
     file_index: set[str],
     repo_path: Path,
-    library_file_index: dict[str, int] | None = None,
 ) -> list[ResolvedDep]:
     """Resolve imports to file-level dependency edges.
 
@@ -30,24 +29,14 @@ def resolve_dependencies(
         language: Language of the source file.
         file_index: Set of all relative paths in the repo.
         repo_path: Root of the repository.
-        library_file_index: Optional mapping of library file paths to file_ids.
-            When an absolute import doesn't resolve against project file_index,
-            falls back to library_file_index.
 
     Returns:
-        List of resolved dependencies (intra-repo + library).
+        List of resolved dependencies (intra-repo).
     """
     deps = []
     for imp in imports:
         if language == "python":
             targets = _resolve_python_import(imp, file_path, file_index)
-            # Fall back to library resolution for unresolved absolute imports
-            if not targets and not imp.is_relative and library_file_index:
-                lib_targets = _resolve_python_absolute(imp, set(library_file_index.keys()))
-                kind = "library_import"
-                for target in lib_targets:
-                    deps.append(ResolvedDep(source_path=file_path, target_path=target, kind=kind))
-                continue
         elif language in ("typescript", "javascript"):
             targets = _resolve_ts_js_import(imp, file_path, file_index, repo_path)
         else:

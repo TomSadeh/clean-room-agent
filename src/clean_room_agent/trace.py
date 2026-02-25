@@ -5,6 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 
+import re
+
+
+def _safe_fence(content: str) -> str:
+    """Return a backtick fence longer than any backtick run in content."""
+    longest = 0
+    for m in re.finditer(r"`+", content):
+        longest = max(longest, len(m.group()))
+    return "`" * max(longest + 1, 3)
+
+
 class TraceLogger:
     """Accumulates LLM call records and writes a human-readable markdown file."""
 
@@ -13,6 +24,10 @@ class TraceLogger:
         self._task_id = task_id
         self._task_description = task_description
         self._calls: list[dict] = []
+
+    def update_task_id(self, new_id: str) -> None:
+        """Update the task_id (called by orchestrator after generating the real one)."""
+        self._task_id = new_id
 
     def log_calls(
         self, stage_name: str, call_type: str, calls: list[dict], model: str = "",
@@ -100,43 +115,48 @@ class TraceLogger:
         # System prompt (collapsible)
         system = call.get("system", "")
         if system:
+            fence = _safe_fence(system)
             parts.append(
                 f"### System Prompt\n"
                 f"<details><summary>System prompt ({len(system)} chars)</summary>\n\n"
-                f"{system}\n\n"
+                f"{fence}\n{system}\n{fence}\n\n"
                 f"</details>\n"
             )
 
         # User prompt (collapsible)
         prompt = call.get("prompt", "")
         if prompt:
+            fence = _safe_fence(prompt)
             parts.append(
                 f"### User Prompt\n"
                 f"<details><summary>User prompt ({len(prompt)} chars)</summary>\n\n"
-                f"{prompt}\n\n"
+                f"{fence}\n{prompt}\n{fence}\n\n"
                 f"</details>\n"
             )
 
         # Thinking (collapsible, if present)
         thinking = call.get("thinking", "")
         if thinking:
+            fence = _safe_fence(thinking)
             parts.append(
                 f"### Thinking\n"
                 f"<details><summary>Thinking ({len(thinking)} chars)</summary>\n\n"
-                f"{thinking}\n\n"
+                f"{fence}\n{thinking}\n{fence}\n\n"
                 f"</details>\n"
             )
 
         # Response (inline — primary audit target)
         response = call.get("response", "")
+        fence = _safe_fence(response)
         parts.append(
             f"### Response\n"
-            f"```\n{response}\n```\n"
+            f"{fence}\n{response}\n{fence}\n"
         )
 
         # Error (if present)
         error = call.get("error", "")
         if error:
-            parts.append(f"### Error\n```\n{error}\n```\n")
+            fence = _safe_fence(error)
+            parts.append(f"### Error\n{fence}\n{error}\n{fence}\n")
 
         return "\n".join(parts)
