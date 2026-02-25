@@ -150,6 +150,18 @@ def run_pipeline(
                 stage_name="task_analysis",
             )
             raw_conn.commit()
+            # Log to trace so the refinement merge is visible in the trace output
+            if trace_logger is not None:
+                trace_logger.log_calls("task_analysis", "refinement_merge", [{
+                    "system": None,
+                    "prompt": f"refinement_merge: {refinement_request.missing_files}, {refinement_request.missing_symbols}",
+                    "response": f"intent={task_query.intent_summary}, type={task_query.task_type}",
+                    "thinking": "",
+                    "prompt_tokens": None,
+                    "completion_tokens": None,
+                    "elapsed_ms": 0,
+                    "error": "",
+                }], model="deterministic")
         else:
             reasoning_config = router.resolve("reasoning", "task_analysis")
             with LoggedLLMClient(reasoning_config) as llm:

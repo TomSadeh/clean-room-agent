@@ -24,6 +24,7 @@ class TraceLogger:
         self._task_id = task_id
         self._task_description = task_description
         self._calls: list[dict] = []
+        self._finalized = False
 
     def update_task_id(self, new_id: str) -> None:
         """Update the task_id (called by orchestrator after generating the real one)."""
@@ -38,18 +39,24 @@ class TraceLogger:
                 "stage_name": stage_name,
                 "call_type": call_type,
                 "model": model,
-                "system": call.get("system", ""),
-                "prompt": call.get("prompt", ""),
-                "response": call.get("response", ""),
-                "thinking": call.get("thinking", ""),
+                "system": call.get("system") or "",
+                "prompt": call.get("prompt") or "",
+                "response": call.get("response") or "",
+                "thinking": call.get("thinking") or "",
                 "prompt_tokens": call.get("prompt_tokens"),
                 "completion_tokens": call.get("completion_tokens"),
-                "elapsed_ms": call.get("elapsed_ms", 0),
-                "error": call.get("error", ""),
+                "elapsed_ms": call.get("elapsed_ms"),
+                "error": call.get("error") or "",
             })
 
     def finalize(self) -> Path:
-        """Write markdown trace to disk. Returns the output path."""
+        """Write markdown trace to disk. Returns the output path.
+
+        Raises RuntimeError if called more than once.
+        """
+        if self._finalized:
+            raise RuntimeError("TraceLogger.finalize() already called")
+        self._finalized = True
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
 
         parts = [self._build_header()]
@@ -67,10 +74,12 @@ class TraceLogger:
         total_latency = 0
         has_none_prompt = False
         has_none_completion = False
+        has_none_latency = False
 
         for call in self._calls:
             pt = call.get("prompt_tokens")
             ct = call.get("completion_tokens")
+            ms = call.get("elapsed_ms")
             if pt is None:
                 has_none_prompt = True
             else:
@@ -79,10 +88,14 @@ class TraceLogger:
                 has_none_completion = True
             else:
                 total_completion += ct
-            total_latency += call.get("elapsed_ms", 0)
+            if ms is None:
+                has_none_latency = True
+            else:
+                total_latency += ms
 
         prompt_str = "N/A" if has_none_prompt else str(total_prompt)
         completion_str = "N/A" if has_none_completion else str(total_completion)
+        latency_str = "N/A" if has_none_latency else f"{total_latency}ms"
 
         return (
             f"# Pipeline Trace: {self._task_id}\n\n"
@@ -90,7 +103,7 @@ class TraceLogger:
             f"**Summary:** {total_calls} calls | "
             f"Prompt tokens: {prompt_str} | "
             f"Completion tokens: {completion_str} | "
-            f"Total latency: {total_latency}ms\n\n"
+            f"Total latency: {latency_str}\n\n"
             f"---\n"
         )
 
@@ -101,15 +114,16 @@ class TraceLogger:
         model = call.get("model", "")
         pt = call.get("prompt_tokens")
         ct = call.get("completion_tokens")
-        latency = call.get("elapsed_ms", 0)
+        latency = call.get("elapsed_ms")
 
         pt_str = str(pt) if pt is not None else "N/A"
         ct_str = str(ct) if ct is not None else "N/A"
+        latency_str = f"{latency}ms" if latency is not None else "N/A"
 
         parts = [
             f"\n## Call {call_number}: {stage} ({call_type})",
             f"Model: {model} | Prompt tokens: {pt_str} | "
-            f"Completion tokens: {ct_str} | Latency: {latency}ms\n",
+            f"Completion tokens: {ct_str} | Latency: {latency_str}\n",
         ]
 
         # System prompt (collapsible)

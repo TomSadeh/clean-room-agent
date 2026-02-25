@@ -24,15 +24,19 @@ def estimate_tokens_conservative(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN_CONSERVATIVE)
 
 
-def estimate_framing_tokens(path: str, language: str, detail_level: str) -> int:
+def estimate_framing_tokens(
+    path: str, language: str, detail_level: str, *, has_metadata: bool = False,
+) -> int:
     """R5: Estimate token overhead for file framing in prompt output.
 
-    Accounts for: header line, opening/closing code tags, newlines.
+    Accounts for: header line, optional metadata line, opening/closing code tags, newlines.
     """
     header = f"## {path} [{language}] ({detail_level})\n"
+    # Metadata line added by to_prompt_text when metadata_summary is present
+    metadata_line = "metadata_summary_placeholder\n" if has_metadata else ""
     open_tag = f"<code lang=\"{language}\">\n"
     close_tag = "</code>\n"
-    framing = header + open_tag + close_tag
+    framing = header + metadata_line + open_tag + close_tag
     return len(framing) // CHARS_PER_TOKEN
 
 

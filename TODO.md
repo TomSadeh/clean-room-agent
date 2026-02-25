@@ -341,22 +341,22 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P1
 
-- [ ] **1-P1-1: `_TOKENS_PER_SCOPE_CANDIDATE` too low after metadata additions**
+- [x] **1-P1-1: `_TOKENS_PER_SCOPE_CANDIDATE` too low after metadata additions**
   - File: `src/clean_room_agent/retrieval/scope_stage.py:176`
   - Still set to 50, but metadata suffix (`[purpose=..., domain=..., concepts=...]`) pushes candidates to ~100+ tokens. Batch sizing will over-fill, triggering more `ValueError`s from `validate_judgment_batch`. CLAUDE.md R3 violation (budget validation).
   - Fix: Increase to ~100.
 
-- [ ] **1-P1-2: `estimate_framing_tokens` does not account for metadata line**
+- [x] **1-P1-2: `estimate_framing_tokens` does not account for metadata line**
   - File: `src/clean_room_agent/retrieval/budget.py:27-36`
   - `to_prompt_text` adds `metadata_summary\n` between header and `<code>` tag. Assembly tracks `meta_tokens` separately but the trailing `\n` is not counted. Minor CLAUDE.md R5 violation (framing overhead in budget).
   - Fix: Include metadata line in framing estimate, or count the `\n`.
 
-- [ ] **1-P1-3: `search_files_by_metadata` with no filters returns all enriched files**
+- [x] **1-P1-3: `search_files_by_metadata` with no filters returns all enriched files**
   - File: `src/clean_room_agent/query/api.py:53-81`
   - If `domain`, `module`, and `concepts` are all None, query returns all files with any metadata — unbounded result set. Current callers always pass `concepts=kw` but the API is public.
   - Fix: Raise `ValueError` if no filter parameters provided, or document the behavior.
 
-- [ ] **1-P1-4: `_row_to_file` silent fallback for `file_source`**
+- [x] **1-P1-4: `_row_to_file` silent fallback for `file_source`**
   - File: `src/clean_room_agent/query/api.py:360-364`
   - `except (IndexError, KeyError): file_source = "project"` — violates CLAUDE.md fail-fast coding style. If schema migration hasn't run, this hides the problem.
   - Fix: Remove fallback, rely on migration, fail-fast on missing column.
@@ -412,30 +412,30 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P1
 
-- [ ] **2-P1-1: `_auto_resolve` doesn't exclude `venv/` directories**
+- [x] **2-P1-1: `_auto_resolve` doesn't exclude `venv/` directories**
   - File: `src/clean_room_agent/indexer/library_scanner.py:73-76`
   - Skip list catches `.venv` (starts with `.`) but not plain `venv/` or `env/`.
   - Fix: Add `"venv"`, `"env"`, `".tox"` to skip set.
 
-- [ ] **2-P1-2: No stale library file cleanup**
+- [x] **2-P1-2: No stale library file cleanup**
   - File: `src/clean_room_agent/indexer/orchestrator.py:420-504`
   - Removed library files persist in DB forever.
   - Fix: Compute set difference, delete stale entries.
 
-- [ ] **2-P1-3: `find_spec` can execute arbitrary code and has narrow exception catch**
+- [x] **2-P1-3: `find_spec` can execute arbitrary code and has narrow exception catch**
   - File: `src/clean_room_agent/indexer/library_scanner.py:100-103`
   - Exception list misses `ImportError`, `AttributeError`, and custom finder exceptions.
   - Fix: Broaden to `except Exception`.
 
-- [ ] **2-P1-4: Changed library files counted as "new"**
+- [x] **2-P1-4: Changed library files counted as "new"**
   - File: `src/clean_room_agent/indexer/orchestrator.py:440-462`
   - No `files_changed` field in `LibraryIndexResult`.
   - Fix: Add `files_changed` field, track separately.
 
-- [ ] **2-P1-5: `_row_to_file` silent fallback for `file_source`** (same as 1-P1-4)
+- [x] **2-P1-5: `_row_to_file` silent fallback for `file_source`** (same as 1-P1-4)
   - File: `src/clean_room_agent/query/api.py:360-364`
 
-- [ ] **2-P1-6: Silent `OSError` on `py_file.stat()` in `scan_library`**
+- [x] **2-P1-6: Silent `OSError` on `py_file.stat()` in `scan_library`**
   - File: `src/clean_room_agent/indexer/library_scanner.py:149-152`
   - Fix: Log warning with file path.
 
@@ -486,19 +486,19 @@ This is a large item — blocked until the DB is actually populated on real repo
 - [ ] **3-P1-1: `rollback_to_checkpoint` + `return_to_original_branch` may fail on untracked files**
   - File: `src/clean_room_agent/orchestrator/runner.py:833-840`
 
-- [ ] **3-P1-2: `--allow-empty` commits on no-change checkpoints**
+- [x] **3-P1-2: `--allow-empty` commits on no-change checkpoints**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:73`
 
 - [ ] **3-P1-3: LIFO rollback error abandons remaining parts**
   - File: `src/clean_room_agent/orchestrator/runner.py:771-784`
 
-- [ ] **3-P1-4: `get_cumulative_diff` returns `""` when `_base_ref is None`**
+- [x] **3-P1-4: `get_cumulative_diff` returns `""` when `_base_ref is None`**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:87-88`
 
-- [ ] **3-P1-5: Diff truncation uses `"\n--- "` string heuristic**
+- [x] **3-P1-5: Diff truncation uses `"\n--- "` string heuristic**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:96-98` and `runner.py:59-61`
 
-- [ ] **3-P1-6: Duplicate diff truncation logic**
+- [x] **3-P1-6: Duplicate diff truncation logic**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:93-99` and `runner.py:53-62`
 
 #### P2
@@ -547,22 +547,22 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P1
 
-- [ ] **4-P1-1: `system` field None vs "" inconsistency**
+- [x] **4-P1-1: `system` field None vs "" inconsistency**
   - File: `src/clean_room_agent/trace.py:28`
 
-- [ ] **4-P1-2: `elapsed_ms` defaults to 0 masking missing timing data**
+- [x] **4-P1-2: `elapsed_ms` defaults to 0 masking missing timing data**
   - File: `src/clean_room_agent/trace.py:32`
 
-- [ ] **4-P1-3: Refinement merge path skips trace logging**
+- [x] **4-P1-3: Refinement merge path skips trace logging**
   - File: `src/clean_room_agent/retrieval/pipeline.py:127-152`
 
-- [ ] **4-P1-4: `finalize()` can be called multiple times**
+- [x] **4-P1-4: `finalize()` can be called multiple times**
   - File: `src/clean_room_agent/trace.py:36-45`
 
-- [ ] **4-P1-5: No test for markdown content injection**
+- [x] **4-P1-5: No test for markdown content injection**
   - File: `tests/test_trace.py`
 
-- [ ] **4-P1-6: No test for None system prompt**
+- [x] **4-P1-6: No test for None system prompt**
   - File: `tests/test_trace.py`
 
 #### P2

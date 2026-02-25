@@ -185,3 +185,84 @@ class TestTraceLogger:
         assert "Parsed task intent" in content
         assert "Found 5 relevant files" in content
         assert "Classified symbols at detail levels" in content
+
+    def test_content_injection_details_tag(self, tmp_path):
+        """Content with </details> must not corrupt the trace output (4-P0-1 regression)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-inject-1", task_description="injection test")
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(system="sys</details>tem", prompt="pro</details>mpt", response="res</details>ponse")],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # The injected </details> should be inside a code fence, not breaking structure
+        # All 3 section headers must be present and intact
+        assert "### System Prompt" in content
+        assert "### User Prompt" in content
+        assert "### Response" in content
+        # The </details> in content must not prematurely close the real <details> blocks
+        # Count opening vs closing tags — each <details> should have exactly one </details>
+        # With 2 collapsible sections (system + prompt), we expect 2 pairs + injected ones in fences
+        assert content.count("<details>") == 2  # system + prompt sections
+
+    def test_content_injection_backticks(self, tmp_path):
+        """Content with triple backticks must not break fences (4-P0-2 regression)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-inject-2", task_description="backtick test")
+        response_with_backticks = "Here is code:\n```python\nprint('hello')\n```\nDone."
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(response=response_with_backticks)],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # The response must be fully contained — check the whole response text is present
+        assert "print('hello')" in content
+        assert "Here is code:" in content
+        assert "Done." in content
+        # The fence wrapping the response should be longer than 3 backticks
+        assert "````" in content
+
+    def test_none_system_prompt(self, tmp_path):
+        """Calls with system=None should render without a system prompt section (4-P1-6)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-none-sys", task_description="none system test")
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(system=None)],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # No system prompt section should be rendered
+        assert "### System Prompt" not in content
+        # But the response should still be present
+        assert "### Response" in content
+        assert "4" in content
+
+    def test_double_finalize_raises(self, tmp_path):
+        """Calling finalize() twice should raise RuntimeError (4-P1-4)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-double", task_description="double finalize")
+        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.finalize()
+        with pytest.raises(RuntimeError, match="already called"):
+            logger.finalize()
+
+    def test_update_task_id(self, tmp_path):
+        """update_task_id should change the task_id in the trace header (4-P0-3)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="temp-id", task_description="update test")
+        logger.update_task_id("real-task-id-123")
+        logger.log_calls("scope", "retrieval", [_make_call()])
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        assert "real-task-id-123" in content
+        assert "temp-id" not in content

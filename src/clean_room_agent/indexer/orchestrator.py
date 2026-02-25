@@ -369,6 +369,7 @@ class LibraryIndexResult:
     libraries_found: int
     files_scanned: int
     files_new: int
+    files_changed: int
     files_unchanged: int
     parse_errors: int
     read_errors: int
@@ -415,9 +416,11 @@ def index_libraries(
 
         total_scanned = 0
         total_new = 0
+        total_changed = 0
         total_unchanged = 0
         total_parse_errors = 0
         total_read_errors = 0
+        scanned_paths: set[str] = set()  # track all scanned relative paths for stale cleanup
 
         # Get existing library files from DB
         existing = curated_conn.execute(
@@ -431,6 +434,7 @@ def index_libraries(
             total_scanned += len(lib_files)
 
             for lf in lib_files:
+                scanned_paths.add(lf.relative_path)
                 # Compute content hash
                 try:
                     content = lf.absolute_path.read_bytes()
@@ -441,12 +445,14 @@ def index_libraries(
                 content_hash = hashlib.sha256(content).hexdigest()
 
                 # Check if unchanged
+                is_changed = False
                 if lf.relative_path in existing_map:
                     if existing_map[lf.relative_path][1] == content_hash:
                         total_unchanged += 1
                         continue
                     # Changed: clear children
                     queries.clear_file_children(curated_conn, existing_map[lf.relative_path][0])
+                    is_changed = True
 
                 # Upsert file record
                 file_id = queries.upsert_file(
@@ -463,7 +469,10 @@ def index_libraries(
                     logger.warning("Parse error for library file %s: %s", lf.relative_path, e)
                     continue
 
-                total_new += 1
+                if is_changed:
+                    total_changed += 1
+                else:
+                    total_new += 1
 
                 # Insert symbols (two passes: parents then children)
                 symbol_records: list[dict] = []
@@ -507,13 +516,22 @@ def index_libraries(
 
             curated_conn.commit()
 
+        # Clean up stale library files no longer present in any scanned library
+        stale_paths = set(existing_map.keys()) - scanned_paths
+        for stale_path in stale_paths:
+            stale_id = existing_map[stale_path][0]
+            queries.delete_file_data(curated_conn, stale_id)
+        if stale_paths:
+            curated_conn.commit()
+            logger.info("Removed %d stale library files", len(stale_paths))
+
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         raw_queries.insert_index_run(
             raw_conn,
             repo_path=str(repo_path),
             files_scanned=total_scanned,
-            files_changed=total_new,
+            files_changed=total_new + total_changed,
             duration_ms=elapsed_ms,
             status="library_index",
         )
@@ -523,6 +541,7 @@ def index_libraries(
             libraries_found=len(sources),
             files_scanned=total_scanned,
             files_new=total_new,
+            files_changed=total_changed,
             files_unchanged=total_unchanged,
             parse_errors=total_parse_errors,
             read_errors=total_read_errors,

@@ -52,14 +52,8 @@ _MAX_CUMULATIVE_DIFF_CHARS = 50_000
 
 def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
     """Truncate cumulative diff to prevent unbounded context growth."""
-    if len(diff) <= max_chars:
-        return diff
-    truncated = diff[-max_chars:]
-    # Align to the next complete block boundary (starts with "--- ")
-    first_block = truncated.find("\n--- ")
-    if first_block >= 0:
-        truncated = truncated[first_block + 1:]
-    return f"[earlier changes truncated]\n{truncated}"
+    from clean_room_agent.orchestrator.git_ops import truncate_diff
+    return truncate_diff(diff, max_chars)
 
 
 def _resolve_budget(config: dict, role: str) -> BudgetConfig:

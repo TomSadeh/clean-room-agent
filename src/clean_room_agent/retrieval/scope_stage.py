@@ -173,7 +173,7 @@ def expand_scope(
     return list(seen.values())
 
 
-_TOKENS_PER_SCOPE_CANDIDATE = 50  # ~50 tokens per candidate line (path + tier + metadata)
+_TOKENS_PER_SCOPE_CANDIDATE = 100  # ~100 tokens per candidate line (path + tier + metadata suffix)
 
 
 def judge_scope(

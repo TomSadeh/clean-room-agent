@@ -58,6 +58,10 @@ class KnowledgeBase:
         concepts: str | None = None,
     ) -> list[File]:
         """Search files by enrichment metadata. Returns empty if unpopulated."""
+        if domain is None and module is None and concepts is None:
+            raise ValueError(
+                "search_files_by_metadata requires at least one filter (domain, module, or concepts)"
+            )
         conditions = ["f.repo_id = ?"]
         params: list = [repo_id]
 
@@ -357,11 +361,6 @@ class KnowledgeBase:
 
     @staticmethod
     def _row_to_file(row) -> File:
-        # file_source may not exist in older DBs without migration
-        try:
-            file_source = row["file_source"]
-        except (IndexError, KeyError):
-            file_source = "project"
         return File(
             id=row["id"],
             repo_id=row["repo_id"],
@@ -369,7 +368,7 @@ class KnowledgeBase:
             language=row["language"],
             content_hash=row["content_hash"],
             size_bytes=row["size_bytes"],
-            file_source=file_source,
+            file_source=row["file_source"],
         )
 
     @staticmethod

@@ -887,14 +887,14 @@ class TestCapCumulativeDiff:
             _MAX_CUMULATIVE_DIFF_CHARS,
             _cap_cumulative_diff,
         )
-        block = "--- file.py\n-old line content\n+new line content\n"
+        block = "diff --git a/file.py b/file.py\n--- a/file.py\n+++ b/file.py\n-old line content\n+new line content\n"
         repeats = (_MAX_CUMULATIVE_DIFF_CHARS // len(block)) + 10
         long_diff = block * repeats
 
         result = _cap_cumulative_diff(long_diff)
-        # After the header, should start at a block boundary
+        # After the header, should start at a diff block boundary
         lines = result.split("\n")
         # First line is the truncation notice
         assert lines[0] == "[earlier changes truncated]"
-        # Second line should be a block start
-        assert lines[1].startswith("--- ")
+        # Second line should be a diff block start
+        assert lines[1].startswith("diff --git ")

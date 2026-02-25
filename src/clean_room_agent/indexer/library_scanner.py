@@ -76,7 +76,7 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
     for py_file in repo_path.rglob("*.py"):
         # Skip hidden dirs and common non-source dirs
         parts = py_file.relative_to(repo_path).parts
-        if any(p.startswith(".") or p in ("node_modules", "__pycache__", ".git") for p in parts):
+        if any(p.startswith(".") or p in ("node_modules", "__pycache__", ".git", "venv", "env", ".tox") for p in parts):
             continue
         try:
             source = py_file.read_bytes()
@@ -98,7 +98,7 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
     for name in sorted(import_names):
         try:
             spec = importlib.util.find_spec(name)
-        except (ModuleNotFoundError, ValueError):
+        except Exception:
             continue
         if spec is None or spec.origin is None:
             continue
@@ -163,7 +163,8 @@ def scan_library(
         # Skip oversized files
         try:
             size = py_file.stat().st_size
-        except OSError:
+        except OSError as e:
+            logger.warning("Failed to stat library file %s: %s", py_file, e)
             continue
         if size > max_file_size:
             continue

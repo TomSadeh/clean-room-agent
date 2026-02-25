@@ -9,6 +9,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def truncate_diff(diff: str, max_chars: int) -> str:
+    """Truncate a diff to max_chars, aligning to a diff block boundary.
+
+    Preserves the most recent changes (tail of the diff).
+    """
+    if len(diff) <= max_chars:
+        return diff
+    truncated = diff[-max_chars:]
+    # Align to the next complete diff block boundary
+    first_block = truncated.find("\ndiff --git ")
+    if first_block >= 0:
+        truncated = truncated[first_block + 1:]
+    return f"[earlier changes truncated]\n{truncated}"
+
+
 class GitWorkflow:
     """Manages the task branch lifecycle: create, commit, diff, rollback."""
 
@@ -75,7 +90,14 @@ class GitWorkflow:
         else:
             self._run_git("add", "-A")
 
-        self._run_git("commit", "-m", message, "--allow-empty")
+        # Check if there's anything staged (avoids polluting history with empty commits)
+        status = self._run_git("diff", "--cached", "--name-only")
+        if not status.stdout.strip():
+            logger.debug("No staged changes to commit for checkpoint: %s", message)
+            result = self._run_git("rev-parse", "HEAD")
+            return result.stdout.strip()
+
+        self._run_git("commit", "-m", message)
 
         result = self._run_git("rev-parse", "HEAD")
         sha = result.stdout.strip()
@@ -90,18 +112,13 @@ class GitWorkflow:
                 recent changes.
         """
         if self._base_ref is None:
-            return ""
+            raise RuntimeError("get_cumulative_diff called before create_task_branch")
 
         result = self._run_git("diff", f"{self._base_ref}..HEAD")
         diff = result.stdout
 
         if max_chars is not None and len(diff) > max_chars:
-            truncated = diff[-max_chars:]
-            # Align to the next complete block boundary (starts with "--- ")
-            first_block = truncated.find("\n--- ")
-            if first_block >= 0:
-                truncated = truncated[first_block + 1:]
-            diff = f"[earlier changes truncated]\n{truncated}"
+            diff = truncate_diff(diff, max_chars)
 
         return diff
 

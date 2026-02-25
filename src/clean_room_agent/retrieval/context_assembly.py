@@ -210,9 +210,7 @@ def _read_and_render_files(
 
         rendered = _render_at_level(source, detail, fid, context, kb=kb)
         content_tokens = estimate_tokens(rendered)
-        framing_tokens = estimate_framing_tokens(info["path"], info["language"], detail)
-
-        # Build metadata summary from enrichment data
+        # Build metadata summary from enrichment data (before framing estimate)
         metadata_summary = ""
         meta = metadata_map.get(fid)
         if meta:
@@ -224,8 +222,12 @@ def _read_and_render_files(
             if parts:
                 metadata_summary = " | ".join(parts)
 
-        # R5: account for metadata_summary tokens in budget
+        # R5: account for metadata_summary tokens and framing overhead in budget
         meta_tokens = estimate_tokens(metadata_summary) if metadata_summary else 0
+        framing_tokens = estimate_framing_tokens(
+            info["path"], info["language"], detail,
+            has_metadata=bool(metadata_summary),
+        )
 
         rendered_files.append({
             "file_id": fid,
