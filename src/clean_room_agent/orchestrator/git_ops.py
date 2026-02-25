@@ -28,6 +28,8 @@ class GitWorkflow:
     """Manages the task branch lifecycle: create, commit, diff, rollback."""
 
     def __init__(self, repo_path: Path, task_id: str):
+        if not task_id or not isinstance(task_id, str):
+            raise ValueError(f"Invalid task_id: {task_id!r}")
         self._repo_path = repo_path
         self._task_id = task_id
         self._branch_name = f"cra/task/{task_id}"
@@ -125,8 +127,8 @@ class GitWorkflow:
     def rollback_part(self) -> None:
         """Discard uncommitted changes within the current part."""
         self._run_git("checkout", "--", ".")
-        # Also clean untracked files
-        self._run_git("clean", "-fd")
+        # Clean untracked files, excluding .clean_room/ data
+        self._run_git("clean", "-fd", "--exclude=.clean_room")
         logger.debug("Rolled back uncommitted changes")
 
     def rollback_to_checkpoint(self, commit_sha: str | None = None) -> None:
@@ -138,10 +140,14 @@ class GitWorkflow:
         logger.info("Rolled back to %s", target[:12])
 
     def return_to_original_branch(self) -> None:
-        """Checkout the original branch."""
+        """Checkout the original branch.
+
+        Raises RuntimeError if no original branch was recorded.
+        """
         if self._original_branch is None:
-            logger.warning("No original branch recorded — staying on current branch")
-            return
+            raise RuntimeError(
+                "No original branch recorded — call create_task_branch() first"
+            )
         self._run_git("checkout", self._original_branch)
         logger.info("Returned to original branch %s", self._original_branch)
 

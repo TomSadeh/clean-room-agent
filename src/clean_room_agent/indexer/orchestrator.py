@@ -12,6 +12,7 @@ from clean_room_agent.db import queries, raw_queries
 from clean_room_agent.extractors.dependencies import resolve_dependencies
 from clean_room_agent.extractors.git_extractor import extract_git_history, get_remote_url
 from clean_room_agent.indexer.file_scanner import scan_repo
+from clean_room_agent.indexer.library_scanner import _DEFAULT_LIBRARY_MAX_FILE_SIZE
 from clean_room_agent.parsers.registry import get_parser
 
 logger = logging.getLogger(__name__)
@@ -412,7 +413,7 @@ def index_libraries(
 
         # Resolve library sources
         sources = resolve_library_sources(repo_path, ic)
-        max_file_size = ic.get("library_max_file_size", 524_288)
+        max_file_size = ic.get("library_max_file_size", _DEFAULT_LIBRARY_MAX_FILE_SIZE)
 
         total_scanned = 0
         total_new = 0

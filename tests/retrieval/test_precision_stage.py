@@ -106,11 +106,13 @@ class TestClassifySymbols:
                 "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
                 "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
                 "signature": "def login()", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": 2, "file_id": 10, "file_path": "auth.py",
                 "name": "helper", "kind": "function", "start_line": 15, "end_line": 20,
                 "signature": "def helper()", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
@@ -139,6 +141,7 @@ class TestClassifySymbols:
                 "symbol_id": 1, "file_id": 10, "file_path": "a.py",
                 "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
                 "signature": "", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
@@ -158,11 +161,13 @@ class TestClassifySymbols:
                 "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
                 "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
                 "signature": "def login()", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": 2, "file_id": 10, "file_path": "auth.py",
                 "name": "helper", "kind": "function", "start_line": 15, "end_line": 20,
                 "signature": "def helper()", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
@@ -183,16 +188,19 @@ class TestClassifySymbols:
                 "symbol_id": 1, "file_id": 10, "file_path": "mod.py",
                 "name": "alpha", "kind": "function", "start_line": 1, "end_line": 10,
                 "signature": "def alpha()", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": 2, "file_id": 10, "file_path": "mod.py",
                 "name": "beta", "kind": "function", "start_line": 15, "end_line": 20,
                 "signature": "def beta()", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": 3, "file_id": 10, "file_path": "mod.py",
                 "name": "gamma", "kind": "class", "start_line": 25, "end_line": 40,
                 "signature": "class gamma:", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix alpha", task_id="t1", mode="plan", repo_id=1)
@@ -218,11 +226,13 @@ class TestClassifySymbols:
                 "symbol_id": 10, "file_id": 1, "file_path": "models.py",
                 "name": "__init__", "kind": "function", "start_line": 5, "end_line": 15,
                 "signature": "def __init__(self, name)", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": 11, "file_id": 1, "file_path": "models.py",
                 "name": "__init__", "kind": "function", "start_line": 20, "end_line": 30,
                 "signature": "def __init__(self, key)", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix models", task_id="t1", mode="plan", repo_id=1)
@@ -251,6 +261,7 @@ class TestClassifySymbolsBatching:
                 "name": f"func_{i}", "kind": "function",
                 "start_line": i * 10, "end_line": i * 10 + 5,
                 "signature": f"def func_{i}()", "connections": [],
+                "file_source": "project",
             })
 
         def _complete(prompt, system=None):

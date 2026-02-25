@@ -237,12 +237,14 @@ class TestPrecisionSymbolsWithDocstrings:
                 "file_path": "src/auth.py", "name": "login", "kind": "function",
                 "start_line": 10, "end_line": 30,
                 "signature": "def login(username, password)", "connections": [],
+                "file_source": "project",
             },
             {
                 "symbol_id": sids["verify"], "file_id": fids["auth"],
                 "file_path": "src/auth.py", "name": "verify_token", "kind": "function",
                 "start_line": 35, "end_line": 50,
                 "signature": "def verify_token(token)", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=repo_id)
@@ -286,6 +288,7 @@ class TestPrecisionSymbolsWithDocstrings:
                 "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
                 "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
                 "signature": "def login()", "connections": [],
+                "file_source": "project",
             },
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)

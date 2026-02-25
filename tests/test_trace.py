@@ -175,11 +175,10 @@ class TestTraceLogger:
         assert "scope" in content
         assert "precision" in content
 
-        # Verify ordering: task_analysis before scope before precision
-        pos_analysis = content.index("task_analysis")
-        pos_scope = content.index("scope", pos_analysis + 1)
-        pos_precision = content.index("precision", pos_scope + 1)
-        assert pos_analysis < pos_scope < pos_precision
+        # Verify ordering by matching Call headers specifically
+        import re
+        calls = re.findall(r"^## Call \d+: (\S+)", content, re.MULTILINE)
+        assert calls == ["task_analysis", "scope", "precision"]
 
         # All responses present
         assert "Parsed task intent" in content
@@ -266,3 +265,13 @@ class TestTraceLogger:
         content = path.read_text(encoding="utf-8")
         assert "real-task-id-123" in content
         assert "temp-id" not in content
+
+    def test_header_contains_timestamp(self, tmp_path):
+        """Trace header should include a Generated timestamp (4-P2-2)."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-ts", task_description="timestamp test")
+        logger.log_calls("scope", "retrieval", [_make_call()])
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        assert "**Generated:**" in content

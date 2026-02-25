@@ -135,3 +135,47 @@ class TestGetFileMetadataBatch:
         result = kb.get_file_metadata_batch([f2])
         assert len(result) == 1
         assert result[f2].domain == "persistence"
+
+
+class TestSearchFilesByMetadata:
+    """Tests for search_files_by_metadata (1-P2-5)."""
+
+    def test_search_by_module(self, kb_with_metadata):
+        """Search by module field returns matching files."""
+        kb, repo_id, f1, f2, f3 = kb_with_metadata
+        results = kb.search_files_by_metadata(repo_id, module="utils")
+        assert len(results) == 1
+        assert results[0].id == f1
+
+    def test_search_by_domain(self, kb_with_metadata):
+        """Search by domain field returns matching files."""
+        kb, repo_id, f1, f2, f3 = kb_with_metadata
+        results = kb.search_files_by_metadata(repo_id, domain="persistence")
+        assert len(results) == 1
+        assert results[0].id == f2
+
+    def test_search_by_concepts(self, kb_with_metadata):
+        """Search by concepts with LIKE matching."""
+        kb, repo_id, f1, f2, f3 = kb_with_metadata
+        results = kb.search_files_by_metadata(repo_id, concepts="pars")
+        assert len(results) == 1
+        assert results[0].id == f1
+
+    def test_search_combined_filters(self, kb_with_metadata):
+        """Search with multiple filters (AND logic)."""
+        kb, repo_id, f1, f2, f3 = kb_with_metadata
+        results = kb.search_files_by_metadata(repo_id, domain="core", module="utils")
+        assert len(results) == 1
+        assert results[0].id == f1
+
+    def test_search_no_results(self, kb_with_metadata):
+        """Search with no matching files returns empty list."""
+        kb, repo_id, *_ = kb_with_metadata
+        results = kb.search_files_by_metadata(repo_id, domain="nonexistent")
+        assert results == []
+
+    def test_search_no_filters_raises(self, kb_with_metadata):
+        """Search with all None filters raises ValueError."""
+        kb, repo_id, *_ = kb_with_metadata
+        with pytest.raises(ValueError, match="at least one filter"):
+            kb.search_files_by_metadata(repo_id)

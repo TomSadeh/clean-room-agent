@@ -127,8 +127,7 @@ def classify_symbols(
                 for doc in docstrings:
                     if doc.symbol_id is not None:
                         first_line = doc.content.split("\n", 1)[0].strip()
-                        summary = first_line[:100]
-                        docstring_summaries[(fid, doc.symbol_id)] = summary
+                        docstring_summaries[(fid, doc.symbol_id)] = first_line
 
     # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
@@ -189,7 +188,7 @@ def classify_symbols(
             detail_level = "excluded"
         reason = cl.get("reason", "")
 
-        file_source = c.get("file_source", "project")
+        file_source = c["file_source"]
 
         # Library symbols cannot be "primary" — downgrade to "type_context"
         if file_source == "library" and detail_level == "primary":

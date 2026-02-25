@@ -105,7 +105,7 @@ class TestResolveLibrarySources:
         assert result[1].package_path == lib_b
 
     def test_resolve_auto_mocked(self, tmp_path):
-        """Auto-resolution finds packages in site-packages via importlib.util.find_spec."""
+        """Auto-resolution finds packages in site-packages via importlib.util.find_spec (2-P2-2)."""
         # Create a project file that imports 'requests'
         _write(tmp_path / "app.py", "import requests\n")
 
@@ -114,16 +114,17 @@ class TestResolveLibrarySources:
 
         with patch("clean_room_agent.indexer.library_scanner.importlib.util.find_spec") as mock_find:
             mock_find.return_value = mock_spec
-            # We also need the resolved parent path to be a real directory for is_dir check
-            # The auto resolver checks "site-packages" in the path string
             result = resolve_library_sources(tmp_path, {"library_sources": ["auto"]})
 
-        # find_spec was called (possibly for multiple imports including builtins)
-        assert mock_find.call_count >= 1
-        # Should have resolved 'requests' since it's in site-packages
-        # The path may not be a real dir so the result might vary, but find_spec was called
+        # find_spec was called for 'requests'
         request_calls = [c for c in mock_find.call_args_list if c[0][0] == "requests"]
         assert len(request_calls) == 1
+        # The result should include a LibrarySource for 'requests'
+        names = {s.package_name for s in result}
+        assert "requests" in names
+        # The package_path should point to the package directory (parent of __init__.py)
+        requests_source = [s for s in result if s.package_name == "requests"][0]
+        assert str(requests_source.package_path).endswith("requests")
 
     def test_resolve_explicit_string_paths(self, tmp_path):
         """Config with plain string library_paths uses dirname as package name."""

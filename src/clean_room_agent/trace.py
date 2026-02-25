@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -97,8 +98,11 @@ class TraceLogger:
         completion_str = "N/A" if has_none_completion else str(total_completion)
         latency_str = "N/A" if has_none_latency else f"{total_latency}ms"
 
+        timestamp = datetime.now(timezone.utc).isoformat()
+
         return (
             f"# Pipeline Trace: {self._task_id}\n\n"
+            f"**Generated:** {timestamp}\n\n"
             f"**Task:** {self._task_description}\n\n"
             f"**Summary:** {total_calls} calls | "
             f"Prompt tokens: {prompt_str} | "

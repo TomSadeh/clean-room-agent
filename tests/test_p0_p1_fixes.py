@@ -131,6 +131,7 @@ class TestT57PrecisionBudgetGate:
                 "name": f"very_long_function_name_{i}", "kind": "function",
                 "start_line": 1, "end_line": 50, "signature": f"def very_long_function_name_{i}():",
                 "connections": [f"calls long_thing_{j}" for j in range(5)],
+                "file_source": "project",
             }
             for i in range(50)
         ]

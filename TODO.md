@@ -371,15 +371,15 @@ This is a large item — blocked until the DB is actually populated on real repo
   - File: `src/clean_room_agent/query/api.py:108-128`
   - SQLite default limit is 999 placeholders. Pipeline caps make this unlikely to hit (~100 files max), but worth noting if caps change.
 
-- [ ] **1-P2-3: `classify_symbols` passes `file_source` through dict with `.get()` fallback**
+- [x] **1-P2-3: `classify_symbols` passes `file_source` through dict with `.get()` fallback**
   - File: `src/clean_room_agent/retrieval/precision_stage.py:65-76,192`
   - `c.get("file_source", "project")` is a hardcoded default. Since `extract_precision_symbols` always sets it, the fallback is unreachable. Should use `c["file_source"]` for fail-fast.
 
-- [ ] **1-P2-4: Docstring summary truncation uses magic number**
+- [x] **1-P2-4: Docstring summary truncation uses magic number**
   - File: `src/clean_room_agent/retrieval/precision_stage.py:129-131`
   - `first_line[:100]` — hardcoded 100-char truncation. Should be a named constant.
 
-- [ ] **1-P2-5: No test for `search_files_by_metadata` with `module` parameter**
+- [x] **1-P2-5: No test for `search_files_by_metadata` with `module` parameter**
   - File: `tests/query/test_file_metadata.py`
   - No direct unit tests for `search_files_by_metadata` with `domain`, `module`, or `concepts` filters. The LIKE escaping path (api.py:71-73) has tricky edge cases.
 
@@ -441,10 +441,11 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P2
 
-- [ ] **2-P2-1: No tests for `library_file_index` fallback in `resolve_dependencies`**
+- [x] **2-P2-1: No tests for `library_file_index` fallback in `resolve_dependencies`**
   - File: `tests/extractors/test_dependencies.py`
+  - N/A: Dead code removed in 2-P0-4.
 
-- [ ] **2-P2-2: `test_resolve_auto_mocked` assertion is weak**
+- [x] **2-P2-2: `test_resolve_auto_mocked` assertion is weak**
   - File: `tests/indexer/test_library_scanner.py:107-126`
 
 - [ ] **2-P2-3: `_SKIP_DIRS` not configurable**
@@ -453,7 +454,7 @@ This is a large item — blocked until the DB is actually populated on real repo
 - [ ] **2-P2-4: `index_libraries` hardcodes `language="python"`**
   - File: `src/clean_room_agent/indexer/orchestrator.py:449`
 
-- [ ] **2-P2-5: `_DEFAULT_LIBRARY_MAX_FILE_SIZE` duplicated**
+- [x] **2-P2-5: `_DEFAULT_LIBRARY_MAX_FILE_SIZE` duplicated**
   - File: `src/clean_room_agent/indexer/library_scanner.py:16` and `orchestrator.py:413`
 
 - [ ] **2-P2-6: No CLI test for `cra index-libraries` command**
@@ -503,25 +504,25 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P2
 
-- [ ] **3-P2-1: `task_id` not validated before use in branch name**
+- [x] **3-P2-1: `task_id` not validated before use in branch name**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:18`
 
-- [ ] **3-P2-2: `rollback_part` runs `clean -fd` which could delete `.clean_room/` data**
+- [x] **3-P2-2: `rollback_part` runs `clean -fd` which could delete `.clean_room/` data**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:107`
 
-- [ ] **3-P2-3: `return_to_original_branch` logs warning instead of raising when `_original_branch is None`**
+- [x] **3-P2-3: `return_to_original_branch` logs warning instead of raising when `_original_branch is None`**
   - File: `src/clean_room_agent/orchestrator/git_ops.py:120-122`
 
-- [ ] **3-P2-4: No test for `return_to_original_branch` when `_original_branch is None`**
+- [x] **3-P2-4: No test for `return_to_original_branch` when `_original_branch is None`**
   - File: `tests/orchestrator/test_git_ops.py`
 
-- [ ] **3-P2-5: No test for `get_cumulative_diff` when `_base_ref is None`**
+- [x] **3-P2-5: No test for `get_cumulative_diff` when `_base_ref is None`**
   - File: `tests/orchestrator/test_git_ops.py`
 
-- [ ] **3-P2-6: No test for `rollback_to_checkpoint` with explicit `commit_sha` argument**
+- [x] **3-P2-6: No test for `rollback_to_checkpoint` with explicit `commit_sha` argument**
   - File: `tests/orchestrator/test_git_ops.py:167-190`
 
-- [ ] **3-P2-7: No test for branch name truncation edge case (task_id < 12 chars)**
+- [x] **3-P2-7: No test for branch name truncation edge case (task_id < 12 chars)**
   - File: `tests/orchestrator/test_git_ops.py`
 
 - [ ] **3-P2-8: No integration test for orchestrator git/LIFO fallback path**
@@ -570,7 +571,7 @@ This is a large item — blocked until the DB is actually populated on real repo
 - [ ] **4-P2-1: `model` parameter defaults to empty string**
   - File: `src/clean_room_agent/trace.py:18`
 
-- [ ] **4-P2-2: No timestamp in trace header**
+- [x] **4-P2-2: No timestamp in trace header**
   - File: `src/clean_room_agent/trace.py:72-80`
 
 - [ ] **4-P2-3: Large traces could consume significant memory**
@@ -579,5 +580,5 @@ This is a large item — blocked until the DB is actually populated on real repo
 - [ ] **4-P2-4: `_make_trace_logger` imports Path redundantly**
   - File: `src/clean_room_agent/cli.py:230`
 
-- [ ] **4-P2-5: Ordering assertion in test is fragile**
+- [x] **4-P2-5: Ordering assertion in test is fragile**
   - File: `tests/test_trace.py:179-182`

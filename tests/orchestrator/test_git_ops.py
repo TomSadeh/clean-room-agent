@@ -202,3 +202,73 @@ class TestReturnToOriginalBranch:
 
         gw.return_to_original_branch()
         assert _current_branch(tmp_path) == original
+
+    def test_return_without_create_raises(self, tmp_path):
+        """return_to_original_branch before create_task_branch raises RuntimeError (3-P2-4)."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-no-create")
+        with pytest.raises(RuntimeError, match="No original branch"):
+            gw.return_to_original_branch()
+
+
+class TestTaskIdValidation:
+    def test_empty_task_id_raises(self, tmp_path):
+        """Empty task_id raises ValueError (3-P2-1)."""
+        with pytest.raises(ValueError, match="Invalid task_id"):
+            GitWorkflow(tmp_path, task_id="")
+
+    def test_none_task_id_raises(self, tmp_path):
+        """None task_id raises ValueError (3-P2-1)."""
+        with pytest.raises(ValueError, match="Invalid task_id"):
+            GitWorkflow(tmp_path, task_id=None)
+
+
+class TestGetCumulativeDiffBeforeBranch:
+    def test_diff_before_branch_raises(self, tmp_path):
+        """get_cumulative_diff before create_task_branch raises RuntimeError (3-P2-5)."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-no-branch")
+        with pytest.raises(RuntimeError, match="before create_task_branch"):
+            gw.get_cumulative_diff()
+
+
+class TestRollbackToCheckpointExplicitSha:
+    def test_rollback_to_explicit_sha(self, tmp_path):
+        """rollback_to_checkpoint with explicit commit_sha resets to that commit (3-P2-6)."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-explicit-sha")
+        gw.create_task_branch()
+
+        # First commit
+        (tmp_path / "first.py").write_text("first")
+        sha1 = gw.commit_checkpoint("first commit")
+
+        # Second commit
+        (tmp_path / "second.py").write_text("second")
+        gw.commit_checkpoint("second commit")
+
+        assert (tmp_path / "second.py").exists()
+
+        # Rollback to first commit (not base_ref)
+        gw.rollback_to_checkpoint(commit_sha=sha1)
+
+        assert _current_sha(tmp_path) == sha1
+        assert (tmp_path / "first.py").exists()
+        assert not (tmp_path / "second.py").exists()
+
+    def test_rollback_no_ref_raises(self, tmp_path):
+        """rollback_to_checkpoint with no base_ref and no commit_sha raises RuntimeError."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-no-ref")
+        with pytest.raises(RuntimeError, match="No base_ref"):
+            gw.rollback_to_checkpoint()
+
+
+class TestBranchNameEdgeCases:
+    def test_short_task_id(self, tmp_path):
+        """Short task_id (< 12 chars) works correctly in branch name (3-P2-7)."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="abc")
+        branch = gw.create_task_branch()
+        assert branch == "cra/task/abc"
+        assert _current_branch(tmp_path) == "cra/task/abc"
