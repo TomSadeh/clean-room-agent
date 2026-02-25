@@ -185,6 +185,23 @@ def _finalize_orchestrator_run(
         logger.warning("Failed to update orchestrator run: %s", e)
 
 
+def _git_cleanup(git, status: str) -> None:
+    """Run git end-of-task cleanup: rollback+delete on failure, merge+delete on success."""
+    try:
+        if status != "complete":
+            git.rollback_to_checkpoint()
+            git.clean_untracked()
+            git.return_to_original_branch()
+            git.delete_task_branch()
+        else:
+            merged = git.merge_to_original()
+            if merged:
+                git.delete_task_branch()
+            # If merge failed: on original branch, task branch preserved
+    except Exception as git_err:
+        logger.warning("Git cleanup failed: %s", git_err)
+
+
 def _topological_sort(items, get_id, get_deps):
     """Topological sort items by depends_on. Falls back to original order on cycles."""
     id_to_item = {get_id(item): item for item in items}
@@ -507,7 +524,7 @@ def run_orchestrator(
                 if step_success and step_result:
                     if git is not None:
                         git.commit_checkpoint(
-                            f"cra: {part.id}:{step.id} — {step.description[:60]}"
+                            f"cra: {part.id}:{step.id} — {step.description[:60].rsplit(" ", 1)[0]}"
                         )
                         cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
                     else:
@@ -806,7 +823,7 @@ def run_orchestrator(
                     if test_step_success and test_step_result:
                         if git is not None:
                             git.commit_checkpoint(
-                                f"cra: {part.id}:test:{test_step.id} — {test_step.description[:60]}"
+                                f"cra: {part.id}:test:{test_step.id} — {test_step.description[:60].rsplit(" ", 1)[0]}"
                             )
                             cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
                         else:
@@ -897,24 +914,12 @@ def run_orchestrator(
         })
         session_conn.close()
 
+        # Git cleanup (before raw_conn close so failures are loggable)
+        if git is not None:
+            _git_cleanup(git, status)
+
         _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
-
-        # Git cleanup
-        if git is not None:
-            try:
-                if status != "complete":
-                    git.rollback_to_checkpoint()
-                    git.clean_untracked()
-                    git.return_to_original_branch()
-                    git.delete_task_branch()
-                else:
-                    merged = git.merge_to_original()
-                    if merged:
-                        git.delete_task_branch()
-                    # If merge failed: on original branch, task branch preserved
-            except Exception as git_err:
-                logger.warning("Git cleanup failed: %s", git_err)
 
         # Cleanup temp files (T77: log failures instead of silent swallow)
         try:
@@ -1124,23 +1129,12 @@ def run_single_pass(
         })
         session_conn.close()
 
+        # Git cleanup (before raw_conn close so failures are loggable)
+        if git is not None:
+            _git_cleanup(git, status)
+
         _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
-
-        # Git cleanup
-        if git is not None:
-            try:
-                if status != "complete":
-                    git.rollback_to_checkpoint()
-                    git.clean_untracked()
-                    git.return_to_original_branch()
-                    git.delete_task_branch()
-                else:
-                    merged = git.merge_to_original()
-                    if merged:
-                        git.delete_task_branch()
-            except Exception as git_err:
-                logger.warning("Git cleanup failed: %s", git_err)
 
     return OrchestratorResult(
         task_id=task_id,

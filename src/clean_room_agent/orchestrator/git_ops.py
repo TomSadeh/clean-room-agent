@@ -162,6 +162,7 @@ class GitWorkflow:
             raise RuntimeError(
                 f"Cannot delete branch {self._branch_name} while checked out on it"
             )
+        # -D (force): intentional — task branches may contain unmerged failed work
         self._run_git("branch", "-D", self._branch_name)
         logger.info("Deleted task branch %s", self._branch_name)
 
@@ -180,14 +181,19 @@ class GitWorkflow:
                 "No original branch recorded — call create_task_branch() first"
             )
         self._run_git("checkout", self._original_branch)
-        try:
-            self._run_git("merge", "--ff-only", self._branch_name)
+        merge_result = subprocess.run(
+            ["git", "merge", "--ff-only", self._branch_name],
+            cwd=str(self._repo_path),
+            capture_output=True,
+            text=True,
+        )
+        if merge_result.returncode == 0:
             logger.info(
                 "Merged %s into %s (fast-forward)",
                 self._branch_name, self._original_branch,
             )
             return True
-        except RuntimeError:
+        else:
             logger.warning(
                 "Fast-forward merge of %s into %s failed — branches diverged. "
                 "Task branch preserved for manual inspection.",
@@ -237,7 +243,7 @@ def cleanup_task_branches(repo_path: Path) -> list[str]:
 
     deleted = []
     for line in result.stdout.splitlines():
-        branch = line.strip().lstrip("* ")
+        branch = line.strip().removeprefix("*").strip()
         if not branch or branch == current_branch:
             continue
         try:
@@ -250,7 +256,10 @@ def cleanup_task_branches(repo_path: Path) -> list[str]:
             )
             deleted.append(branch)
         except subprocess.CalledProcessError as e:
-            logger.warning("Failed to delete branch %s: %s", branch, e.stderr.strip() if hasattr(e, 'stderr') else str(e))
+            logger.warning(
+                "Failed to delete branch %s: %s",
+                branch, e.stderr.strip() if e.stderr else str(e),
+            )
 
     if deleted:
         logger.info("Cleaned up %d task branch(es): %s", len(deleted), deleted)

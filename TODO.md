@@ -62,15 +62,6 @@ may encounter them in external repos.
   structure) to pre-filter likely pairs, then show their bodies side by side within budget.
   This is a new retrieval stage pattern, not a configuration of existing stages.
 
-### Git workflow integration
-
-The agent needs a git workflow for its own operations — committing changes, creating
-branches, handling failed attempts. Not GitHub (no PRs, no issues) — local git only.
-Needs: auto-commit after successful validation, branch-per-task isolation, rollback via
-git reset on failure (cleaner than file-level rollback), cumulative diff from git diff
-instead of string accumulation. The orchestrator currently does file-level patch/rollback
-which is fragile; git gives atomic rollback for free.
-
 ### Scope inheritance across orchestrator checkpoints
 
 Currently each sub-task in the orchestrator runs a fully isolated retrieval pipeline.
@@ -154,8 +145,8 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 #### P1
 
-- [ ] **3-P1-1: `rollback_to_checkpoint` + `return_to_original_branch` may fail on untracked files**
-  - File: `src/clean_room_agent/orchestrator/runner.py:833-840`
+- [x] **3-P1-1: `rollback_to_checkpoint` + `return_to_original_branch` may fail on untracked files**
+  - Fixed: `clean_untracked()` added in 46b2b5f, called between rollback and return.
 
 - [ ] **3-P1-3: LIFO rollback error abandons remaining parts**
   - File: `src/clean_room_agent/orchestrator/runner.py:771-784`
@@ -174,3 +165,45 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 - [ ] **4-P2-4: `_make_trace_logger` imports Path redundantly**
   - File: `src/clean_room_agent/cli.py:230`
+
+---
+
+## Commit 46b2b5f Code Review — Git Workflow Improvements
+
+### Feature 1: `git_ops.py` New Methods
+
+#### P1
+
+- [x] **5-P1-1: `merge_to_original()` catches bare `RuntimeError`**
+  - Fixed: uses `subprocess.run` directly with returncode check instead of `_run_git`/except.
+
+- [x] **5-P1-2: `cleanup_task_branches` uses `lstrip("* ")` — char-based, not prefix-based**
+  - Fixed: `removeprefix("*").strip()`.
+
+#### P2
+
+- [x] **5-P2-1: `cleanup_task_branches` long warning line (119 chars)**
+  - Fixed: split across lines.
+
+- [x] **5-P2-2: `delete_task_branch` uses `-D` (force) without comment**
+  - Fixed: added intent comment.
+
+- [x] **5-P2-3: Unnecessary `hasattr(e, 'stderr')` on `CalledProcessError`**
+  - Fixed: replaced with `e.stderr`.
+
+### Feature 2: `runner.py` Per-Step Commits & Merge-Back
+
+#### P1
+
+- [x] **5-P1-3: Git cleanup runs after `raw_conn.close()` in both orchestrators**
+  - Fixed: moved git cleanup before `_archive_session`/`raw_conn.close()`.
+
+#### P2
+
+- [x] **5-P2-4: Duplicated git cleanup blocks in `run_orchestrator` / `run_single_pass`**
+  - Fixed: extracted `_git_cleanup(git, status)` helper.
+
+- [x] **5-P2-5: Commit message truncation `[:60]` not word-boundary aligned**
+  - Fixed: `[:60].rsplit(" ", 1)[0]`.
+
+- [ ] **5-P2-6: No integration test for `run_single_pass` git lifecycle**
