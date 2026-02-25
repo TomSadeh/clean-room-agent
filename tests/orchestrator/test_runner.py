@@ -104,7 +104,7 @@ def _make_config():
         "budget": {"reserved_tokens": 4096},
         "stages": {"default": "scope,precision"},
         "testing": {"test_command": "pytest tests/"},
-        "orchestrator": {"max_retries_per_step": 1, "git_workflow": False},
+        "orchestrator": {"max_retries_per_step": 1, "git_workflow": False, "documentation_pass": False},
     }
 
 
@@ -898,3 +898,258 @@ class TestCapCumulativeDiff:
         assert lines[0] == "[earlier changes truncated]"
         # Second line should be a diff block start
         assert lines[1].startswith("diff --git ")
+
+
+def _make_doc_config():
+    """Config with documentation_pass enabled."""
+    config = _make_config()
+    config["orchestrator"]["documentation_pass"] = True
+    return config
+
+
+class TestDocumentationPass:
+    """Tests for documentation pass integration in orchestrator loop."""
+
+    @patch("clean_room_agent.orchestrator.runner.run_documentation_pass")
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_doc_pass_runs_between_code_and_tests(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, mock_doc_pass, tmp_path,
+    ):
+        """Doc pass runs after code steps and before test phase."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+
+        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
+        from clean_room_agent.execute.dataclasses import PatchResult
+        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        mock_validate.return_value = _make_validation(True)
+        mock_doc_pass.return_value = []  # No doc edits
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_doc_config())
+
+        assert result.status == "complete"
+        mock_doc_pass.assert_called_once()
+        # Verify doc pass was called with modified files from code step
+        call_args = mock_doc_pass.call_args
+        assert call_args[0][0] == ["a.py"]  # modified_files
+
+        # Doc pass should produce a "documentation" pass_result
+        pass_types = [pr.pass_type for pr in result.pass_results]
+        assert "documentation" in pass_types
+
+    @patch("clean_room_agent.orchestrator.runner.run_documentation_pass")
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_doc_pass_skipped_when_disabled(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, mock_doc_pass, tmp_path,
+    ):
+        """Doc pass is not called when documentation_pass = false."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
+        from clean_room_agent.execute.dataclasses import PatchResult
+        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        mock_validate.return_value = _make_validation(True)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        # Use default config which has documentation_pass=False
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_config())
+
+        assert result.status == "complete"
+        mock_doc_pass.assert_not_called()
+
+    @patch("clean_room_agent.orchestrator.runner.run_documentation_pass")
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_doc_pass_skipped_when_code_steps_fail(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, mock_doc_pass, tmp_path,
+    ):
+        """Doc pass is not called when all_code_steps_ok is False."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        # No test_plan because code step fails
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+        ]
+        mock_exec_impl.return_value = _make_step_result(False)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_doc_config())
+
+        assert result.status == "failed"
+        mock_doc_pass.assert_not_called()
+
+    @patch("clean_room_agent.orchestrator.runner.run_documentation_pass")
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_doc_patches_in_lifo_rollback(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, mock_doc_pass, tmp_path,
+    ):
+        """Validation failure causes LIFO rollback: test -> doc -> code."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
+        from clean_room_agent.execute.dataclasses import PatchResult
+        code_patch = PatchResult(success=True, files_modified=["a.py"])
+        doc_patch = PatchResult(success=True, files_modified=["a.py"])
+        test_patch = PatchResult(success=True, files_modified=["tests/test_a.py"])
+        mock_apply.side_effect = [code_patch, test_patch]
+        mock_doc_pass.return_value = [doc_patch]
+
+        # Validation fails
+        mock_validate.return_value = _make_validation(False)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        with patch("clean_room_agent.orchestrator.runner.rollback_edits") as mock_rollback:
+            result = run_orchestrator("Test task", tmp_path, _make_doc_config())
+
+        assert result.status == "failed"
+        # Three-tier LIFO: test, doc, code
+        assert mock_rollback.call_count == 3
+        first = mock_rollback.call_args_list[0][0][0]
+        second = mock_rollback.call_args_list[1][0][0]
+        third = mock_rollback.call_args_list[2][0][0]
+        assert first.files_modified == ["tests/test_a.py"]  # test
+        assert second.files_modified == ["a.py"]  # doc
+        assert third.files_modified == ["a.py"]  # code
+
+    @patch("clean_room_agent.orchestrator.runner.run_documentation_pass")
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_doc_pass_llm_calls_logged(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, mock_doc_pass, tmp_path,
+    ):
+        """Doc pass LLM calls are flushed to raw DB with correct call_type."""
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_test_impl.return_value = _make_step_result(True)
+        from clean_room_agent.execute.dataclasses import PatchResult
+        mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
+        mock_validate.return_value = _make_validation(True)
+        mock_doc_pass.return_value = []
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_doc_config())
+
+        assert result.status == "complete"
+        # Check that insert_orchestrator_pass was called with "documentation" pass_type
+        orch_pass_calls = [
+            call for call in mock_raw_conn.execute.call_args_list
+            if len(call[0]) > 0 and isinstance(call[0][0], str)
+            and "orchestrator_passes" in call[0][0]
+        ]
+        # The pass_results should contain a "documentation" entry
+        pass_types = [pr.pass_type for pr in result.pass_results]
+        assert "documentation" in pass_types

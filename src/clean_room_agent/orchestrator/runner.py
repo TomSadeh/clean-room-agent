@@ -30,10 +30,12 @@ from clean_room_agent.execute.dataclasses import (
     OrchestratorResult,
     PartPlan,
     PassResult,
+    PatchResult,
     PlanArtifact,
     PlanStep,
     StepResult,
 )
+from clean_room_agent.execute.documentation import run_documentation_pass
 from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.execute.patch import apply_edits, rollback_edits
 from clean_room_agent.execute.plan import execute_plan
@@ -583,6 +585,62 @@ def run_orchestrator(
 
                 step_idx += 1
 
+            # --- DOCUMENTATION PASS (after code steps, before tests) ---
+            doc_pass_enabled = orch_config.get("documentation_pass", True)
+            doc_patch_results: list[PatchResult] = []
+
+            if doc_pass_enabled and all_code_steps_ok and cumulative_diff:
+                try:
+                    # Collect unique files modified by code steps
+                    doc_modified_files: list[str] = []
+                    for cp in code_patch_results:
+                        for f in cp.files_modified:
+                            if f not in doc_modified_files:
+                                doc_modified_files.append(f)
+
+                    doc_model_config = router.resolve("reasoning", stage_name="documentation")
+                    with LoggedLLMClient(doc_model_config) as doc_llm:
+                        doc_patch_results = run_documentation_pass(
+                            doc_modified_files, repo_path,
+                            task, part.description,
+                            doc_llm, doc_model_config,
+                            part_context.environment_brief or None,
+                        )
+                        doc_pt, doc_ct, doc_ms = _flush_llm_calls(
+                            doc_llm, raw_conn, f"{task_id}:doc:{part.id}",
+                            "documentation", "documentation",
+                            trace_logger,
+                        )
+
+                    # Update cumulative diff after doc edits
+                    if doc_patch_results:
+                        if git is not None:
+                            cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
+                        # No else needed — doc edits are cosmetic, string-based diff
+                        # tracking is only critical for code/test edits
+
+                    insert_orchestrator_pass(
+                        raw_conn, orch_run_id, None, "documentation", sequence_order,
+                        part_id=part.id,
+                    )
+                    raw_conn.commit()
+                    sequence_order += 1
+
+                    pass_results.append(PassResult(
+                        pass_type="documentation", success=True,
+                    ))
+
+                    set_state(session_conn, f"doc_pass:{part.id}", {
+                        "files_processed": len(doc_modified_files),
+                        "files_patched": len(doc_patch_results),
+                    })
+
+                except (ValueError, RuntimeError, OSError) as e:
+                    logger.warning("Documentation pass failed for %s: %s", part.id, e)
+                    pass_results.append(PassResult(
+                        pass_type="documentation", success=False,
+                    ))
+
             # --- TESTING PHASE (after all code steps for this part) ---
             test_plan = None
             test_patch_results = []
@@ -751,9 +809,9 @@ def run_orchestrator(
                             "success": True, "edits_count": len(test_step_result.edits),
                         })
 
-            # --- VALIDATION (code + tests together) ---
+            # --- VALIDATION (code + doc + tests together) ---
             validation = None
-            if code_patch_results or test_patch_results:
+            if code_patch_results or doc_patch_results or test_patch_results:
                 # We need an attempt_id for validation logging. Use the last
                 # code step's attempt_id if available.
                 last_attempt_id = raw_conn.execute(
@@ -770,11 +828,16 @@ def run_orchestrator(
                     if git is not None:
                         git.rollback_part()
                     else:
-                        # LIFO rollback: test edits first, then code edits
+                        # LIFO rollback: test → doc → code
                         rollback_errors = []
                         for tp in reversed(test_patch_results):
                             try:
                                 rollback_edits(tp, repo_path)
+                            except (RuntimeError, OSError) as e:
+                                rollback_errors.append(str(e))
+                        for dp in reversed(doc_patch_results):
+                            try:
+                                rollback_edits(dp, repo_path)
                             except (RuntimeError, OSError) as e:
                                 rollback_errors.append(str(e))
                         for cp in reversed(code_patch_results):

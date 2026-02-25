@@ -328,5 +328,5 @@ class TestBuildTestImplementPrompt:
 
     def test_system_prompts_dict_complete(self):
         """SYSTEM_PROMPTS dict covers all expected pass types."""
-        expected = {"meta_plan", "part_plan", "test_plan", "adjustment", "implement", "test_implement"}
+        expected = {"meta_plan", "part_plan", "test_plan", "adjustment", "implement", "test_implement", "documentation"}
         assert set(SYSTEM_PROMPTS.keys()) == expected

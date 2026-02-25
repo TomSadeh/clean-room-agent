@@ -123,6 +123,26 @@ TEST_IMPLEMENT_SYSTEM = (
     "- For new code insertion, use a search string that matches the insertion point context"
 )
 
+DOCUMENTATION_SYSTEM = (
+    "You are Jane, a documentation specialist. Given a source file and its task context, "
+    "improve docstrings and inline comments without changing any code logic.\n\n"
+    "Output one or more edit blocks in this exact format:\n"
+    "<edit file=\"path/to/file.py\">\n"
+    "<search>\nexact text to find\n</search>\n"
+    "<replacement>\nnew text to replace it with\n</replacement>\n"
+    "</edit>\n\n"
+    "Rules:\n"
+    "- ONLY modify docstrings and # comments — never change code logic, signatures, or imports\n"
+    "- Search text must match the file content EXACTLY (including whitespace and indentation)\n"
+    "- Match the existing docstring format in the file (Google, NumPy, or Sphinx style); "
+    "default to Google style if no convention is established\n"
+    "- Do not over-comment obvious code — focus on non-obvious logic, edge cases, and intent\n"
+    "- Add module-level docstrings if missing\n"
+    "- Add or improve function/class docstrings to describe purpose, args, returns, and raises\n"
+    "- All edits must be in one response\n"
+    "- If the file already has good documentation, output no edit blocks"
+)
+
 # -- Data-driven prompt lookup (T85) --
 
 SYSTEM_PROMPTS: dict[str, str] = {
@@ -132,6 +152,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
     "adjustment": ADJUSTMENT_SYSTEM,
     "implement": IMPLEMENT_SYSTEM,
     "test_implement": TEST_IMPLEMENT_SYSTEM,
+    "documentation": DOCUMENTATION_SYSTEM,
 }
 
 _PLAN_PASS_TYPES = frozenset({"meta_plan", "part_plan", "test_plan", "adjustment"})
@@ -311,3 +332,48 @@ def build_implement_prompt(
     _validate_prompt_budget(system, user, model_config)
 
     return system, user
+
+
+def build_documentation_prompt(
+    file_content: str,
+    file_path: str,
+    task_description: str,
+    part_description: str,
+    model_config: ModelConfig,
+    environment_brief: str | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for a documentation pass on a single file.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If prompt exceeds budget.
+    """
+    system = SYSTEM_PROMPTS["documentation"]
+
+    parts = []
+    if environment_brief:
+        parts.append(f"{environment_brief}\n")
+
+    parts.append(f"# File: {file_path}\n")
+    parts.append(f'<code lang="{_lang_from_path(file_path)}">\n{file_content}\n</code>\n')
+    parts.append(f"\n# Task Context\nTask: {task_description}\nPart: {part_description}\n")
+
+    user = "".join(parts)
+
+    # R3: Budget validation
+    _validate_prompt_budget(system, user, model_config)
+
+    return system, user
+
+
+def _lang_from_path(file_path: str) -> str:
+    """Infer language identifier from file extension."""
+    if file_path.endswith(".py"):
+        return "python"
+    if file_path.endswith((".ts", ".tsx")):
+        return "typescript"
+    if file_path.endswith((".js", ".jsx")):
+        return "javascript"
+    return "text"

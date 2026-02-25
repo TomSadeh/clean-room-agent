@@ -69,6 +69,7 @@ def create_default_config(repo_path: Path) -> Path:
         'max_adjustment_rounds = 3\n'
         'git_workflow = true\n'
         '# max_cumulative_diff_chars = 50000\n'
+        '# documentation_pass = true  # Run documentation enhancement after code steps (default: true)\n'
         '\n'
         '# [retrieval]\n'
         '# max_deps = 30\n'
