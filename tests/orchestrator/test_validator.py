@@ -28,7 +28,7 @@ class TestRequireTestingConfig:
             require_testing_config({"models": {}})
 
     def test_missing_test_command_raises(self):
-        with pytest.raises(RuntimeError, match="Missing test_command"):
+        with pytest.raises(RuntimeError, match="Missing or empty test_command"):
             require_testing_config({"testing": {"timeout": 60}})
 
 

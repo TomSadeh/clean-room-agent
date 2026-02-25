@@ -130,6 +130,14 @@ def classify_symbols(
             )
 
         prompt = task_header + "\n".join(symbol_lines)
+
+        actual_tokens = estimate_tokens_conservative(prompt) + system_overhead
+        if actual_tokens > llm.config.context_window - llm.config.max_tokens:
+            raise ValueError(
+                f"R3: precision batch prompt too large ({actual_tokens} tokens, "
+                f"available {llm.config.context_window - llm.config.max_tokens})"
+            )
+
         response = llm.complete(prompt, system=PRECISION_SYSTEM)
         classifications = parse_json_response(response.text, "precision")
 

@@ -14,6 +14,19 @@ from clean_room_agent.execute.dataclasses import ValidationResult
 
 logger = logging.getLogger(__name__)
 
+# Cap validation output to prevent unbounded context growth in LLM prompts.
+# ~1000 tokens conservative (3 chars/token). Full output preserved in raw DB.
+_MAX_VALIDATION_OUTPUT_CHARS = 4000
+
+
+def _cap_output(output: str, label: str) -> str:
+    """Truncate output keeping the tail (error summaries are at the bottom)."""
+    if len(output) <= _MAX_VALIDATION_OUTPUT_CHARS:
+        return output
+    truncated = output[-_MAX_VALIDATION_OUTPUT_CHARS:]
+    return f"[{label} truncated — showing last {_MAX_VALIDATION_OUTPUT_CHARS} chars]\n{truncated}"
+
+
 # Patterns for extracting failing test names from common frameworks
 _PYTEST_FAIL_PATTERN = re.compile(r"FAILED\s+(\S+)")
 _JEST_FAIL_PATTERN = re.compile(r"FAIL\s+(\S+)")
@@ -34,9 +47,9 @@ def require_testing_config(config: dict | None) -> dict:
             "Missing [testing] section in config. "
             "Add [testing] with test_command to .clean_room/config.toml"
         )
-    if "test_command" not in testing:
+    if not testing.get("test_command"):
         raise RuntimeError(
-            "Missing test_command in [testing] config. "
+            "Missing or empty test_command in [testing] config. "
             "Set test_command (e.g. 'pytest tests/') in .clean_room/config.toml"
         )
     return testing
@@ -55,6 +68,12 @@ def run_validation(
     """
     testing_config = require_testing_config(config)
     timeout = testing_config.get("timeout", 120)
+
+    # T64: Bounds-check timeout
+    if not isinstance(timeout, int) or timeout <= 0:
+        raise RuntimeError(
+            f"timeout in [testing] must be a positive integer, got {timeout!r}"
+        )
 
     test_output = _run_command(
         testing_config["test_command"], repo_path, timeout,
@@ -77,25 +96,27 @@ def run_validation(
 
     failing_tests = _extract_failing_tests(test_output["output"])
 
-    result = ValidationResult(
-        success=test_success,
-        test_output=test_output["output"],
-        lint_output=lint_output,
-        type_check_output=type_check_output,
-        failing_tests=failing_tests,
-    )
-
-    # Log to raw DB
+    # Log full (uncapped) output to raw DB for traceability
+    raw_test_output = test_output["output"]
     insert_validation_result(
         raw_conn,
         attempt_id,
         test_success,
-        test_output=test_output["output"],
+        test_output=raw_test_output,
         lint_output=lint_output,
         type_check_output=type_check_output,
         failing_tests=json.dumps(failing_tests) if failing_tests else None,
     )
     raw_conn.commit()
+
+    # Cap outputs for ValidationResult (flows into LLM prompts)
+    result = ValidationResult(
+        success=test_success,
+        test_output=_cap_output(raw_test_output, "test output"),
+        lint_output=_cap_output(lint_output, "lint output") if lint_output else None,
+        type_check_output=_cap_output(type_check_output, "type check output") if type_check_output else None,
+        failing_tests=failing_tests,
+    )
 
     return result
 

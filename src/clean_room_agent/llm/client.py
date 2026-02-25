@@ -51,14 +51,30 @@ class LLMResponse:
 
 
 def strip_thinking(raw_text: str) -> tuple[str, str | None]:
-    """Strip <think>...</think> block from thinking-model output.
+    """Strip outermost <think>...</think> block from thinking-model output.
+
+    Uses find()/rfind() to extract the outermost block.  Unclosed <think>
+    tags are treated as if the tag extends to end-of-string (fail-fast:
+    thinking content never leaks into the response text).
 
     Returns (clean_text, thinking_content_or_None).
     """
-    match = re.search(r"<think>(.*?)</think>\s*", raw_text, re.DOTALL)
-    if match:
-        return raw_text[match.end():], match.group(1).strip()
-    return raw_text, None
+    open_idx = raw_text.find("<think>")
+    if open_idx == -1:
+        return raw_text, None
+
+    content_start = open_idx + len("<think>")
+    close_idx = raw_text.rfind("</think>")
+
+    if close_idx == -1 or close_idx < content_start:
+        # Unclosed tag: everything after <think> is thinking content
+        thinking = raw_text[content_start:].strip()
+        clean = raw_text[:open_idx].strip()
+    else:
+        thinking = raw_text[content_start:close_idx].strip()
+        clean = (raw_text[:open_idx] + raw_text[close_idx + len("</think>"):]).strip()
+
+    return clean, thinking or None
 
 
 class LLMClient:
@@ -107,7 +123,8 @@ class LLMClient:
             )
 
         # Dynamic output budget: give the model everything that's left
-        num_predict = self.config.context_window - input_tokens - OUTPUT_MARGIN_TOKENS
+        # T69: Clamp to positive to prevent Ollama rejection on estimation error
+        num_predict = max(1, self.config.context_window - input_tokens - OUTPUT_MARGIN_TOKENS)
 
         url = f"{self.config.base_url}/api/generate"
         payload = {
@@ -165,9 +182,26 @@ class LoggedLLMClient:
         return self._client.config
 
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
-        """Send a completion request and record the full I/O."""
+        """Send a completion request and record the full I/O.
+
+        Failed calls are recorded with error info for traceability (T70),
+        then the exception is re-raised.
+        """
         start = time.monotonic()
-        response = self._client.complete(prompt, system=system)
+        try:
+            response = self._client.complete(prompt, system=system)
+        except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
+            self.calls.append({
+                "prompt": prompt,
+                "system": system,
+                "response": f"[ERROR] {type(e).__name__}: {e}",
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "elapsed_ms": elapsed,
+                "error": str(e),
+            })
+            raise
         elapsed = int((time.monotonic() - start) * 1000)
         record: dict = {
             "prompt": prompt,

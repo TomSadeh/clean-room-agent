@@ -214,6 +214,13 @@ def judge_scope(
         ]
         prompt = task_header + "\n".join(candidate_lines)
 
+        actual_tokens = estimate_tokens_conservative(prompt) + system_overhead
+        if actual_tokens > llm.config.context_window - llm.config.max_tokens:
+            raise ValueError(
+                f"R3: scope batch prompt too large ({actual_tokens} tokens, "
+                f"available {llm.config.context_window - llm.config.max_tokens})"
+            )
+
         response = llm.complete(prompt, system=SCOPE_JUDGMENT_SYSTEM)
         judgments = parse_json_response(response.text, "scope judgment")
 

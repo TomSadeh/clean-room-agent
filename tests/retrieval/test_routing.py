@@ -133,6 +133,9 @@ class TestRouteStages:
         response = MagicMock()
         response.text = response_text
         llm.complete.return_value = response
+        # R3 budget validation needs real ints
+        llm.config.context_window = 32768
+        llm.config.max_tokens = 4096
         return llm
 
     def test_selects_both_stages(self, sample_task, available_stages):

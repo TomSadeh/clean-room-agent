@@ -179,22 +179,20 @@ def _build_prompt(
 
     # Add docstring summary
     docstrings = curated_conn.execute(
-        "SELECT content FROM docstrings WHERE file_id = ? ORDER BY id LIMIT 3", (file_id,)
+        "SELECT content FROM docstrings WHERE file_id = ? ORDER BY id", (file_id,)
     ).fetchall()
     if docstrings:
         parts.append("Docstrings:")
         for d in docstrings:
-            preview = d["content"][:200]
-            parts.append(f"  {preview}")
+            parts.append(f"  {d['content']}")
         parts.append("")
 
-    # Add source preview (first 100 lines)
+    # Add full source (R3 gate at call site skips oversized files)
     abs_path = repo_path / file_path
     if abs_path.exists():
         source = abs_path.read_text(encoding="utf-8", errors="replace")
-        lines = source.split("\n")[:100]
-        parts.append("Source preview (first 100 lines):")
-        parts.append("\n".join(lines))
+        parts.append("Source:")
+        parts.append(source)
 
     return "\n".join(parts)
 

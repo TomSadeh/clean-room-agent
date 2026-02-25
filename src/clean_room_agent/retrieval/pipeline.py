@@ -239,6 +239,7 @@ def run_pipeline(
 
         # 9. Stage loop
         logged_file_ids: set[int] = set()
+        logged_symbol_ids: set[int] = set()
         for stage_name in stage_names:
             stage = stages[stage_name]
             stage_config = router.resolve("reasoning", stage_name)
@@ -272,13 +273,15 @@ def run_pipeline(
 
             # T16: Log symbol-level decisions if precision stage populated them
             for sym in context.classified_symbols:
-                insert_retrieval_decision(
-                    raw_conn, task_id, stage_name, sym.file_id,
-                    included=(sym.detail_level != "excluded"),
-                    reason=sym.reason,
-                    symbol_id=sym.symbol_id,
-                    detail_level=sym.detail_level,
-                )
+                if sym.symbol_id not in logged_symbol_ids:
+                    insert_retrieval_decision(
+                        raw_conn, task_id, stage_name, sym.file_id,
+                        included=(sym.detail_level != "excluded"),
+                        reason=sym.reason,
+                        symbol_id=sym.symbol_id,
+                        detail_level=sym.detail_level,
+                    )
+                    logged_symbol_ids.add(sym.symbol_id)
             raw_conn.commit()
 
             # Save stage output to session

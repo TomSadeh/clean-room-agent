@@ -104,7 +104,7 @@ class TestBuildPrompt:
         (src_dir / "main.py").write_text("def hello():\n    return 'world'\n", encoding="utf-8")
 
         prompt = _build_prompt("src/main.py", fid, conn, tmp_path)
-        assert "Source preview" in prompt
+        assert "Source:" in prompt
         assert "def hello():" in prompt
         conn.close()
 
@@ -116,7 +116,7 @@ class TestBuildPrompt:
 
         prompt = _build_prompt("missing.py", fid, conn, tmp_path)
         assert "File: missing.py" in prompt
-        assert "Source preview" not in prompt
+        assert "Source:" not in prompt
         conn.close()
 
 

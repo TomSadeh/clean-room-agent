@@ -66,7 +66,7 @@ def create_default_config(repo_path: Path) -> Path:
         '\n'
         '[orchestrator]\n'
         'max_retries_per_step = 1\n'
-        '# max_adjustment_rounds = 1\n'
+        'max_adjustment_rounds = 3\n'
         '# max_cumulative_diff_chars = 50000\n'
         '\n'
         '# [retrieval]\n'

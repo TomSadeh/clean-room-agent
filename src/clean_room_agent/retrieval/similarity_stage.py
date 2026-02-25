@@ -173,6 +173,14 @@ def judge_similarity(
             )
 
         prompt = task_header + "\n".join(pair_lines)
+
+        actual_tokens = estimate_tokens_conservative(prompt) + system_overhead
+        if actual_tokens > llm.config.context_window - llm.config.max_tokens:
+            raise ValueError(
+                f"R3: similarity batch prompt too large ({actual_tokens} tokens, "
+                f"available {llm.config.context_window - llm.config.max_tokens})"
+            )
+
         response = llm.complete(prompt, system=SIMILARITY_JUDGMENT_SYSTEM)
         try:
             judgments = parse_json_response(response.text, "similarity judgment")

@@ -77,9 +77,18 @@ def enrich(repo_path, promote):
     from pathlib import Path
 
     from clean_room_agent.config import load_config, require_models_config
-    from clean_room_agent.llm.enrichment import enrich_repository
 
     repo = Path(repo_path).resolve()
+
+    # T63: Preflight check — curated DB must exist (requires prior `cra index`)
+    curated_db = repo / ".clean_room" / "curated.sqlite"
+    if not curated_db.exists():
+        raise click.UsageError(
+            "Curated database not found. Run 'cra index' before 'cra enrich'."
+        )
+
+    from clean_room_agent.llm.enrichment import enrich_repository
+
     config = load_config(repo)
     models_config = require_models_config(config)
     result = enrich_repository(repo, models_config, promote=promote)

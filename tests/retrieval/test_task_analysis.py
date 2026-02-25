@@ -170,12 +170,20 @@ class TestResolveSeeds:
         assert symbol_ids == [1]
 
 
+def _mock_llm(response_text):
+    """Create a mock LLM with proper config for R3 budget validation."""
+    mock = MagicMock()
+    resp = MagicMock()
+    resp.text = response_text
+    mock.complete.return_value = resp
+    mock.config.context_window = 32768
+    mock.config.max_tokens = 4096
+    return mock
+
+
 class TestEnrichTaskIntent:
     def test_returns_text(self):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "Fix the authentication bug in login handler"
-        mock_llm.complete.return_value = mock_response
+        mock_llm = _mock_llm("Fix the authentication bug in login handler")
 
         signals = {"files": ["auth.py"], "symbols": ["login"], "task_type": "bug_fix", "keywords": ["fix"]}
         result = enrich_task_intent("fix login bug", signals, mock_llm)
@@ -183,10 +191,7 @@ class TestEnrichTaskIntent:
         mock_llm.complete.assert_called_once()
 
     def test_includes_repo_file_tree(self):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "Intent summary"
-        mock_llm.complete.return_value = mock_response
+        mock_llm = _mock_llm("Intent summary")
 
         signals = {"files": [], "symbols": [], "task_type": "feature", "keywords": []}
         enrich_task_intent(
@@ -199,10 +204,7 @@ class TestEnrichTaskIntent:
         assert "</repo_structure>" in prompt_arg
 
     def test_includes_environment_brief(self):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "Intent summary"
-        mock_llm.complete.return_value = mock_response
+        mock_llm = _mock_llm("Intent summary")
 
         signals = {"files": [], "symbols": [], "task_type": "feature", "keywords": []}
         enrich_task_intent(
@@ -214,10 +216,7 @@ class TestEnrichTaskIntent:
         assert "OS: Linux" in prompt_arg
 
     def test_no_tree_no_brief_backward_compat(self):
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "Intent"
-        mock_llm.complete.return_value = mock_response
+        mock_llm = _mock_llm("Intent")
 
         signals = {"files": [], "symbols": [], "task_type": "unknown", "keywords": []}
         enrich_task_intent("do thing", signals, mock_llm)
@@ -234,10 +233,7 @@ class TestAnalyzeTask:
         mock_kb.get_file_by_path.return_value = mock_file
         mock_kb.search_symbols_by_name.return_value = []
 
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "Intent summary"
-        mock_llm.complete.return_value = mock_response
+        mock_llm = _mock_llm("Intent summary")
 
         tq = analyze_task(
             "Fix bug in src/auth.py", "task-001", "plan",

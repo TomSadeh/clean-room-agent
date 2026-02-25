@@ -32,38 +32,22 @@ Command definitions, argument conventions, required inputs, config file format, 
 
 | Flag | `index` | `enrich` | `retrieve` | `plan` | `solve` | `train-plan` | `curate-data` |
 |------|---------|----------|------------|--------|---------|--------------|---------------|
-| `--stages` | -- | -- | required* | required* | required* | required* | required* |
-| budget (see below) | -- | -- | required* | required* | required* | required* | required* |
-| `--plan` | -- | -- | -- | -- | optional | -- | -- |
+| `--stages` | -- | -- | optional* | optional* | -- | -- | -- |
+| budget (see below) | -- | -- | optional* | -- | -- | -- | -- |
+| `--plan` | -- | -- | optional | -- | optional | -- | -- |
 | `--training-plan` | -- | -- | -- | -- | -- | -- | required |
-| `--meta-plan` | -- | -- | -- | -- | optional | -- | -- |
-| `--max-attempts` | -- | -- | -- | -- | required* | -- | -- |
-| `--max-refinement-loops` | -- | -- | -- | -- | required* | -- | -- |
 
 \* "required" means: must be provided via CLI flag **or** config.toml. See resolution order (Section 5.2).
 
-**Budget input**: either `--context-window <int>` + `--reserved-tokens <int>`, or `--budget-config <path>`. Mutually exclusive. Falls back to config.toml `[budget]` section if neither CLI form is provided. Missing budget from all sources is a hard error.
+**Budget input**: `--context-window <int>` + `--reserved-tokens <int>` on `cra retrieve`, or config.toml `[budget]` section. `cra plan` and `cra solve` resolve budget entirely from config. Missing budget from all sources is a hard error.
 
-**`--plan` vs `--meta-plan`** (on `cra solve`): Mutually exclusive. `--plan` bypasses the orchestrator entirely (single atomic implement pass). `--meta-plan` skips only the meta-plan decomposition step; the orchestrator continues with part-plan, step implementation, and adjustment passes.
-
----
-
-## 4. `--budget-config` File Format
-
-TOML file:
-
-```toml
-context_window = 32768
-reserved_tokens = 4096
-```
-
-No section header required. Just the two keys.
+**`--plan`** (on `cra solve`): bypasses the orchestrator entirely (single atomic implement pass from a pre-computed plan file).
 
 ---
 
-## 5. Config File
+## 4. Config File
 
-### 5.1 Location and Format
+### 4.1 Location and Format
 
 `.clean_room/config.toml`, created by `cra init`.
 
@@ -90,14 +74,10 @@ base_url = "http://localhost:11434"
 context_window = 32768
 reserved_tokens = 4096
 
-[solve]
-max_attempts = 3
-max_refinement_loops = 2
-
 [orchestrator]
-max_parts = 10
-max_steps_per_part = 15
+max_retries_per_step = 1
 max_adjustment_rounds = 3
+# max_cumulative_diff_chars = 50000
 
 [stages]
 default = "scope,precision"
@@ -116,11 +96,20 @@ default = "scope,precision"
 # co_change_max_files = 50   # skip commits touching more files
 # co_change_min_count = 2    # minimum co-change count to keep
 # max_commits = 500          # git log depth
+
+[testing]
+test_command = "pytest tests/"
+# lint_command = "ruff check src/"
+# type_check_command = "mypy src/"
+# timeout = 120
+
+[environment]
+coding_style = "development"  # options: development, maintenance, prototyping
 ```
 
 `cra init [repo-path]` creates a default config template. Users edit it to provide model, budget, and other settings.
 
-### 5.2 Resolution Order
+### 4.2 Resolution Order
 
 For every CLI input:
 
@@ -132,6 +121,6 @@ For every CLI input:
 
 **Model config**: there are no CLI flags for model selection. Models are always read from config.toml. Missing `[models]` section -> hard error.
 
-### 5.3 Config Loader
+### 4.3 Config Loader
 
 `config.py`: reads TOML, returns a flat dict. Missing file returns `None` (not an error -- config is optional for `cra index`). Missing `[models]` section when an LLM command runs is a hard error at the CLI layer.

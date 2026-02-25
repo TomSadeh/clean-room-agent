@@ -174,7 +174,14 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
         )
 
     max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
+    max_adj_rounds = orch_config.get("max_adjustment_rounds", 3)
     max_diff_chars = orch_config.get("max_cumulative_diff_chars", _MAX_CUMULATIVE_DIFF_CHARS)
+
+    # T64: Bounds-check config values
+    if not isinstance(max_diff_chars, int) or max_diff_chars <= 0:
+        raise RuntimeError(
+            f"max_cumulative_diff_chars must be a positive integer, got {max_diff_chars!r}"
+        )
 
     plan_budget = _resolve_budget(config, "reasoning")
     impl_budget = _resolve_budget(config, "coding")
@@ -191,6 +198,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
 
     pass_results: list[PassResult] = []
     step_final_outcomes: dict[str, bool] = {}  # step_key -> final success
+    adjustment_counts: dict[str, int] = {}  # part_id -> adjustment count
     cumulative_diff = ""
     parts_completed = 0
     steps_completed = 0
@@ -222,6 +230,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
         tr_row = raw_conn.execute(
             "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
         ).fetchone()
+        if tr_row is None:
+            raise RuntimeError(f"task_run not found for {sub_task_id}")
         meta_task_run_id = tr_row["id"]
 
         insert_orchestrator_pass(
@@ -277,6 +287,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                 tr_row = raw_conn.execute(
                     "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
                 ).fetchone()
+                if tr_row is None:
+                    raise RuntimeError(f"task_run not found for {sub_task_id}")
                 part_task_run_id = tr_row["id"]
 
                 insert_orchestrator_pass(
@@ -354,6 +366,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         tr_row = raw_conn.execute(
                             "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
                         ).fetchone()
+                        if tr_row is None:
+                            raise RuntimeError(f"task_run not found for {sub_task_id}")
                         impl_task_run_id = tr_row["id"]
 
                         # Log run_attempt with actual token counts (T40) and
@@ -431,57 +445,72 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     all_code_steps_ok = False
 
                 # ADJUSTMENT PASS (after every code step)
-                try:
-                    adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
-                    remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
-                    adj_context = run_pipeline(
-                        raw_task=remaining_desc,
-                        repo_path=repo_path,
-                        stage_names=stage_names,
-                        budget=plan_budget,
-                        mode="plan",
-                        task_id=adj_sub_task_id,
-                        config=config,
+                adj_count = adjustment_counts.get(part.id, 0)
+                if adj_count >= max_adj_rounds:
+                    logger.info(
+                        "Adjustment limit reached for part %s (%d/%d)",
+                        part.id, adj_count, max_adj_rounds,
                     )
-
-                    with LoggedLLMClient(reasoning_config) as adj_llm:
-                        adjustment = execute_plan(
-                            adj_context, remaining_desc, adj_llm,
-                            pass_type="adjustment",
-                            prior_results=[step_result] if step_result else None,
-                            cumulative_diff=cumulative_diff or None,
+                else:
+                    try:
+                        adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
+                        remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
+                        adj_context = run_pipeline(
+                            raw_task=remaining_desc,
+                            repo_path=repo_path,
+                            stage_names=stage_names,
+                            budget=plan_budget,
+                            mode="plan",
+                            task_id=adj_sub_task_id,
+                            config=config,
                         )
-                        _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
 
-                    tr_row = raw_conn.execute(
-                        "SELECT id FROM task_runs WHERE task_id = ?", (adj_sub_task_id,)
-                    ).fetchone()
-                    adj_task_run_id = tr_row["id"]
+                        with LoggedLLMClient(reasoning_config) as adj_llm:
+                            adjustment = execute_plan(
+                                adj_context, remaining_desc, adj_llm,
+                                pass_type="adjustment",
+                                prior_results=[step_result] if step_result else None,
+                                cumulative_diff=cumulative_diff or None,
+                            )
+                            _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
 
-                    insert_orchestrator_pass(
-                        raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
-                        part_id=part.id, step_id=step.id,
-                    )
-                    raw_conn.commit()
-                    sequence_order += 1
+                        tr_row = raw_conn.execute(
+                            "SELECT id FROM task_runs WHERE task_id = ?", (adj_sub_task_id,)
+                        ).fetchone()
+                        if tr_row is None:
+                            raise RuntimeError(f"task_run not found for {adj_sub_task_id}")
+                        adj_task_run_id = tr_row["id"]
 
-                    set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", adjustment.to_dict())
+                        insert_orchestrator_pass(
+                            raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
+                            part_id=part.id, step_id=step.id,
+                        )
+                        raw_conn.commit()
+                        sequence_order += 1
 
-                    # Replace remaining steps with revised ones (T25).
-                    # Safe because we use index-based iteration.
-                    if adjustment.revised_steps:
-                        sorted_steps[step_idx + 1:] = adjustment.revised_steps
+                        set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", adjustment.to_dict())
 
-                    pass_results.append(PassResult(
-                        pass_type="adjustment", task_run_id=adj_task_run_id,
-                        success=True, artifact=adjustment,
-                    ))
+                        # Replace remaining steps with revised ones (T25).
+                        # Safe because we use index-based iteration.
+                        if adjustment.revised_steps:
+                            sorted_steps[step_idx + 1:] = adjustment.revised_steps
 
-                except (ValueError, RuntimeError, OSError) as e:
-                    logger.warning("Adjustment pass failed for %s:after_%s: %s", part.id, step.id, e)
-                    pass_results.append(PassResult(
-                        pass_type="adjustment", success=False,
-                    ))
+                        pass_results.append(PassResult(
+                            pass_type="adjustment", task_run_id=adj_task_run_id,
+                            success=True, artifact=adjustment,
+                        ))
+
+                        adjustment_counts[part.id] = adj_count + 1
+
+                    except (ValueError, RuntimeError, OSError) as e:
+                        logger.warning("Adjustment pass failed for %s:after_%s: %s", part.id, step.id, e)
+                        # T66: Record adjustment failure in session state
+                        set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", {
+                            "success": False, "error": str(e),
+                        })
+                        pass_results.append(PassResult(
+                            pass_type="adjustment", success=False,
+                        ))
 
                 step_idx += 1
 
@@ -526,6 +555,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     tr_row = raw_conn.execute(
                         "SELECT id FROM task_runs WHERE task_id = ?", (test_plan_task_id,)
                     ).fetchone()
+                    if tr_row is None:
+                        raise RuntimeError(f"task_run not found for {test_plan_task_id}")
                     tp_task_run_id = tr_row["id"]
 
                     insert_orchestrator_pass(
@@ -591,6 +622,8 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             tr_row = raw_conn.execute(
                                 "SELECT id FROM task_runs WHERE task_id = ?", (test_sub_task_id,)
                             ).fetchone()
+                            if tr_row is None:
+                                raise RuntimeError(f"task_run not found for {test_sub_task_id}")
                             ti_task_run_id = tr_row["id"]
 
                             attempt_id = insert_run_attempt(
@@ -672,10 +705,19 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
 
                 if not validation.success:
                     # LIFO rollback: test edits first, then code edits
+                    rollback_errors = []
                     for tp in reversed(test_patch_results):
-                        rollback_edits(tp, repo_path)
+                        try:
+                            rollback_edits(tp, repo_path)
+                        except (RuntimeError, OSError) as e:
+                            rollback_errors.append(str(e))
                     for cp in reversed(code_patch_results):
-                        rollback_edits(cp, repo_path)
+                        try:
+                            rollback_edits(cp, repo_path)
+                        except (RuntimeError, OSError) as e:
+                            rollback_errors.append(str(e))
+                    if rollback_errors:
+                        raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
 
                     # Mark all steps for this part as failed since validation failed
                     for key in list(step_final_outcomes):
@@ -765,7 +807,8 @@ def run_single_pass(
 ) -> OrchestratorResult:
     """Run a single atomic implement pass from a pre-computed plan.
 
-    No orchestrator_run/passes records — just task_run + run_attempt + validation.
+    Creates orchestrator_run/pass DB records and session DB matching
+    the full orchestrator path (T67).
     """
     task_id = str(uuid.uuid4())
     models_config = require_models_config(config)
@@ -794,9 +837,18 @@ def run_single_pass(
     )
 
     raw_conn = get_connection("raw", repo_path=repo_path)
+    session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
+
+    # T67: Create orchestrator_run record
+    orch_run_id = insert_orchestrator_run(raw_conn, task_id, str(repo_path), task)
+    raw_conn.commit()
+
     pass_results: list[PassResult] = []
     cumulative_diff = ""
     last_validation = None
+    status = "failed"
+    steps_completed = 0
+    sequence_order = 0
 
     try:
         for attempt in range(max_retries + 1):
@@ -827,6 +879,8 @@ def run_single_pass(
             tr_row = raw_conn.execute(
                 "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
             ).fetchone()
+            if tr_row is None:
+                raise RuntimeError(f"task_run not found for {sub_task_id}")
             impl_task_run_id = tr_row["id"]
 
             # Log run_attempt with actual token counts (T40) and
@@ -838,6 +892,14 @@ def run_single_pass(
                 False,
             )
             raw_conn.commit()
+
+            # T67: Log orchestrator_pass for each attempt
+            insert_orchestrator_pass(
+                raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
+                step_id="single_pass",
+            )
+            raw_conn.commit()
+            sequence_order += 1
 
             if not step_result.success:
                 pass_results.append(PassResult(
@@ -869,14 +931,9 @@ def run_single_pass(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=True, artifact=step_result,
                 ))
-                return OrchestratorResult(
-                    task_id=task_id,
-                    status="complete",
-                    parts_completed=1,
-                    steps_completed=1,
-                    cumulative_diff=cumulative_diff,
-                    pass_results=pass_results,
-                )
+                status = "complete"
+                steps_completed = 1
+                break
             else:
                 rollback_edits(patch_result, repo_path)
                 pass_results.append(PassResult(
@@ -884,12 +941,54 @@ def run_single_pass(
                     success=False, artifact=step_result,
                 ))
 
+    except (ValueError, RuntimeError, OSError) as e:
+        logger.error("Single pass failed: %s", e)
+        status = "failed"
+
     finally:
+        # T67: Update orchestrator_run with final status
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            update_orchestrator_run(
+                raw_conn, orch_run_id,
+                total_parts=1,
+                total_steps=1,
+                parts_completed=1 if steps_completed else 0,
+                steps_completed=steps_completed,
+                status=status,
+                completed_at=now,
+            )
+            raw_conn.commit()
+        except Exception as e:
+            logger.warning("Failed to update orchestrator run: %s", e)
+
+        # T67: Save session state and archive
+        set_state(session_conn, "cumulative_diff", cumulative_diff)
+        set_state(session_conn, "orchestrator_progress", {
+            "parts_completed": 1 if steps_completed else 0,
+            "steps_completed": steps_completed,
+            "status": status,
+        })
+        session_conn.close()
+
+        session_file = _db_path(repo_path, "session", task_id)
+        if session_file.exists():
+            try:
+                session_blob = session_file.read_bytes()
+                insert_session_archive(raw_conn, task_id, session_blob)
+                raw_conn.commit()
+                session_file.unlink()
+                logger.debug("Archived and removed session DB for task %s", task_id)
+            except Exception as archive_err:
+                logger.warning("Failed to archive session DB: %s", archive_err)
+
         raw_conn.close()
 
     return OrchestratorResult(
         task_id=task_id,
-        status="failed",
+        status=status,
+        parts_completed=1 if steps_completed else 0,
+        steps_completed=steps_completed,
         cumulative_diff=cumulative_diff,
         pass_results=pass_results,
     )

@@ -5,6 +5,7 @@ import re
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
+from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.dataclasses import TaskQuery
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,13 @@ def enrich_task_intent(
     if repo_file_tree:
         parts.append(f"<repo_structure>\n{repo_file_tree}\n</repo_structure>")
     prompt = "\n\n".join(parts)
+
+    input_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(TASK_ANALYSIS_SYSTEM)
+    available = llm.config.context_window - llm.config.max_tokens
+    if input_tokens > available:
+        raise ValueError(
+            f"R3: task analysis prompt too large ({input_tokens} tokens, available {available})"
+        )
 
     try:
         response = llm.complete(prompt, system=TASK_ANALYSIS_SYSTEM)

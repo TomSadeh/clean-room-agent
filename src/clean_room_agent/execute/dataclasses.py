@@ -109,6 +109,10 @@ class MetaPlan:
         for key in ("task_summary", "parts", "rationale"):
             if key not in data:
                 raise ValueError(f"MetaPlan.from_dict missing required key: {key!r}")
+        if not isinstance(data["parts"], list):
+            raise ValueError(
+                f"MetaPlan.from_dict: 'parts' must be a list, got {type(data['parts']).__name__}"
+            )
         return cls(
             task_summary=data["task_summary"],
             parts=[MetaPlanPart.from_dict(p) for p in data["parts"]],
@@ -147,6 +151,10 @@ class PartPlan:
         for key in ("part_id", "task_summary", "steps", "rationale"):
             if key not in data:
                 raise ValueError(f"PartPlan.from_dict missing required key: {key!r}")
+        if not isinstance(data["steps"], list):
+            raise ValueError(
+                f"PartPlan.from_dict: 'steps' must be a list, got {type(data['steps']).__name__}"
+            )
         return cls(
             part_id=data["part_id"],
             task_summary=data["task_summary"],
@@ -178,6 +186,16 @@ class PlanAdjustment:
         for key in ("revised_steps", "rationale", "changes_made"):
             if key not in data:
                 raise ValueError(f"PlanAdjustment.from_dict missing required key: {key!r}")
+        if not isinstance(data["revised_steps"], list):
+            raise ValueError(
+                f"PlanAdjustment.from_dict: 'revised_steps' must be a list, "
+                f"got {type(data['revised_steps']).__name__}"
+            )
+        if not isinstance(data["changes_made"], list):
+            raise ValueError(
+                f"PlanAdjustment.from_dict: 'changes_made' must be a list, "
+                f"got {type(data['changes_made']).__name__}"
+            )
         return cls(
             revised_steps=[PlanStep.from_dict(s) for s in data["revised_steps"]],
             rationale=data["rationale"],

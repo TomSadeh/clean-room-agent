@@ -5,282 +5,148 @@ principle and Context Curation Rules (R1-R6) from CLAUDE.md.
 
 ---
 
-## ~~P0 — Critical~~ — ALL FIXED
+## P0 — Critical
 
-### ~~T25. Adjustment pass is dead code — revised steps never applied~~ — FIXED
+### T57. R3 violations: 5 LLM call sites lack budget validation before send
 
-Converted `for` loop to index-based `while` loop. Adjustment `revised_steps` now spliced
-into `sorted_steps[step_idx + 1:]`. Tests: `test_adjustment_revises_remaining_steps`.
+Per R3 ("every LLM prompt must be budget-validated"), these call `llm.complete()` without
+pre-validating the assembled prompt against the model's context window:
 
-### ~~T26. `steps_completed` counts all steps, not just successful ones~~ — FIXED
+1. `retrieval/task_analysis.py:171` — `enrich_task_intent()`. Prompt includes
+   `repo_file_tree` which can be arbitrarily large. No R3 check.
+2. `retrieval/routing.py:71` — `route_stages()`. Prompt is small but no explicit validation.
+3. `retrieval/scope_stage.py:217` — `judge_scope()` per-batch. Batch sizing estimates
+   candidate count but never validates the actual assembled prompt.
+4. `retrieval/precision_stage.py:133` — `classify_symbols()` per-batch. Same issue.
+5. `retrieval/similarity_stage.py:176` — `judge_similarity()` per-batch. Same issue.
 
-Moved `steps_completed += 1` inside `if step_success` block.
-Tests: `test_steps_completed_counts_only_successes`.
+The transport layer (`LLMClient.complete()`) has a gate, but R3 requires explicit validation
+and logging at the call site. Batching calculates batch size from a per-candidate token
+estimate, but if that estimate is wrong (e.g., a symbol with an unusually long signature),
+the assembled batch exceeds budget and gets silently truncated by Ollama.
 
-### ~~T27. `patch_applied` column logged before patch is actually applied~~ — FIXED
+Fix: add `estimate_tokens_conservative(prompt) + estimate_tokens_conservative(system)` check
+before each `llm.complete()` call. For the batch callers, validate the actual assembled prompt
+(not just the estimate) before sending.
 
-`insert_run_attempt` now always passes `patch_applied=False`. New
-`update_run_attempt_patch()` called after `apply_edits` succeeds. Same fix in
-`run_single_pass`.
+### T58. Pipeline symbol decisions logged with wrong stage name
 
-### ~~T28. LLM calls lost when `execute_plan` raises in `cra plan`~~ — FIXED
+`retrieval/pipeline.py:273-282` — The symbol decision logging loop runs inside the stage
+loop for **every** stage, attributing all `context.classified_symbols` to whichever stage
+just ran. When routing selects `["precision", "similarity"]`, precision's symbols are logged
+twice: once correctly with `stage_name="precision"`, then again with
+`stage_name="similarity"`. This creates duplicate entries in `retrieval_decisions` with false
+attribution — a traceability violation.
 
-Wrapped `execute_plan` in try/finally; LLM flush runs in `finally` block with its own
-connection management.
-
-### ~~T29. `failing_tests` stored as comma-separated string~~ — FIXED
-
-Changed to `json.dumps(failing_tests)`. Test: `test_test_fails` verifies JSON roundtrip.
-
-### ~~T30. CLI `_resolve_budget` will crash with per-role dict~~ — FIXED
-
-Rewritten to use `ModelRouter.resolve(role)` — same approach as orchestrator's
-`_resolve_budget`.
-
-### ~~T31. `_atomic_write` is not atomic on Windows~~ — FIXED
-
-Added retry loop (5 retries on Windows, 0 on POSIX) with temp file cleanup on failure.
-
----
-
-## ~~P1 — High~~ — ALL FIXED
-
-### ~~T32. `_topological_sort` silently falls back on cycles~~ — FIXED
-
-Now raises `RuntimeError` instead of silently returning original order.
-
-### ~~T33. Broad `except Exception` swallows programming bugs~~ — FIXED
-
-Narrowed all 4 catches to `(ValueError, RuntimeError, OSError)`. Programming bugs
-(`TypeError`, `KeyError`, `AttributeError`) now propagate.
-
-### ~~T34. `rollback_edits` silently swallows errors~~ — FIXED
-
-Now collects all rollback errors and raises `RuntimeError` after attempting all files.
-
-### ~~T35. `PlanAdjustment` is never validated~~ — FIXED
-
-`execute_plan` now wraps adjustment `revised_steps` in a synthetic `PartPlan` and runs
-`validate_plan()` (cycle/duplicate detection).
-
-### ~~T36. Hardcoded defaults in orchestrator~~ — FIXED
-
-Removed fallback defaults from `_resolve_budget`, `_resolve_stages`, `max_retries_per_step`.
-All raise `RuntimeError` if missing from config. Config template updated with
-`max_retries_per_step = 1` uncommented.
-
-### ~~T37. `cra solve --stages` flag is a dead parameter~~ — FIXED
-
-Removed the `--stages` flag from the `solve` CLI command.
-
-### ~~T38. Part/step failure creates `task_run_id=0`~~ — FIXED
-
-`PassResult.task_run_id` is now `int | None` (default `None`). Failure cases use `None`.
-
-### ~~T39. Adjustment failure silently swallowed~~ — FIXED
-
-Adjustment exceptions now produce a `PassResult(pass_type="adjustment", success=False)`
-in the orchestrator result.
-
-### ~~T40. Token counts always None in run_attempts~~ — FIXED
-
-`_flush_llm_calls` now returns `(prompt_tokens, completion_tokens, latency_ms)` totals.
-Used in `insert_run_attempt` for both `run_orchestrator` and `run_single_pass`.
-
-### ~~T41. Session DB never archived or deleted~~ — FIXED
-
-Added archive-to-raw + file deletion in the `finally` block of `run_orchestrator`.
-
-### ~~T42. TOCTOU race between validate and apply~~ — FIXED
-
-`apply_edits` now reads each file exactly once and does validation + application from
-the same in-memory content. `validate_edits` remains for standalone validation.
-
-### ~~T43. No path traversal validation~~ — FIXED
-
-Added `_check_path_traversal()` — checks `resolved.relative_to(repo_resolved)`. Called
-in both `validate_edits` and `apply_edits`.
-
-### ~~T44. Task description duplicated in prompts~~ — FIXED
-
-`build_plan_prompt` now only adds a `# Current Objective` section when `task_description`
-differs from `context.task.raw_task`.
-
-### ~~T45. `all_steps_count in dir()` fragile~~ — FIXED
-
-Initialized at function top alongside other counters. Also removed dead
-`total_steps = sum(0 for ...)`.
-
-### ~~T46. Config section/parameter name mismatches~~ — FIXED
-
-Removed dead `[solve]` section from config template. `max_retries_per_step` uncommented
-in `[orchestrator]`.
+Fix: track logged symbol IDs in a `logged_symbol_ids` set (like `logged_file_ids` for files),
+or only log symbols for the specific stage that populated them.
 
 ---
 
-## ~~P2 — Medium (dead code, edge cases, spec drift)~~ — ALL FIXED
+## P1 — High
 
-### ~~T47. `VALID_PASS_TYPES` defined but never used~~ — FIXED
+### T59. Orchestrator rollback can crash mid-LIFO, leaving files corrupt
 
-Deleted the dead constant.
+`orchestrator/runner.py:673-678` — `rollback_edits()` raises `RuntimeError` on any file
+write failure. If the first rollback in the LIFO sequence fails, the exception propagates
+and remaining rollbacks are skipped. Repo is left in a partially-rolled-back state.
 
-### ~~T48. `OrchestratorResult.from_dict` drops `pass_results`~~ — FIXED
+Fix: wrap each rollback call in try/except, collect errors, continue rolling back all
+remaining patches, then raise a combined error after all attempts.
 
-Added `PassResult.from_dict()`. `OrchestratorResult.from_dict()` now deserializes
-`pass_results` on round-trip. Tests: `test_from_dict`, `test_round_trip_with_pass_results`.
+### T60. Adjustment cycle has no depth limit
 
-### ~~T49. Edit parser regex vulnerable to XML content injection~~ — FIXED
+`orchestrator/runner.py:433-486` — The adjustment pass splices `revised_steps` into the step
+list after every code step. If the LLM keeps generating more steps than it consumes, the list
+grows without bound. The config template has `max_adjustment_rounds` (commented out) but the
+orchestrator never reads it.
 
-Rewrote parser: outer regex finds `<edit>...</edit>` blocks, inner `<search>` and
-`<replacement>` tags parsed sequentially using `rfind` for closing tags. Code containing
-literal `</search>` or `</replacement>` no longer breaks parsing (R5).
-Tests: `test_content_with_search_tag`, `test_content_with_replacement_tag`.
+Fix: read `max_adjustment_rounds` from `[orchestrator]` config. Track how many times
+adjustment has produced revised_steps. Stop adjustment after the limit and continue with
+remaining steps as-is.
 
-### ~~T50. `search.strip("\n")` too aggressive in parser~~ — FIXED
+### T61. Parser missing type validation on nested list fields from LLM JSON
 
-New `_strip_one_newline()` strips exactly one leading and one trailing newline (the
-formatting ones between tag and content). Preserves content newlines.
-Test: `test_strips_one_formatting_newline_only`.
+`execute/parsers.py:30,114,153` — `data["parts"]` and `data["steps"]` are passed directly
+to list comprehensions without checking they're actually lists. If the LLM returns
+`"parts": "some string"`, the error is `TypeError: 'str' object is not iterable` with no
+useful context.
 
-### ~~T51. `total_steps = sum(0 for _ in meta_plan.parts)` is always 0~~ — FIXED (P1, T45)
+Fix: add `if not isinstance(data.get("parts"), list)` checks before list comprehension,
+raising `ValueError` with a descriptive message including the actual type received.
 
-Already removed during P1 fixes.
+### T75. Validation output flows unbounded into LLM prompts
 
-### ~~T52. Cumulative diff unbounded~~ — FIXED
+`orchestrator/validator.py:59-76` → `execute/prompts.py:250-261` — Test, lint, and type-check
+subprocess output can be arbitrarily large (test frameworks routinely produce 10KB+ verbose
+output). This output flows unfiltered into `<test_failures>` sections of implement prompts
+when retrying failed steps.
 
-Added `_cap_cumulative_diff()` with `_MAX_CUMULATIVE_DIFF_CHARS = 50_000` (~12,500 tokens).
-Truncates oldest entries first, aligns to block boundary. Applied in both
-`run_orchestrator` and `run_single_pass`.
-Tests: `test_short_diff_unchanged`, `test_long_diff_truncated`,
-`test_truncation_aligns_to_block_boundary`.
+The R3 `_validate_prompt_budget` at the end of prompt construction catches the overall size,
+but at that point it raises `ValueError` — there's no refilter path. A 50KB test output makes
+the prompt exceed budget, and the step fails with a budget error instead of the model seeing a
+curated summary of what actually broke.
 
-### ~~T53. Vacuous assertion in test~~ — FIXED (P1)
+Fix: when validation output exceeds a budget-derived threshold, use an LLM call to summarize
+the failures (extract the relevant error messages, stack traces, and failing test names). The
+full output stays in raw DB for traceability; only the curated summary enters the prompt.
 
-Already fixed during P1 — changed to `assert result.exception is not None`.
+### T76. Enrichment prompt uses arbitrary caps instead of R3 gate
 
-### ~~T54. Line ending issues on Windows~~ — FIXED
+`llm/enrichment.py:181-197` — Three arbitrary caps in `_build_prompt()`:
+1. Docstrings: `LIMIT 3` by insertion order (not relevance), each truncated to `[:200]` chars.
+2. Source preview: first `[:100]` lines (imports and boilerplate, not necessarily the important
+   code).
 
-Parser: `_strip_one_newline()` handles both `\r\n` and `\n`.
-Patch: `_atomic_write` now uses binary mode (`mode="wb"`) to prevent `\n` → `\r\n`
-conversion on Windows.
-Tests: `test_handles_crlf_line_endings`, `test_preserves_lf_endings`.
+The R3 pre-validation gate (line 89-98) already skips files whose enrichment prompt exceeds
+the model's context window. The arbitrary caps are redundant for most files and
+counterproductive for the few where they bite — the model gets a non-representative slice
+of the file for its metadata generation.
 
-### ~~T55. Empty `file_path` check unreachable in parser~~ — FIXED
-
-Removed unreachable dead code. The regex `[^"]+` prevents empty file paths from matching.
-`PatchEdit.__post_init__` validates non-empty as a second line of defense.
-
-### ~~T56. `model_config` passed separately from `LoggedLLMClient` that already contains it~~ — FIXED
-
-Removed `model_config` parameter from `execute_plan` and `execute_implement`. Both now
-derive it from `llm.config`. Updated all callers in `runner.py` and `cli.py`.
-
----
-
-## ~~P3 — Low Priority~~ — ALL FIXED
-
-### ~~T22. `__del__` with `except Exception: pass`~~ — FIXED
-
-Narrowed except to `(OSError, AttributeError, TypeError)` — the specific failures that
-can occur during destructor cleanup (network errors, partially initialized objects,
-interpreter shutdown). Added comment explaining why pass is acceptable here.
-
-### ~~T23. Orphan commits in curated DB~~ — FIXED
-
-Commits now filtered before insertion: only commits touching at least one tracked file
-(in `file_id_map`) are inserted. Commits touching only excluded files are skipped.
-
-### ~~T24. TOCTOU: hash and parse may read different file versions~~ — FIXED
-
-After reading file bytes for parsing, SHA-256 hash is verified against the hash computed
-during scanning. `RuntimeError` raised on mismatch (fail-fast).
+Fix: remove the caps. Let `_build_prompt()` include all docstrings (full text) and full source.
+The R3 gate handles the rare case where a file is genuinely too large — skip with a warning,
+same as now. Most files fit easily, and the enrichment model gets complete information.
 
 ---
 
-## Completed
+## P2 — Medium (All Complete)
 
-### ~~T20. `_LoggingLLMClient` is pipeline-internal, not system-wide~~ — FIXED
-
-`LoggedLLMClient` promoted to `llm/client.py` as the standard production LLM client.
-Wraps `LLMClient` and records all calls with full I/O for the traceability chain.
-`flush()` returns and clears accumulated records. Pipeline uses it exclusively.
-
-### ~~T21. Context window is global, not per-model override~~ — FIXED
-
-`ModelRouter` now supports `context_window` as int (global) or dict (per-role), matching
-the `max_tokens` pattern. Stage overrides can be a string (model tag, inherits role's
-context_window) or a dict with `model` and optional `context_window`.
+All P2 items (T62-T71) fixed. Tests in `tests/test_p2_fixes.py`.
 
 ---
 
-## ~~Test Gaps — Phase 3 (from code review)~~ — COVERED (29 tests added)
+## P3 — Low
 
-**Orchestrator:**
-- ~~Adjustment pass actually revising remaining steps~~ — added
-- ~~Multi-part plans with dependencies / partial success~~ — added
-- ~~Patch application failure within orchestrator (retry path)~~ — added
-- ~~Meta-plan failure (outer except + finally cleanup)~~ — added
-- ~~`steps_completed` accuracy~~ — added
-- DB record correctness (orchestrator tests use MagicMock) — deferred (functional, not a gap)
-- ~~Missing config raises (budget, stages, max_retries)~~ — added
-- ~~`_flush_llm_calls` helper~~ — added
-- ~~`run_single_pass` with multiple retries and mixed failure modes~~ — added
+### T72. Python/TS/JS signature extraction falls back to string split (R4)
 
-**Execute:**
-- ~~`execute_plan` with adjustment pass receiving `prior_results` and `test_results`~~ — added
-- ~~Budget overflow propagation through `execute_plan` / `execute_implement`~~ — added
-- ~~`execute_implement` with `plan` context (orchestrator always passes `plan=part_plan`)~~ — added
-- ~~`validate_plan` on `PlanAdjustment.revised_steps`~~ — added
-- ~~Prompt construction with empty `ContextPackage.files`~~ — added
-- ~~`parse_implement_response` with content containing `</search>` tags (R5)~~ — added
+Three places use `split("\n")[0]` instead of AST structure for signature extraction:
 
-**Patch:**
-- ~~`_atomic_write` directly (platform-sensitive, zero direct tests)~~ — added
-- ~~Rollback failure path~~ — added
-- ~~`apply_edits` exception path (I/O failure during application)~~ — added
-- ~~Empty edits list~~ — added
-- ~~Path traversal~~ — added
-- ~~Non-UTF-8 files~~ — added
-- ~~Unicode content in search/replace~~ — added
-- ~~TOCTOU: file modified between validate and apply~~ — added
+1. `parsers/python_parser.py:230` — module-level variable assignments.
+2. `parsers/python_parser.py:254-256` — fallback when body node not found.
+3. `parsers/ts_js_parser.py:157,166` — variable/arrow function symbols.
 
-**CLI:**
-- ~~`_resolve_budget` and `_resolve_stages` helpers directly~~ — added
-- `cra plan` and `cra solve` success paths (only error paths tested) — deferred (requires live LLM)
+These violate R4 ("use parsed structure, not string heuristics"). Multi-line assignments or
+arrow functions get truncated to their first line. Low impact since these are signatures
+(not source bodies) and the truncation only loses parameter continuation lines.
+
+### T73. Grammatical error in TEST_IMPLEMENT_SYSTEM prompt
+
+`execute/prompts.py:121-122` — "For new test files, use an empty <search></search> is not
+allowed —" is grammatically broken. Should be: "For new test files, empty <search></search>
+is not allowed; instead, use a search string that matches the insertion point context."
+
+### T74. `_topological_sort()` gives unhelpful errors on malformed items
+
+`orchestrator/runner.py:127-155` — If items lack expected attributes, the lambda accessors
+raise `AttributeError` with no context about which item was malformed.
 
 ---
 
-## ~~Test Gaps — Phase 1/2 (from prior review)~~ — COVERED (40 tests added)
+## Deferred Test Gaps
 
-**Critical — tests that miss code paths:**
-- ~~`enrich_repository()` has zero test coverage~~ — added (2 tests: no-indexed-repo raises, skips-already-enriched)
-
-**Missing public API tests:**
-- ~~`get_file_by_id`, `get_symbol_by_id` — no direct test~~ — added (4 tests)
-- ~~`search_symbols_by_name` with LIKE-injection characters~~ — added (4 tests: %, _, \)
-- ~~`search_files_by_metadata` with `module` parameter / multiple filters~~ — added (2 tests)
-- ~~`get_symbol_neighbors` with `kinds` filter~~ — added (2 tests)
-- `get_adapter_for_stage` with an active adapter — deferred (Phase 4)
-- ~~`get_repo_overview` — `domain_counts` and `most_connected_files` not asserted~~ — added (2 tests)
-
-**Missing error path tests:**
-- ~~`ModelRouter.resolve("reasoning")` when reasoning not configured~~ — added
-- ~~`enrich_repository()` with no indexed repo~~ — added (mock-based, no live LLM needed)
-- ~~`_check_git_available` when git is not on PATH~~ — added (2 tests)
-- ~~`extract_git_history` with non-zero returncode~~ — added
-- ~~`LLMClient.complete()` with HTTP error / large system prompt triggering R3 rejection~~ — added (6 tests: HTTP 500, connect error, timeout, large system prompt, ModelConfig validation)
-
-**Missing integration tests:**
-- ~~CLI `index`, `enrich` help~~ — added (2 tests)
-- ~~CLI `init` with existing `.gitignore` containing `.clean_room/`~~ — added (2 tests)
-- ~~`ScopeStage.run()` and `PrecisionStage.run()` wiring~~ — covered via R2 default-deny tests
-
-**Missing edge case tests:**
-- ~~`_resolve_ts_js_baseurl` entirely untested~~ — added (3 tests: no tsconfig, baseUrl+paths, baseUrl only)
-- ~~`expand_scope` with `seed_symbol_ids`~~ — added (3 tests: tier 1 placement, dedup with seed_files, nonexistent symbol)
-- ~~`judge_scope` / `classify_symbols` with LLM returning non-list JSON~~ — covered (invalid verdict test)
-- ~~`_refilter_files` when LLM returns non-list — fallback~~ — added
-- ~~`Assembly with all symbols excluded / multiple detail levels`~~ — added (3 tests: all excluded, multiple files excluded, mixed)
+- `cra plan` and `cra solve` success paths — requires live LLM
+- `get_adapter_for_stage` with an active adapter — Phase 4
+- DB record correctness in orchestrator — tests use MagicMock (functional, not a gap)
 
 ---
 
@@ -316,12 +182,6 @@ git reset on failure (cleaner than file-level rollback), cumulative diff from gi
 instead of string accumulation. The orchestrator currently does file-level patch/rollback
 which is fragile; git gives atomic rollback for free.
 
-### ~~Magic Numbers (from prior review)~~ — DONE
-
-Extracted to named constants with config overrides via `[retrieval]` and `[indexer]`
-sections. Algorithmic caps (max_deps, max_callees, etc.) remain as defaults but are
-overridable per-project. Safety constants (token estimation, batch sizing) stay hardcoded.
-
 ### Scope inheritance across orchestrator checkpoints
 
 Currently each sub-task in the orchestrator runs a fully isolated retrieval pipeline.
@@ -347,11 +207,30 @@ validation errors). Specific checkpoints to consider:
 Needs live testing before design — run the orchestrator on real tasks and observe where
 isolated retrieval makes wrong decisions vs where inheritance would have helped.
 
+### Surface curated DB enrichment metadata in LLM prompts
+
+The enrichment pipeline (`cra enrich`) produces per-file metadata (purpose, module, domain,
+concepts, public_api_surface, complexity_notes) and stores it in `file_metadata`. Docstrings
+are also indexed. None of this reaches any LLM prompt today:
+
+- **Scope stage** queries `file_metadata.concepts` to *find* files, but discards the metadata
+  content — only file paths enter the judgment prompt. The model doesn't know *why* a Tier 4
+  file was included.
+- **Precision stage** shows symbol names, signatures, and call graph edges, but no docstrings
+  or purpose summaries.
+- **Execute stage** (`to_prompt_text()`) renders source code only. No file-level metadata.
+- **Docstrings** are read in context assembly for line-count boundary calculations only — the
+  text is never rendered.
+- **Inline comments**, **commit history** are indexed but completely unused.
+
+This is a large item — blocked until the DB is actually populated on real repos. Once
+`cra enrich` has run, consider:
+1. Adding purpose/domain/concepts to scope judgment prompts (helps relevance decisions).
+2. Adding docstring summaries to precision classification (helps detail-level decisions).
+3. Adding file-level purpose to execute prompts (helps the model understand unfamiliar code).
+4. Surfacing inline TODOs/FIXMEs when task_type is bug_fix.
+
 ### Phase 1 Legacy
 
 **8.1** Parser comment classification differs: Python `^#\s*TODO\b` (anchored) vs TS/JS
 `\bTODO\b` (anywhere). Intentional per language design.
-
-**~~8.2~~ FIXED:** Enrichment skip logic now uses `file_path` (stable across curated DB
-rebuilds). `enrichment_outputs` schema has `file_path TEXT` column with migration for
-existing DBs.
