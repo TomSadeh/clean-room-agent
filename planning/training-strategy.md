@@ -1,6 +1,6 @@
 # LoRA Training Strategy
 
-Per-stage LoRA training targets, deployment architecture, training data sources (bootstrapping + self-improvement + cold-start datasets), distillation strategy, training infrastructure, and self-improvement guardrails.
+Per-stage LoRA training targets, base model full fine-tuning (coding style + role specialization + context window reduction), deployment architecture, training data sources (bootstrapping + self-improvement + cold-start datasets), distillation strategy, training infrastructure, and self-improvement guardrails.
 
 ---
 
@@ -29,7 +29,45 @@ Training data curation must separate examples by base model -- a Qwen3-4B reason
 
 ---
 
-## 2. Per-Stage Model Overrides and Deployment Architecture
+## 2. Base Model Full Fine-Tuning
+
+Before LoRA adapters are trained, each base model undergoes a full fine-tune. This is not optional — it prepares the base for its specific role in the pipeline. The full fine-tune combines three objectives in a single training run, all compatible since they don't conflict:
+
+1. **Coding style** — fail-fast error handling, no defensive patterns, narrow exception clauses, rich contextual error messages. Trained from the fail-fast corpus ([Section 6.7](#67-fail-fast-training-corpus)).
+2. **Role specialization** — bias the base toward its pipeline role (planning, coding, generalist/retrieval). Different base models may receive different data mixes emphasizing their target task distribution.
+3. **Context window reduction** — reduce `max_position_embeddings` and retrain RoPE frequencies to match each role's actual operating range. This is a free rider on the training run that produces compounding gains when LoRAs are stacked on top.
+
+**Per-role context window targets:**
+
+| Role | Actual max context needed | `max_position_embeddings` |
+|------|--------------------------|---------------------------|
+| Task Analysis | ~4-8K (task description + repo metadata) | 8K |
+| Scope / Precision | ~16-32K (candidates + task) | 32K |
+| Execute — Plan | ~32K (full curated context) | 32K |
+| Execute — Code | ~32K (full curated context) | 32K |
+
+**Why context reduction compounds with LoRAs:**
+- Smaller KV cache per layer — the model physically cannot attend beyond the new limit, freeing VRAM permanently.
+- Tighter attention patterns — the model learns to operate within the shorter window rather than hedging for positions it will never see.
+- The freed VRAM goes to larger batch sizes, more concurrent LoRA adapters in vLLM, or reduced swapping.
+- A LoRA fine-tuned on top of a context-optimized base inherits these tighter patterns, producing a more specialized stack than a LoRA on a generic 128-256K base.
+
+**Practical notes:**
+- This is irreversible per base — the model loses long-context capability. Retrain from original weights if the target range needs to change.
+- Shrinking too aggressively (128K → 4K) can degrade quality even on short sequences because the RoPE frequency distribution shifts significantly. 128K → 32K is safe; 128K → 8K should be validated.
+- If multiple roles share the same context target (e.g., Scope, Precision, Execute all at 32K), they can share the same full-fine-tuned base. Task Analysis at 8K gets its own.
+- Unsloth supports full fine-tuning on 24GB VRAM for 3-4B models. Training time is hours, not minutes — but this is a one-time cost per base model release.
+
+**Full-window generalist**: One base model is kept at the original `max_position_embeddings` (128-256K) without context reduction. This model receives the coding style and generalist role fine-tuning but retains the full context window. It serves three purposes that context-reduced specialists cannot:
+1. **Audit** — feed an entire pipeline run's logs into one context window to verify the traceability chain end-to-end. Specialists at 8-32K cannot hold a full run's worth of decisions.
+2. **A/B testing** — compare specialist output against the unrestricted base to validate that context reduction improves (or at least doesn't degrade) quality. Without this baseline the compounding claim is unmeasured.
+3. **Fallback** — if a task exceeds a specialist's reduced window, route to the generalist rather than failing or retraining.
+
+The generalist does not replace specialists in the pipeline — it runs alongside them as infrastructure. It can also serve as the base for future LoRA experiments where the full context range is needed.
+
+---
+
+## 3. Per-Stage Model Overrides and Deployment Architecture
 
 Each pipeline stage can specify a model name override via `[models.overrides]` in config. The stage registry resolves: stage name -> override (if exists) -> role-based default -> base model.
 
@@ -44,7 +82,7 @@ The `[models.overrides]` stage→model mapping stays the same regardless of prov
 
 ---
 
-## 3. Raw DB as Per-Stage Training Corpus
+## 4. Raw DB as Per-Stage Training Corpus
 
 Each stage's training data can come from two sources:
 
@@ -53,24 +91,24 @@ Each stage's training data can come from two sources:
 - linked `task_runs.success` (was the overall task successful?)
 - optionally `retrieval_decisions` (was this specific decision part of a successful run?)
 
-**Synthetic pairs (bootstrapping)**: Generated from external repo commit histories via the bootstrapping pipeline ([Section 5](#5-bootstrapping-from-external-repo-history)). These provide training data before the agent has produced any real runs.
+**Synthetic pairs (bootstrapping)**: Generated from external repo commit histories via the bootstrapping pipeline ([Section 6](#6-bootstrapping-from-external-repo-history)). These provide training data before the agent has produced any real runs.
 
 Both sources produce datasets in the same format and are stored with a `source` field to allow mixing and weighting during training.
 
 ---
 
-## 4. Training Artifact Storage
+## 5. Training Artifact Storage
 
 - Training plans and curated datasets go in raw DB (they're generated outputs, same as enrichment outputs).
 - Adapter metadata (which stage, performance metrics, active/inactive) goes in curated DB (it's verified configuration the pipeline reads at runtime).
 
 ---
 
-## 5. Bootstrapping from External Repo History
+## 6. Bootstrapping from External Repo History
 
 The self-improvement loop has a cold-start problem: Phase 4 training needs quality-signal-rich data, but Phase 3's output quality depends on models that haven't been trained yet. External repos break this dependency.
 
-### 5.1 Data Source
+### 6.1 Data Source
 
 Clone mature, well-tested repos from GitHub. Ideal repos have:
 - Clear commit messages (natural task descriptions).
@@ -82,9 +120,9 @@ Clone mature, well-tested repos from GitHub. Ideal repos have:
 
 **Anti-patterns**: Web frameworks (Django, Flask, FastAPI), HTTP clients (requests, httpx), task queues (Celery), and message brokers look like good candidates — they have clean architecture and sophisticated exception hierarchies — but embed deeply defensive patterns (top-level catch-all handlers, silent fallbacks, `.get()` with defaults everywhere). Any project whose primary job is keeping a long-running process alive will be defensive at its boundaries. Exclude these from the training corpus.
 
-A curated fail-fast repository corpus with specific repo recommendations and an AST-based heuristic scorer for programmatic identification is documented in `research_reviews/fail_fast_research.md`. See also [Section 5.7](#57-fail-fast-training-corpus).
+A curated fail-fast repository corpus with specific repo recommendations and an AST-based heuristic scorer for programmatic identification is documented in `research_reviews/fail_fast_research.md`. See also [Section 6.7](#67-fail-fast-training-corpus).
 
-### 5.2 Commit Filtering Criteria
+### 6.2 Commit Filtering Criteria
 
 **Extraction tool**: PyDriller for commit traversal and diff extraction. **CommitChronicle** (JetBrains Research) provides a reproducible collection pipeline built on PyDriller with deduplication and outlier filtering. The **D3 paper** is the best architectural reference for LLM-powered instruction labeling of code edit sequences at the 1-3B parameter range. Note: no end-to-end commit→training-pair tool exists — expect 1-2 weeks of custom engineering for the full pipeline.
 
@@ -97,7 +135,7 @@ Not every commit is a useful training example. Filter for:
 
 **Message regeneration**: For commits with poor messages but good diffs, use **OpenCommit** or a local Ollama model to regenerate descriptions from diffs. The **OMG paper** (ACM 2024) shows that ReAct prompting with broader software context dramatically improves generated descriptions over diff-only approaches. Apply LLM-as-judge scoring to filter generated descriptions, keeping only high-scoring ones.
 
-### 5.3 Synthetic Pipeline Run Generation
+### 6.3 Synthetic Pipeline Run Generation
 
 From a filtered commit, reverse-engineer what a correct pipeline run *should have* looked like:
 
@@ -115,7 +153,7 @@ From a filtered commit, reverse-engineer what a correct pipeline run *should hav
 
 This is a distinct data curation step from `cra curate-data` (which curates from the agent's own logged runs). It may be implemented as a preprocessing pipeline or as an additional mode.
 
-### 5.4 Quality Signal Mapping
+### 6.4 Quality Signal Mapping
 
 External repo commits provide quality signals analogous to what the self-improvement loop gets from logged runs:
 
@@ -126,7 +164,7 @@ External repo commits provide quality signals analogous to what the self-improve
 | symbol selection correctness | did the diff modify the symbols precision would have selected? |
 | code generation correctness | does the generated diff match the actual commit diff? |
 
-### 5.5 Storage
+### 6.5 Storage
 
 Synthetic training pairs from external repos are stored in the same raw DB tables as self-improvement training data (`training_datasets`, `training_plans`). A `source` field distinguishes them:
 
@@ -135,7 +173,7 @@ Synthetic training pairs from external repos are stored in the same raw DB table
 
 This allows training to mix both data sources as the agent matures.
 
-### 5.6 Cold-Start Datasets
+### 6.6 Cold-Start Datasets
 
 Open datasets that provide immediate training data without commit-history mining:
 
@@ -155,7 +193,7 @@ Open datasets that provide immediate training data without commit-history mining
 
 Both open datasets and commit-history mining complement each other and both depend only on Phase 1. Open datasets provide immediate volume; commit-history mining provides project-specific examples with richer dependency context.
 
-### 5.7 Fail-Fast Training Corpus
+### 6.7 Fail-Fast Training Corpus
 
 Style-targeted training data is a distinct concern from functional-capability training. The code generation LoRA should be biased toward fail-fast error handling (custom exception hierarchies, rich contextual error messages, narrow `except` clauses, no silent failure) to align with the project's coding style principles.
 
@@ -167,11 +205,11 @@ A curated 25-repo corpus spanning 6 domains (parsers/compilers, validation/type 
 
 ---
 
-## 6. Distillation Strategy
+## 7. Distillation Strategy
 
 Per-stage LoRA adapters are trained via teacher-student distillation: large teacher models generate high-quality training examples, which are used to fine-tune the small local models.
 
-### 6.1 Teacher Models
+### 7.1 Teacher Models
 
 | Stage | Target Model | Primary Teacher | Secondary |
 |-------|-------------|----------------|-----------|
@@ -181,7 +219,7 @@ Per-stage LoRA adapters are trained via teacher-student distillation: large teac
 
 **Tokenizer incompatibility**: Qwen3.5 uses a 250K vocabulary vs Qwen3-4B's 150K. This means only response-level SFT (train on teacher's text output), not logit-level distillation (KL divergence on token probabilities). Fallback for logit distillation if needed: Qwen3-235B (same tokenizer family as Qwen3-4B).
 
-### 6.2 Per-Stage Training Configurations
+### 7.2 Per-Stage Training Configurations
 
 | Stage | Technique | Rank | Examples | Time (RTX 4090) |
 |-------|-----------|------|----------|-----------------|
@@ -195,7 +233,7 @@ Per-stage LoRA adapters are trained via teacher-student distillation: large teac
 
 Stage 4 (planning) gets two-phase training because planning has a high-dimensional output space with no ground truth. Phase 1: CoT-SFT on teacher reasoning traces. Phase 2: DPO with plan quality as the preference signal (successful implementation vs failed). Rank 32-64 is recommended — ablation evidence shows r=16 optimal for code generation, and while planning's output space is larger, r=128 appears excessive at sub-7B scale. **Ablate rank early** (compare 32 vs 64 on a held-out evaluation set) before committing.
 
-### 6.3 Training Infrastructure
+### 7.3 Training Infrastructure
 
 **Framework**: **Unsloth** is the primary training framework — 2-5× faster training with 70-80% less VRAM via custom Triton kernels, explicit Qwen2.5-Coder and Qwen3 support with pre-quantized models on HuggingFace, and one-line Ollama/GGUF export. **LLaMA-Factory** is the alternative (Web UI, Qwen3 templates, direct Ollama Modelfile export). Axolotl and raw PEFT/TRL are fallbacks for advanced use cases only.
 
@@ -227,11 +265,11 @@ An 8 GB GPU handles QLoRA on the 3B model at batch size 1. A 24 GB RTX 4090 runs
 2. **Manual merge**: PEFT `merge_and_unload()` → `llama.cpp/convert_hf_to_gguf.py` → Modelfile with `FROM ./model.gguf` → `ollama create`. For Ollama merged-model deployment.
 3. **Adapter-only GGUF**: `llama.cpp/scripts/convert_lora_to_gguf.py` → reference via Ollama `ADAPTER` directive or vLLM `--lora-modules`. For per-request adapter selection.
 
-**Estimated cost**: ~$60-150 total teacher inference API calls. ~2-4 hrs total local GPU training on RTX 4090 (see Section 6.2 for per-stage breakdown).
+**Estimated cost**: ~$60-150 total teacher inference API calls. ~2-4 hrs total local GPU training on RTX 4090 (see Section 7.2 for per-stage breakdown).
 
 ---
 
-## 7. Self-Improvement Guardrails
+## 8. Self-Improvement Guardrails
 
 Empirical limits on self-improvement at sub-7B scale, informed by recent research:
 
@@ -260,7 +298,7 @@ Empirical limits on self-improvement at sub-7B scale, informed by recent researc
 
 ---
 
-## 8. Evidence Base and Advanced Techniques
+## 9. Evidence Base and Advanced Techniques
 
 **Per-stage LoRA validation**: IBM Granite Intrinsics Library demonstrated 6 LoRA adapters for RAG pipeline stages with no cross-stage degradation, plus **Activated LoRA (aLoRA)** achieving 20-35× speedup per adapter invocation via KV cache reuse. META-LoRA showed benefits more pronounced for small models. **R-LoRA** (EMNLP 2025 Findings) explicitly tested on **Qwen2.5-3B**, showing multi-head LoRA outperforms vanilla LoRA on multi-task benchmarks — direct evidence for our target model. MTL-LoRA found task-specific transformation matrices consistently outperform both single-task and vanilla multi-task LoRA, mitigating the "seesaw effect." Note: no published project has done per-stage LoRA for coding agent pipelines — this is genuinely novel.
 
