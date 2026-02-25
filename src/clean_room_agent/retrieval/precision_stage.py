@@ -4,7 +4,10 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.budget import estimate_tokens_conservative
+from clean_room_agent.retrieval.batch_judgment import (
+    calculate_judgment_batch_size,
+    validate_judgment_batch,
+)
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 from clean_room_agent.retrieval.utils import parse_json_response
@@ -110,10 +113,11 @@ def classify_symbols(
 
     # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
-    system_overhead = estimate_tokens_conservative(PRECISION_SYSTEM)
-    header_overhead = estimate_tokens_conservative(task_header)
-    available = llm.config.context_window - llm.config.max_tokens - system_overhead - header_overhead
-    batch_size = max(1, available // _TOKENS_PER_SYMBOL)
+    batch_size = calculate_judgment_batch_size(
+        PRECISION_SYSTEM, task_header,
+        llm.config.context_window, llm.config.max_tokens,
+        _TOKENS_PER_SYMBOL,
+    )
 
     # Classify in batches, merge results
     class_map: dict[tuple[str, str, int], dict] = {}
@@ -131,12 +135,10 @@ def classify_symbols(
 
         prompt = task_header + "\n".join(symbol_lines)
 
-        actual_tokens = estimate_tokens_conservative(prompt) + system_overhead
-        if actual_tokens > llm.config.context_window - llm.config.max_tokens:
-            raise ValueError(
-                f"R3: precision batch prompt too large ({actual_tokens} tokens, "
-                f"available {llm.config.context_window - llm.config.max_tokens})"
-            )
+        validate_judgment_batch(
+            prompt, PRECISION_SYSTEM, "precision",
+            llm.config.context_window, llm.config.max_tokens,
+        )
 
         response = llm.complete(prompt, system=PRECISION_SYSTEM)
         classifications = parse_json_response(response.text, "precision")

@@ -158,8 +158,9 @@ class TestSinglePassDBRecords:
         source = inspect.getsource(runner.run_single_pass)
         assert "insert_orchestrator_run" in source
         assert "insert_orchestrator_pass" in source
-        assert "insert_session_archive" in source
-        assert "update_orchestrator_run" in source
+        # Session archive now delegated to _archive_session helper (T80)
+        assert "_archive_session" in source
+        assert "_finalize_orchestrator_run" in source
 
     def test_has_session_db(self):
         """Verify the function creates and archives a session DB."""
@@ -301,12 +302,18 @@ class TestFetchoneNullChecks:
     """T71: All .fetchone() calls should have null checks."""
 
     def test_null_checks_present(self):
-        """Verify all task_run fetchone sites have None checks."""
+        """Verify task_run fetchone null check exists (T80: consolidated in _get_task_run_id)."""
         import inspect
         from clean_room_agent.orchestrator import runner
 
-        source = inspect.getsource(runner)
-        # Count occurrences of the null check pattern
-        count = source.count("if tr_row is None:")
+        # T80 extracted null check into _get_task_run_id helper.
+        # Verify the helper exists and contains the null check.
+        helper_source = inspect.getsource(runner._get_task_run_id)
+        assert "is None" in helper_source
+        assert "RuntimeError" in helper_source
+
+        # Verify all 7 call sites use the helper
+        full_source = inspect.getsource(runner)
+        count = full_source.count("_get_task_run_id(")
         # 7 sites: meta_plan, part_plan, impl, adjust, test_plan, test_impl, single_pass
-        assert count >= 7, f"Expected at least 7 null checks, found {count}"
+        assert count >= 7, f"Expected at least 7 _get_task_run_id calls, found {count}"

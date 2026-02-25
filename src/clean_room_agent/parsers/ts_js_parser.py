@@ -13,20 +13,17 @@ from clean_room_agent.parsers.base import (
     ExtractedImport,
     ExtractedSymbol,
     ParseResult,
+    classify_comment_content,
+    extract_body_signature,
+    find_enclosing_symbol_by_line,
 )
 
 TS_LANGUAGE = Language(tsts.language_typescript())
 TSX_LANGUAGE = Language(tsts.language_tsx())
 JS_LANGUAGE = Language(tsjs.language())
 
-_COMMENT_TAGS = {
-    "todo": re.compile(r"\bTODO\b", re.IGNORECASE),
-    "fixme": re.compile(r"\bFIXME\b", re.IGNORECASE),
-    "hack": re.compile(r"\bHACK\b", re.IGNORECASE),
-    "note": re.compile(r"\bNOTE\b", re.IGNORECASE),
-}
-_BUG_REF = re.compile(r"(?:#\d+|GH-\d+|BUG-\d+)", re.IGNORECASE)
-_RATIONALE = re.compile(r"\b(?:because|reason:|rationale:|why:)\b", re.IGNORECASE)
+# Comment classification now uses shared patterns from base.py (T84).
+# JSDoc-specific pattern stays here.
 _JSDOC_TAG = re.compile(r"@(\w+)\s*(.*)")
 
 
@@ -128,19 +125,8 @@ class TSJSParser:
         return None
 
     def _extract_signature(self, node, source: bytes) -> str:
-        """Extract the declaration header (everything before the body).
-
-        R4/T12: Uses tree-sitter AST body node position to extract the full
-        signature including multi-line parameter lists.
-        """
-        body = node.child_by_field_name("body")
-        if body is not None:
-            header_bytes = source[node.start_byte:body.start_byte]
-            header = header_bytes.decode("utf-8", errors="replace").rstrip()
-            return header
-        # Fallback for nodes without a body (e.g., type aliases, interfaces w/o body)
-        text = node.text.decode("utf-8", errors="replace")
-        return text.split("\n")[0].strip()
+        """Extract the declaration header (R4/T12). Delegates to shared utility."""
+        return extract_body_signature(node, source)
 
     def _extract_variable_symbols(self, node, source: bytes, out: list):
         """Extract arrow functions and other variable declarations."""
@@ -248,8 +234,7 @@ class TSJSParser:
                     content = text[2:-2].strip()
                 else:
                     content = text.strip()
-                kind = _classify_comment(content)
-                is_rationale = bool(_RATIONALE.search(content))
+                kind, is_rationale = classify_comment_content(content)
                 sym_name = _find_enclosing_symbol(line, symbols)
                 comments.append(ExtractedComment(
                     line=line,
@@ -389,22 +374,11 @@ def _iter_tree(node):
 
 
 def _classify_comment(content: str) -> str:
-    """Classify a comment by its content."""
-    for tag, pattern in _COMMENT_TAGS.items():
-        if pattern.search(content):
-            return tag
-    if _BUG_REF.search(content):
-        return "bug_ref"
-    if _RATIONALE.search(content):
-        return "rationale"
-    return "general"
+    """Classify a comment by its content. Delegates to shared utility (T84)."""
+    kind, _ = classify_comment_content(content)
+    return kind
 
 
 def _find_enclosing_symbol(line: int, symbols: list[ExtractedSymbol]) -> str | None:
-    """Find the innermost symbol enclosing the given line."""
-    best = None
-    for sym in symbols:
-        if sym.start_line <= line <= sym.end_line:
-            if best is None or (sym.end_line - sym.start_line) < (best.end_line - best.start_line):
-                best = sym
-    return best.name if best else None
+    """Find the innermost symbol enclosing the given line. Delegates to shared utility (T84)."""
+    return find_enclosing_symbol_by_line(line, symbols)

@@ -60,119 +60,26 @@ def assemble_context(
     # R5: account for task/intent header overhead before file assembly
     task_header = f"# Task\n{context.task.raw_task}\n"
     intent_header = f"# Intent\n{context.task.intent_summary}\n" if context.task.intent_summary else ""
-    header_tokens = estimate_tokens(task_header + intent_header)
-    tracker.consume(header_tokens)
+    tracker.consume(estimate_tokens(task_header + intent_header))
 
-    # 1. Group classified symbols by file_id, determine highest detail level per file
-    file_detail: dict[int, str] = {}  # file_id -> best detail level
-    file_symbols: dict[int, list[str]] = {}  # file_id -> symbol names
+    # Phase 1: classify files by detail level
+    file_detail, file_symbols, file_info, sorted_fids, classify_decisions = (
+        _classify_file_inclusions(context)
+    )
+    assembly_decisions.extend(classify_decisions)
 
-    for cs in context.classified_symbols:
-        if cs.detail_level == "excluded":
-            continue
-        current = file_detail.get(cs.file_id)
-        if current is None or _DETAIL_PRIORITY.get(cs.detail_level, 99) < _DETAIL_PRIORITY.get(current, 99):
-            file_detail[cs.file_id] = cs.detail_level
-        file_symbols.setdefault(cs.file_id, []).append(cs.name)
-
-    # 2. Files in included_file_ids but with no classified symbols -> default exclude (R2)
-    for fid in context.included_file_ids:
-        if fid not in file_detail:
-            logger.warning("R2: file_id=%d has no classified symbols — excluding from context", fid)
-            assembly_decisions.append({
-                "file_id": fid, "included": False,
-                "reason": "R2: no classified symbols — default exclude",
-            })
-
-    # 3. Build file info from scoped_files
-    file_info: dict[int, dict] = {}
-    for sf in context.scoped_files:
-        if sf.file_id in file_detail and sf.relevance == "relevant":
-            file_info[sf.file_id] = {
-                "path": sf.path,
-                "language": sf.language,
-                "tier": sf.tier,
-            }
-
-    # 4. Sort by detail level priority, then tier
-    sorted_fids = sorted(
-        file_info.keys(),
-        key=lambda fid: (
-            _DETAIL_PRIORITY.get(file_detail.get(fid, "type_context"), 99),
-            file_info[fid]["tier"],
-        ),
+    # Phase 2: read from disk and render at classified levels
+    rendered_files = _read_and_render_files(
+        sorted_fids, file_info, file_detail, repo_path, context, kb,
     )
 
-    # 5. Read and render all files at classified levels (first pass)
-    rendered_files: list[dict] = []
-    for fid in sorted_fids:
-        info = file_info[fid]
-        detail = file_detail.get(fid, "type_context")
-        abs_path = repo_path / info["path"]
+    # Phase 3: trim to budget (refilter, priority drop, group integrity)
+    rendered_files, trim_decisions = _trim_to_budget(
+        rendered_files, tracker, context, llm,
+    )
+    assembly_decisions.extend(trim_decisions)
 
-        try:
-            source = abs_path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, IOError) as e:
-            if detail == "primary":
-                raise RuntimeError(
-                    f"R1: cannot read primary file '{info['path']}': {e}. "
-                    f"Primary files must be readable — fix the file or re-run retrieval."
-                ) from e
-            logger.warning("Cannot read %s: %s — skipping (detail=%s)", info["path"], e, detail)
-            continue
-
-        rendered = _render_at_level(source, detail, fid, context, kb=kb)
-        content_tokens = estimate_tokens(rendered)
-        # R5: framing overhead is part of the budget
-        framing_tokens = estimate_framing_tokens(info["path"], info["language"], detail)
-        tokens = content_tokens + framing_tokens
-
-        rendered_files.append({
-            "file_id": fid,
-            "path": info["path"],
-            "language": info["language"],
-            "detail": detail,
-            "rendered": rendered,
-            "tokens": tokens,
-        })
-
-    # 6. Check if total fits in budget
-    total_tokens = sum(rf["tokens"] for rf in rendered_files)
-
-    if total_tokens > tracker.remaining:
-        # Budget exceeded — re-filter
-        files_before = list(rendered_files)
-        if llm is not None:
-            keep_paths = _refilter_files(rendered_files, tracker.remaining, context, llm)
-            rendered_files = [rf for rf in rendered_files if rf["path"] in keep_paths]
-            for rf in files_before:
-                if rf["path"] not in keep_paths:
-                    assembly_decisions.append({
-                        "file_id": rf["file_id"], "included": False,
-                        "reason": f"refilter: LLM excluded (detail={rf['detail']}, tokens={rf['tokens']})",
-                    })
-        else:
-            # No LLM fallback: drop entire files in reverse priority order
-            logger.warning("R1: budget exceeded (%d > %d) without LLM — dropping files by priority",
-                           total_tokens, tracker.remaining)
-            rendered_files = _drop_by_priority(rendered_files, tracker.remaining)
-            kept_ids = {rf["file_id"] for rf in rendered_files}
-            for rf in files_before:
-                if rf["file_id"] not in kept_ids:
-                    assembly_decisions.append({
-                        "file_id": rf["file_id"], "included": False,
-                        "reason": f"priority_drop: budget exceeded (detail={rf['detail']}, tokens={rf['tokens']})",
-                    })
-
-    # 6b. Group integrity: partial groups → drop entire group (R2 default-deny)
-    rendered_files, group_drops = _enforce_group_integrity(rendered_files, context.classified_symbols)
-    for drop in group_drops:
-        assembly_decisions.append({
-            "file_id": drop["file_id"], "included": False,
-            "reason": drop["reason"],
-        })
-
-    # 7. Build final file contents, consuming budget
+    # Phase 4: build final file contents, consuming budget
     file_contents: list[FileContent] = []
     for rf in rendered_files:
         if not tracker.can_fit(rf["tokens"]):
@@ -197,7 +104,6 @@ def assemble_context(
             included_symbols=file_symbols.get(rf["file_id"], []),
         ))
 
-    # Record included files as positive decisions
     for fc in file_contents:
         assembly_decisions.append({
             "file_id": fc.file_id, "included": True,
@@ -216,6 +122,148 @@ def assemble_context(
             "assembly_decisions": assembly_decisions,
         },
     )
+
+
+def _classify_file_inclusions(
+    context: StageContext,
+) -> tuple[dict[int, str], dict[int, list[str]], dict[int, dict], list[int], list[dict]]:
+    """Classify files by detail level from classified symbols and scoped files.
+
+    Returns:
+        (file_detail, file_symbols, file_info, sorted_fids, assembly_decisions)
+    """
+    file_detail: dict[int, str] = {}
+    file_symbols: dict[int, list[str]] = {}
+    decisions: list[dict] = []
+
+    for cs in context.classified_symbols:
+        if cs.detail_level == "excluded":
+            continue
+        current = file_detail.get(cs.file_id)
+        if current is None or _DETAIL_PRIORITY.get(cs.detail_level, 99) < _DETAIL_PRIORITY.get(current, 99):
+            file_detail[cs.file_id] = cs.detail_level
+        file_symbols.setdefault(cs.file_id, []).append(cs.name)
+
+    # R2: files with no classified symbols → default exclude
+    for fid in context.included_file_ids:
+        if fid not in file_detail:
+            logger.warning("R2: file_id=%d has no classified symbols — excluding from context", fid)
+            decisions.append({
+                "file_id": fid, "included": False,
+                "reason": "R2: no classified symbols — default exclude",
+            })
+
+    file_info: dict[int, dict] = {}
+    for sf in context.scoped_files:
+        if sf.file_id in file_detail and sf.relevance == "relevant":
+            file_info[sf.file_id] = {
+                "path": sf.path,
+                "language": sf.language,
+                "tier": sf.tier,
+            }
+
+    sorted_fids = sorted(
+        file_info.keys(),
+        key=lambda fid: (
+            _DETAIL_PRIORITY.get(file_detail.get(fid, "type_context"), 99),
+            file_info[fid]["tier"],
+        ),
+    )
+
+    return file_detail, file_symbols, file_info, sorted_fids, decisions
+
+
+def _read_and_render_files(
+    sorted_fids: list[int],
+    file_info: dict[int, dict],
+    file_detail: dict[int, str],
+    repo_path: Path,
+    context: StageContext,
+    kb: "KnowledgeBase | None",
+) -> list[dict]:
+    """Read files from disk and render at classified detail levels.
+
+    Raises RuntimeError for unreadable primary files (R1).
+    """
+    rendered_files: list[dict] = []
+    for fid in sorted_fids:
+        info = file_info[fid]
+        detail = file_detail.get(fid, "type_context")
+        abs_path = repo_path / info["path"]
+
+        try:
+            source = abs_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, IOError) as e:
+            if detail == "primary":
+                raise RuntimeError(
+                    f"R1: cannot read primary file '{info['path']}': {e}. "
+                    f"Primary files must be readable — fix the file or re-run retrieval."
+                ) from e
+            logger.warning("Cannot read %s: %s — skipping (detail=%s)", info["path"], e, detail)
+            continue
+
+        rendered = _render_at_level(source, detail, fid, context, kb=kb)
+        content_tokens = estimate_tokens(rendered)
+        framing_tokens = estimate_framing_tokens(info["path"], info["language"], detail)
+
+        rendered_files.append({
+            "file_id": fid,
+            "path": info["path"],
+            "language": info["language"],
+            "detail": detail,
+            "rendered": rendered,
+            "tokens": content_tokens + framing_tokens,
+        })
+
+    return rendered_files
+
+
+def _trim_to_budget(
+    rendered_files: list[dict],
+    tracker: BudgetTracker,
+    context: StageContext,
+    llm: LLMClient | None,
+) -> tuple[list[dict], list[dict]]:
+    """Trim rendered files to fit within the budget tracker's remaining capacity.
+
+    Applies refilter (LLM) or priority drop, then group integrity enforcement.
+    Returns (trimmed_files, assembly_decisions).
+    """
+    decisions: list[dict] = []
+    total_tokens = sum(rf["tokens"] for rf in rendered_files)
+
+    if total_tokens > tracker.remaining:
+        files_before = list(rendered_files)
+        if llm is not None:
+            keep_paths = _refilter_files(rendered_files, tracker.remaining, context, llm)
+            rendered_files = [rf for rf in rendered_files if rf["path"] in keep_paths]
+            for rf in files_before:
+                if rf["path"] not in keep_paths:
+                    decisions.append({
+                        "file_id": rf["file_id"], "included": False,
+                        "reason": f"refilter: LLM excluded (detail={rf['detail']}, tokens={rf['tokens']})",
+                    })
+        else:
+            logger.warning("R1: budget exceeded (%d > %d) without LLM — dropping files by priority",
+                           total_tokens, tracker.remaining)
+            rendered_files = _drop_by_priority(rendered_files, tracker.remaining)
+            kept_ids = {rf["file_id"] for rf in rendered_files}
+            for rf in files_before:
+                if rf["file_id"] not in kept_ids:
+                    decisions.append({
+                        "file_id": rf["file_id"], "included": False,
+                        "reason": f"priority_drop: budget exceeded (detail={rf['detail']}, tokens={rf['tokens']})",
+                    })
+
+    # Group integrity: partial groups → drop entire group (R2 default-deny)
+    rendered_files, group_drops = _enforce_group_integrity(rendered_files, context.classified_symbols)
+    for drop in group_drops:
+        decisions.append({
+            "file_id": drop["file_id"], "included": False,
+            "reason": drop["reason"],
+        })
+
+    return rendered_files, decisions
 
 
 def _enforce_group_integrity(

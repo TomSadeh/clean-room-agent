@@ -4,7 +4,10 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.budget import estimate_tokens_conservative
+from clean_room_agent.retrieval.batch_judgment import (
+    calculate_judgment_batch_size,
+    validate_judgment_batch,
+)
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 from clean_room_agent.retrieval.utils import parse_json_response
@@ -199,10 +202,11 @@ def judge_scope(
 
     # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
-    system_overhead = estimate_tokens_conservative(SCOPE_JUDGMENT_SYSTEM)
-    header_overhead = estimate_tokens_conservative(task_header)
-    available = llm.config.context_window - llm.config.max_tokens - system_overhead - header_overhead
-    batch_size = max(1, available // _TOKENS_PER_SCOPE_CANDIDATE)
+    batch_size = calculate_judgment_batch_size(
+        SCOPE_JUDGMENT_SYSTEM, task_header,
+        llm.config.context_window, llm.config.max_tokens,
+        _TOKENS_PER_SCOPE_CANDIDATE,
+    )
 
     # Judge in batches
     verdict_map: dict[str, dict] = {}
@@ -214,12 +218,10 @@ def judge_scope(
         ]
         prompt = task_header + "\n".join(candidate_lines)
 
-        actual_tokens = estimate_tokens_conservative(prompt) + system_overhead
-        if actual_tokens > llm.config.context_window - llm.config.max_tokens:
-            raise ValueError(
-                f"R3: scope batch prompt too large ({actual_tokens} tokens, "
-                f"available {llm.config.context_window - llm.config.max_tokens})"
-            )
+        validate_judgment_batch(
+            prompt, SCOPE_JUDGMENT_SYSTEM, "scope",
+            llm.config.context_window, llm.config.max_tokens,
+        )
 
         response = llm.complete(prompt, system=SCOPE_JUDGMENT_SYSTEM)
         judgments = parse_json_response(response.text, "scope judgment")

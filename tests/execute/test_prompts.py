@@ -13,11 +13,11 @@ from clean_room_agent.execute.prompts import (
     IMPLEMENT_SYSTEM,
     META_PLAN_SYSTEM,
     PART_PLAN_SYSTEM,
+    SYSTEM_PROMPTS,
     TEST_IMPLEMENT_SYSTEM,
     TEST_PLAN_SYSTEM,
     build_implement_prompt,
     build_plan_prompt,
-    build_test_implement_prompt,
 )
 from clean_room_agent.llm.client import ModelConfig
 from clean_room_agent.retrieval.dataclasses import (
@@ -261,8 +261,9 @@ class TestBuildPlanPromptTestPlan:
 class TestBuildTestImplementPrompt:
     def test_basic(self, context_package, model_config):
         step = PlanStep(id="t1", description="Test hello endpoint")
-        system, user = build_test_implement_prompt(
-            context_package, step, model_config=model_config,
+        system, user = build_implement_prompt(
+            context_package, step,
+            pass_type="test_implement", model_config=model_config,
         )
         assert system == TEST_IMPLEMENT_SYSTEM
         assert "t1" in user
@@ -276,9 +277,10 @@ class TestBuildTestImplementPrompt:
             steps=[step, PlanStep(id="t2", description="Test step 2")],
             rationale="r",
         )
-        _, user = build_test_implement_prompt(
-            context_package, step, model_config=model_config,
-            test_plan=test_plan,
+        _, user = build_implement_prompt(
+            context_package, step,
+            pass_type="test_implement", model_config=model_config,
+            plan=test_plan,
         )
         assert "<plan_constraints>" in user
         assert "Test coverage for p1" in user
@@ -286,8 +288,9 @@ class TestBuildTestImplementPrompt:
 
     def test_with_cumulative_diff(self, context_package, model_config):
         step = PlanStep(id="t1", description="d")
-        _, user = build_test_implement_prompt(
-            context_package, step, model_config=model_config,
+        _, user = build_implement_prompt(
+            context_package, step,
+            pass_type="test_implement", model_config=model_config,
             cumulative_diff="diff content",
         )
         assert "<prior_changes>" in user
@@ -299,8 +302,9 @@ class TestBuildTestImplementPrompt:
             test_output="ImportError",
             failing_tests=["test_bar"],
         )
-        _, user = build_test_implement_prompt(
-            context_package, step, model_config=model_config,
+        _, user = build_implement_prompt(
+            context_package, step,
+            pass_type="test_implement", model_config=model_config,
             failure_context=failure,
         )
         assert "<test_failures>" in user
@@ -309,6 +313,20 @@ class TestBuildTestImplementPrompt:
     def test_budget_overflow_raises(self, context_package, small_model_config):
         step = PlanStep(id="t1", description="d" * 5000)
         with pytest.raises(ValueError, match="Prompt too large"):
-            build_test_implement_prompt(
-                context_package, step, model_config=small_model_config,
+            build_implement_prompt(
+                context_package, step,
+                pass_type="test_implement", model_config=small_model_config,
             )
+
+    def test_unknown_implement_pass_type_raises(self, context_package, model_config):
+        step = PlanStep(id="s1", description="d")
+        with pytest.raises(ValueError, match="Unknown implement pass_type"):
+            build_implement_prompt(
+                context_package, step,
+                pass_type="invalid", model_config=model_config,
+            )
+
+    def test_system_prompts_dict_complete(self):
+        """SYSTEM_PROMPTS dict covers all expected pass types."""
+        expected = {"meta_plan", "part_plan", "test_plan", "adjustment", "implement", "test_implement"}
+        assert set(SYSTEM_PROMPTS.keys()) == expected

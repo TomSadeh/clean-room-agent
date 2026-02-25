@@ -11,7 +11,7 @@ from clean_room_agent.execute.dataclasses import (
     ValidationResult,
 )
 from clean_room_agent.execute.parsers import parse_implement_response
-from clean_room_agent.execute.prompts import build_implement_prompt, build_test_implement_prompt
+from clean_room_agent.execute.prompts import build_implement_prompt
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.retrieval.dataclasses import ContextPackage
 
@@ -73,10 +73,11 @@ def execute_test_implement(
     Returns StepResult(success=False) on parse failure (does not raise).
     model_config is derived from llm.config.
     """
-    system, user = build_test_implement_prompt(
+    system, user = build_implement_prompt(
         context, step,
+        pass_type="test_implement",
         model_config=llm.config,
-        test_plan=test_plan,
+        plan=test_plan,
         cumulative_diff=cumulative_diff,
         failure_context=failure_context,
     )

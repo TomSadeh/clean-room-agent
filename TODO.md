@@ -109,9 +109,107 @@ same as now. Most files fit easily, and the enrichment model gets complete infor
 
 ---
 
-## P2 — Medium (All Complete)
+## P2 — Medium
 
-All P2 items (T62-T71) fixed. Tests in `tests/test_p2_fixes.py`.
+T62-T71 fixed. Tests in `tests/test_p2_fixes.py`.
+
+### T77. Silent exception swallowing in orchestrator temp file cleanup
+
+`orchestrator/runner.py:~788` — `except Exception: pass` on temp file cleanup. Violates
+fail-hard coding style. Cleanup failures are invisible — orphaned temp files accumulate
+with no diagnostic trail.
+
+Fix: log the exception with `logger.warning()` before continuing. Cleanup is best-effort,
+but failures must be visible.
+
+### T78. Enrichment JSON silently stores None for missing required fields
+
+`llm/enrichment.py:116-140` — Parsed enrichment JSON uses `.get()` for fields like
+`purpose`, `module`, `domain`, `concepts`. If the LLM returns incomplete JSON, `None` is
+silently stored to the database. The enrichment appears successful but is degraded.
+
+Fix: validate required fields are present before storing. Raise on missing required keys
+so the failure is visible and the file can be retried.
+
+### T79. route_stages() accepts bare LLMClient — logging not enforced
+
+`retrieval/routing.py` — `route_stages()` parameter is typed as `LLMClient`. Pipeline
+passes `LoggedLLMClient` (so logging works today), but the function signature doesn't
+enforce it. A direct caller with a bare client silently loses the audit trail.
+
+Fix: type the parameter as `LoggedLLMClient` or add a runtime isinstance check.
+
+---
+
+## Refactoring (All Complete)
+
+T80-T86 fixed. 929 tests.
+
+### T80. Decompose run_orchestrator() — 590-line monolithic function
+
+`orchestrator/runner.py` — `run_orchestrator()` is ~590 lines with 4+ nesting levels,
+mixing 7 distinct phases: meta_plan, part iteration, code steps, testing, validation,
+adjustment, and cleanup. The `_get_task_run_id()` pattern (fetchone + None check) repeats
+7 times.
+
+Fix: extract phase functions: `_run_meta_plan_phase()`, `_run_part_code_steps()`,
+`_run_testing_phase()`, `_run_adjustment_pass()`. Extract `_get_task_run_id()` helper
+for the repeated DB lookup pattern.
+
+### T81. Extract dataclass serialization boilerplate
+
+`execute/dataclasses.py` (464 lines) — 37 boilerplate `to_dict()` / `from_dict()` methods
+across 10+ dataclasses following identical patterns. Each class manually maps fields to/from
+dicts with hand-written validation.
+
+Fix: create a `SerializableMixin` that auto-generates `to_dict()` and `from_dict()` from
+`__dataclass_fields__`, with a `_REQUIRED_FIELDS` class variable for validation.
+
+### T82. Extract generic DB insert helper
+
+`db/raw_queries.py` (294 lines) + `db/queries.py` (271 lines) — 25+ insert functions
+following identical pattern: generate timestamp, build INSERT SQL, execute, return lastrowid.
+`datetime.now(timezone.utc).isoformat()` repeated 15+ times.
+
+Fix: create `_insert_row(conn, table, columns, values, include_timestamp=True)` helper.
+Each `insert_*()` becomes a thin wrapper calling the helper.
+
+### T83. Unify retrieval stage LLM batching logic
+
+`retrieval/scope_stage.py`, `precision_stage.py`, `similarity_stage.py` — all three stages
+duplicate: token estimation → batch sizing → LLM judgment call → JSON parse → R2
+default-deny merge. ~100 lines of duplicated logic across 3 files.
+
+Fix: extract a shared batching utility (function or class) that handles token estimation,
+batch splitting, LLM calling, and R2 default-deny. Each stage defines its candidate format,
+prompt template, and parse function.
+
+### T84. Extract BaseLanguageParser for shared parser logic
+
+`parsers/python_parser.py` (595 lines) + `parsers/ts_js_parser.py` (410 lines) — duplicated
+comment classification regexes, node text extraction, and symbol extraction patterns.
+Both classify TODO/FIXME/HACK/NOTE/BUG comments with similar regex sets.
+
+Fix: create `BaseLanguageParser` with shared `_classify_comment()`, `_node_text()`, and
+common regex patterns. Language-specific parsers inherit and define their AST walk logic.
+
+### T85. Extract prompt builder for execute prompts
+
+`execute/prompts.py` (326 lines) — 6 hardcoded system prompt constants with repetitive
+structure (all start "You are Jane, ..."). `build_plan_prompt()` and
+`build_implement_prompt()` share ~50% of logic (task header + context + optional sections +
+budget validation).
+
+Fix: data-driven prompt structure + shared `_build_user_prompt()` helper. System prompts
+defined as structured data, assembled by a common builder.
+
+### T86. Decompose assemble_context()
+
+`retrieval/context_assembly.py` (439 lines) — `assemble_context()` is 177 lines with 3+
+nesting levels mixing file classification, rendering, and budget enforcement.
+
+Fix: extract phases: `_classify_files()`, `_render_files()`, `_enforce_budget()`,
+`_build_package()`.
 
 ---
 

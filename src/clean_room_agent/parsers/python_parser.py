@@ -12,41 +12,27 @@ from clean_room_agent.parsers.base import (
     ExtractedReference,
     ExtractedSymbol,
     ParseResult,
+    classify_comment_content,
+    extract_body_signature,
+    find_enclosing_symbol_by_line,
+    node_text,
 )
 
 PY_LANGUAGE = Language(tspython.language())
 
-# Comment classification patterns
-_TODO_RE = re.compile(r"^#\s*TODO\b", re.IGNORECASE)
-_FIXME_RE = re.compile(r"^#\s*FIXME\b", re.IGNORECASE)
-_HACK_RE = re.compile(r"^#\s*HACK\b", re.IGNORECASE)
-_NOTE_RE = re.compile(r"^#\s*NOTE\b", re.IGNORECASE)
-_BUG_REF_RE = re.compile(r"#\d+|GH-\d+|BUG-\d+", re.IGNORECASE)
-_RATIONALE_RE = re.compile(
-    r"\bbecause\b|\breason\s*:|\brationale\s*:|\bwhy\s*:|\bnote\s*:", re.IGNORECASE
-)
-
-# Docstring format detection patterns
+# Docstring format detection patterns (Python-specific)
 _GOOGLE_RE = re.compile(r"^\s*(Args|Returns|Raises|Yields|Attributes|Examples)\s*:", re.MULTILINE)
 _NUMPY_RE = re.compile(r"^\s*-{3,}\s*$", re.MULTILINE)
 _SPHINX_RE = re.compile(r":(param|type|returns|rtype|raises)\s")
 
 
 def _classify_comment(text: str) -> tuple[str, bool]:
-    """Return (kind, is_rationale) for a comment string."""
-    if _TODO_RE.search(text):
-        return "todo", False
-    if _FIXME_RE.search(text):
-        return "fixme", False
-    if _HACK_RE.search(text):
-        return "hack", False
-    if _NOTE_RE.search(text):
-        return "note", False
-    if _BUG_REF_RE.search(text):
-        return "bug_ref", False
-    if _RATIONALE_RE.search(text):
-        return "rationale", True
-    return "general", False
+    """Return (kind, is_rationale) for a Python comment string.
+
+    Strips the leading '#' before delegating to shared classification.
+    """
+    stripped = re.sub(r"^#\s*", "", text)
+    return classify_comment_content(stripped)
 
 
 def _detect_docstring_format(content: str) -> str:
@@ -60,9 +46,8 @@ def _detect_docstring_format(content: str) -> str:
     return "plain"
 
 
-def _node_text(node, source: bytes) -> str:
-    """Extract the text of a tree-sitter node from the source bytes."""
-    return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+# Keep local alias for backward compat with _node_text(node, source) call pattern
+_node_text = node_text
 
 
 def _strip_docstring_quotes(text: str) -> str:
@@ -78,15 +63,12 @@ def _find_enclosing_symbol(
 ) -> str | None:
     """Find the innermost symbol that encloses the given node's start line."""
     line = node.start_point[0] + 1  # tree-sitter uses 0-based lines
-    best: str | None = None
-    best_span = float("inf")
-    for name, start, end in symbol_ranges:
-        if start <= line <= end:
-            span = end - start
-            if span < best_span:
-                best = name
-                best_span = span
-    return best
+    # Convert tuples to ExtractedSymbol for shared utility
+    symbols = [
+        ExtractedSymbol(name=name, kind="", start_line=start, end_line=end)
+        for name, start, end in symbol_ranges
+    ]
+    return find_enclosing_symbol_by_line(line, symbols)
 
 
 class PythonParser:
@@ -238,22 +220,8 @@ class PythonParser:
                     ))
 
     def _extract_definition_line(self, node, source: bytes) -> str:
-        """Extract the definition header (everything before the body).
-
-        R4/T12: Uses tree-sitter AST body node position to extract the full
-        signature including multi-line parameter lists, not just the first line.
-        """
-        body = node.child_by_field_name("body")
-        if body is not None:
-            # Extract from node start to body start, trim trailing whitespace and colon
-            header_bytes = source[node.start_byte:body.start_byte]
-            header = header_bytes.decode("utf-8", errors="replace").rstrip()
-            # Normalize internal whitespace: collapse multiple spaces/newlines
-            # but preserve the structure
-            return header
-        # Fallback for nodes without a body field
-        full_text = _node_text(node, source)
-        return full_text.split("\n")[0]
+        """Extract the definition header (R4/T12). Delegates to shared utility."""
+        return extract_body_signature(node, source)
 
     def _extract_module_docstring(
         self,

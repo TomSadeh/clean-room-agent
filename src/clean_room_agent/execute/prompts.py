@@ -123,6 +123,24 @@ TEST_IMPLEMENT_SYSTEM = (
     "- For new code insertion, use a search string that matches the insertion point context"
 )
 
+# -- Data-driven prompt lookup (T85) --
+
+SYSTEM_PROMPTS: dict[str, str] = {
+    "meta_plan": META_PLAN_SYSTEM,
+    "part_plan": PART_PLAN_SYSTEM,
+    "test_plan": TEST_PLAN_SYSTEM,
+    "adjustment": ADJUSTMENT_SYSTEM,
+    "implement": IMPLEMENT_SYSTEM,
+    "test_implement": TEST_IMPLEMENT_SYSTEM,
+}
+
+_PLAN_PASS_TYPES = frozenset({"meta_plan", "part_plan", "test_plan", "adjustment"})
+
+_IMPLEMENT_STEP_HEADERS: dict[str, str] = {
+    "implement": "Step to Implement",
+    "test_implement": "Test Step to Implement",
+}
+
 
 def _estimate_prompt_tokens(system: str, user: str) -> int:
     """Conservative token estimate for a (system, user) prompt pair."""
@@ -161,16 +179,9 @@ def build_plan_prompt(
     Raises:
         ValueError: If pass_type is unknown or prompt exceeds budget.
     """
-    if pass_type == "meta_plan":
-        system = META_PLAN_SYSTEM
-    elif pass_type == "part_plan":
-        system = PART_PLAN_SYSTEM
-    elif pass_type == "test_plan":
-        system = TEST_PLAN_SYSTEM
-    elif pass_type == "adjustment":
-        system = ADJUSTMENT_SYSTEM
-    else:
+    if pass_type not in _PLAN_PASS_TYPES:
         raise ValueError(f"Unknown plan pass_type: {pass_type!r}")
+    system = SYSTEM_PROMPTS[pass_type]
 
     # Build user prompt
     # Note: ContextPackage.to_prompt_text() already includes # Task section.
@@ -267,55 +278,31 @@ def build_implement_prompt(
     context: ContextPackage,
     step: PlanStep,
     *,
+    pass_type: str = "implement",
     model_config: ModelConfig,
     plan: PartPlan | None = None,
     cumulative_diff: str | None = None,
     failure_context: ValidationResult | None = None,
 ) -> tuple[str, str]:
-    """Build system and user prompts for an implement pass.
+    """Build system and user prompts for an implement or test-implement pass.
+
+    Args:
+        pass_type: "implement" or "test_implement".
 
     Returns:
         (system_prompt, user_prompt)
 
     Raises:
-        ValueError: If prompt exceeds budget.
+        ValueError: If pass_type is unknown or prompt exceeds budget.
     """
-    system = IMPLEMENT_SYSTEM
+    if pass_type not in _IMPLEMENT_STEP_HEADERS:
+        raise ValueError(f"Unknown implement pass_type: {pass_type!r}")
+
+    system = SYSTEM_PROMPTS[pass_type]
     user = _assemble_implement_user_prompt(
         context, step,
+        step_header=_IMPLEMENT_STEP_HEADERS[pass_type],
         plan=plan,
-        cumulative_diff=cumulative_diff,
-        failure_context=failure_context,
-    )
-
-    # R3: Budget validation
-    _validate_prompt_budget(system, user, model_config)
-
-    return system, user
-
-
-def build_test_implement_prompt(
-    context: ContextPackage,
-    step: PlanStep,
-    *,
-    model_config: ModelConfig,
-    test_plan: PartPlan | None = None,
-    cumulative_diff: str | None = None,
-    failure_context: ValidationResult | None = None,
-) -> tuple[str, str]:
-    """Build system and user prompts for a test implement pass.
-
-    Returns:
-        (system_prompt, user_prompt)
-
-    Raises:
-        ValueError: If prompt exceeds budget.
-    """
-    system = TEST_IMPLEMENT_SYSTEM
-    user = _assemble_implement_user_prompt(
-        context, step,
-        step_header="Test Step to Implement",
-        plan=test_plan,
         cumulative_diff=cumulative_diff,
         failure_context=failure_context,
     )

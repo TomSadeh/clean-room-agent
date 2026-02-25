@@ -91,8 +91,8 @@ def _flush_llm_calls(
     Returns (total_prompt_tokens, total_completion_tokens, total_latency_ms).
     Token counts are None if any individual call reported None.
     """
-    total_prompt: int | None = 0
-    total_completion: int | None = 0
+    prompt_tokens_list: list[int | None] = []
+    completion_tokens_list: list[int | None] = []
     total_latency = 0
     for call in llm.flush():
         insert_retrieval_llm_call(
@@ -103,17 +103,15 @@ def _flush_llm_calls(
             stage_name=stage_name,
             system_prompt=call["system"],
         )
-        if call["prompt_tokens"] is not None and total_prompt is not None:
-            total_prompt += call["prompt_tokens"]
-        else:
-            total_prompt = None
-        if call["completion_tokens"] is not None and total_completion is not None:
-            total_completion += call["completion_tokens"]
-        else:
-            total_completion = None
+        prompt_tokens_list.append(call["prompt_tokens"])
+        completion_tokens_list.append(call["completion_tokens"])
         total_latency += call["elapsed_ms"]
     raw_conn.commit()
-    return total_prompt, total_completion, total_latency
+    return (
+        _accumulate_optional_tokens(prompt_tokens_list),
+        _accumulate_optional_tokens(completion_tokens_list),
+        total_latency,
+    )
 
 
 def _write_temp_plan(affected_files: list[str], tmp_dir: Path) -> Path:
@@ -122,6 +120,65 @@ def _write_temp_plan(affected_files: list[str], tmp_dir: Path) -> Path:
     tmp_file = tmp_dir / f"plan_{uuid.uuid4().hex[:8]}.json"
     tmp_file.write_text(json.dumps(plan_data), encoding="utf-8")
     return tmp_file
+
+
+def _get_task_run_id(conn, task_id: str) -> int:
+    """Look up task_run_id from raw DB. Raises RuntimeError if not found."""
+    row = conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"task_run not found for {task_id}")
+    return row["id"]
+
+
+def _build_diff_text(edits) -> str:
+    """Build unified-diff-style text from a list of PatchEdit objects."""
+    parts = []
+    for edit in edits:
+        parts.append(f"--- {edit.file_path}\n-{edit.search}\n+{edit.replacement}\n")
+    return "".join(parts)
+
+
+def _accumulate_optional_tokens(values: list[int | None]) -> int | None:
+    """Sum token counts, returning None if any individual value is None."""
+    total = 0
+    for v in values:
+        if v is None:
+            return None
+        total += v
+    return total
+
+
+def _archive_session(raw_conn, repo_path: Path, task_id: str) -> None:
+    """Archive session DB to raw DB and delete the file."""
+    session_file = _db_path(repo_path, "session", task_id)
+    if session_file.exists():
+        try:
+            session_blob = session_file.read_bytes()
+            insert_session_archive(raw_conn, task_id, session_blob)
+            raw_conn.commit()
+            session_file.unlink()
+            logger.debug("Archived and removed session DB for task %s", task_id)
+        except Exception as archive_err:
+            logger.warning("Failed to archive session DB: %s", archive_err)
+
+
+def _finalize_orchestrator_run(
+    raw_conn, orch_run_id: int, status: str, **kwargs,
+) -> None:
+    """Update orchestrator run record with final status. Logs warning on failure."""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        update_orchestrator_run(
+            raw_conn, orch_run_id,
+            status=status,
+            completed_at=now,
+            **kwargs,
+        )
+        raw_conn.commit()
+    except Exception as e:
+        logger.warning("Failed to update orchestrator run: %s", e)
 
 
 def _topological_sort(items, get_id, get_deps):
@@ -226,13 +283,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
             )
             _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
 
-        # Get task_run_id for the meta_plan pass
-        tr_row = raw_conn.execute(
-            "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
-        ).fetchone()
-        if tr_row is None:
-            raise RuntimeError(f"task_run not found for {sub_task_id}")
-        meta_task_run_id = tr_row["id"]
+        meta_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
         insert_orchestrator_pass(
             raw_conn, orch_run_id, meta_task_run_id, "meta_plan", sequence_order,
@@ -284,12 +335,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     )
                     _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
 
-                tr_row = raw_conn.execute(
-                    "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
-                ).fetchone()
-                if tr_row is None:
-                    raise RuntimeError(f"task_run not found for {sub_task_id}")
-                part_task_run_id = tr_row["id"]
+                part_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
                 insert_orchestrator_pass(
                     raw_conn, orch_run_id, part_task_run_id, "part_plan", sequence_order,
@@ -363,12 +409,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                 "execute_implement", "execute_implement",
                             )
 
-                        tr_row = raw_conn.execute(
-                            "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
-                        ).fetchone()
-                        if tr_row is None:
-                            raise RuntimeError(f"task_run not found for {sub_task_id}")
-                        impl_task_run_id = tr_row["id"]
+                        impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
                         # Log run_attempt with actual token counts (T40) and
                         # patch_applied=False; updated after apply succeeds (T27).
@@ -429,12 +470,10 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
 
                 # Update state
                 if step_success and step_result:
-                    diff_text = ""
-                    for edit in step_result.edits:
-                        diff_text += f"--- {edit.file_path}\n"
-                        diff_text += f"-{edit.search}\n"
-                        diff_text += f"+{edit.replacement}\n"
-                    cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
+                    cumulative_diff = _cap_cumulative_diff(
+                        cumulative_diff + _build_diff_text(step_result.edits),
+                        max_chars=max_diff_chars,
+                    )
                     set_state(session_conn, f"step_result:{part.id}:{step.id}", {
                         "success": True, "edits_count": len(step_result.edits),
                     })
@@ -474,12 +513,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             )
                             _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
 
-                        tr_row = raw_conn.execute(
-                            "SELECT id FROM task_runs WHERE task_id = ?", (adj_sub_task_id,)
-                        ).fetchone()
-                        if tr_row is None:
-                            raise RuntimeError(f"task_run not found for {adj_sub_task_id}")
-                        adj_task_run_id = tr_row["id"]
+                        adj_task_run_id = _get_task_run_id(raw_conn, adj_sub_task_id)
 
                         insert_orchestrator_pass(
                             raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
@@ -552,12 +586,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         )
                         _flush_llm_calls(tp_llm, raw_conn, test_plan_task_id, "execute_plan", "execute_plan")
 
-                    tr_row = raw_conn.execute(
-                        "SELECT id FROM task_runs WHERE task_id = ?", (test_plan_task_id,)
-                    ).fetchone()
-                    if tr_row is None:
-                        raise RuntimeError(f"task_run not found for {test_plan_task_id}")
-                    tp_task_run_id = tr_row["id"]
+                    tp_task_run_id = _get_task_run_id(raw_conn, test_plan_task_id)
 
                     insert_orchestrator_pass(
                         raw_conn, orch_run_id, tp_task_run_id, "test_plan", sequence_order,
@@ -619,12 +648,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                     "execute_test_implement", "execute_test_implement",
                                 )
 
-                            tr_row = raw_conn.execute(
-                                "SELECT id FROM task_runs WHERE task_id = ?", (test_sub_task_id,)
-                            ).fetchone()
-                            if tr_row is None:
-                                raise RuntimeError(f"task_run not found for {test_sub_task_id}")
-                            ti_task_run_id = tr_row["id"]
+                            ti_task_run_id = _get_task_run_id(raw_conn, test_sub_task_id)
 
                             attempt_id = insert_run_attempt(
                                 raw_conn, ti_task_run_id, test_attempt + 1,
@@ -678,12 +702,10 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     step_final_outcomes[step_key] = test_step_success
 
                     if test_step_success and test_step_result:
-                        diff_text = ""
-                        for edit in test_step_result.edits:
-                            diff_text += f"--- {edit.file_path}\n"
-                            diff_text += f"-{edit.search}\n"
-                            diff_text += f"+{edit.replacement}\n"
-                        cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
+                        cumulative_diff = _cap_cumulative_diff(
+                            cumulative_diff + _build_diff_text(test_step_result.edits),
+                            max_chars=max_diff_chars,
+                        )
                         set_state(session_conn, f"test_step_result:{part.id}:{test_step.id}", {
                             "success": True, "edits_count": len(test_step_result.edits),
                         })
@@ -743,20 +765,12 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
         status = "failed"
 
     finally:
-        # Update orchestrator run
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            update_orchestrator_run(
-                raw_conn, orch_run_id,
-                total_steps=all_steps_count,
-                parts_completed=parts_completed,
-                steps_completed=steps_completed,
-                status=status,
-                completed_at=now,
-            )
-            raw_conn.commit()
-        except Exception as e:
-            logger.warning("Failed to update orchestrator run: %s", e)
+        _finalize_orchestrator_run(
+            raw_conn, orch_run_id, status,
+            total_steps=all_steps_count,
+            parts_completed=parts_completed,
+            steps_completed=steps_completed,
+        )
 
         set_state(session_conn, "cumulative_diff", cumulative_diff)
         set_state(session_conn, "orchestrator_progress", {
@@ -764,29 +778,17 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
             "steps_completed": steps_completed,
             "status": status,
         })
-
         session_conn.close()
 
-        # Archive session DB to raw, then delete the file (T41)
-        session_file = _db_path(repo_path, "session", task_id)
-        if session_file.exists():
-            try:
-                session_blob = session_file.read_bytes()
-                insert_session_archive(raw_conn, task_id, session_blob)
-                raw_conn.commit()
-                session_file.unlink()
-                logger.debug("Archived and removed session DB for task %s", task_id)
-            except Exception as archive_err:
-                logger.warning("Failed to archive session DB: %s", archive_err)
-
+        _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
 
-        # Cleanup temp files
+        # Cleanup temp files (T77: log failures instead of silent swallow)
         try:
             for f in tmp_dir.glob("plan_*.json"):
                 f.unlink()
-        except Exception:
-            pass
+        except Exception as cleanup_err:
+            logger.warning("Failed to clean up temp files in %s: %s", tmp_dir, cleanup_err)
 
     return OrchestratorResult(
         task_id=task_id,
@@ -876,12 +878,7 @@ def run_single_pass(
                     "execute_implement", "execute_implement",
                 )
 
-            tr_row = raw_conn.execute(
-                "SELECT id FROM task_runs WHERE task_id = ?", (sub_task_id,)
-            ).fetchone()
-            if tr_row is None:
-                raise RuntimeError(f"task_run not found for {sub_task_id}")
-            impl_task_run_id = tr_row["id"]
+            impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
             # Log run_attempt with actual token counts (T40) and
             # patch_applied=False; updated after apply succeeds (T27).
@@ -923,10 +920,10 @@ def run_single_pass(
             last_validation = run_validation(repo_path, config, raw_conn, attempt_id)
 
             if last_validation.success:
-                diff_text = ""
-                for edit in step_result.edits:
-                    diff_text += f"--- {edit.file_path}\n-{edit.search}\n+{edit.replacement}\n"
-                cumulative_diff = _cap_cumulative_diff(cumulative_diff + diff_text, max_chars=max_diff_chars)
+                cumulative_diff = _cap_cumulative_diff(
+                    cumulative_diff + _build_diff_text(step_result.edits),
+                    max_chars=max_diff_chars,
+                )
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=True, artifact=step_result,
@@ -946,23 +943,14 @@ def run_single_pass(
         status = "failed"
 
     finally:
-        # T67: Update orchestrator_run with final status
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            update_orchestrator_run(
-                raw_conn, orch_run_id,
-                total_parts=1,
-                total_steps=1,
-                parts_completed=1 if steps_completed else 0,
-                steps_completed=steps_completed,
-                status=status,
-                completed_at=now,
-            )
-            raw_conn.commit()
-        except Exception as e:
-            logger.warning("Failed to update orchestrator run: %s", e)
+        _finalize_orchestrator_run(
+            raw_conn, orch_run_id, status,
+            total_parts=1,
+            total_steps=1,
+            parts_completed=1 if steps_completed else 0,
+            steps_completed=steps_completed,
+        )
 
-        # T67: Save session state and archive
         set_state(session_conn, "cumulative_diff", cumulative_diff)
         set_state(session_conn, "orchestrator_progress", {
             "parts_completed": 1 if steps_completed else 0,
@@ -971,17 +959,7 @@ def run_single_pass(
         })
         session_conn.close()
 
-        session_file = _db_path(repo_path, "session", task_id)
-        if session_file.exists():
-            try:
-                session_blob = session_file.read_bytes()
-                insert_session_archive(raw_conn, task_id, session_blob)
-                raw_conn.commit()
-                session_file.unlink()
-                logger.debug("Archived and removed session DB for task %s", task_id)
-            except Exception as archive_err:
-                logger.warning("Failed to archive session DB: %s", archive_err)
-
+        _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
 
     return OrchestratorResult(

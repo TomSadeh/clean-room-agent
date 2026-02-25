@@ -4,9 +4,29 @@ import sqlite3
 from datetime import datetime, timezone
 
 
+def _now() -> str:
+    """UTC timestamp in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _insert_row(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: list[str],
+    values: list,
+) -> int:
+    """Insert a row and return lastrowid."""
+    placeholders = ", ".join(["?"] * len(values))
+    cursor = conn.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+        values,
+    )
+    return cursor.lastrowid
+
+
 def upsert_repo(conn: sqlite3.Connection, path: str, remote_url: str | None) -> int:
     """Insert or update a repo. Returns the repo id."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now()
     row = conn.execute("SELECT id FROM repos WHERE path = ?", (path,)).fetchone()
     if row:
         conn.execute(
@@ -14,11 +34,10 @@ def upsert_repo(conn: sqlite3.Connection, path: str, remote_url: str | None) -> 
             (remote_url, now, row["id"]),
         )
         return row["id"]
-    cursor = conn.execute(
-        "INSERT INTO repos (path, remote_url, indexed_at) VALUES (?, ?, ?)",
-        (path, remote_url, now),
+    return _insert_row(conn, "repos",
+        ["path", "remote_url", "indexed_at"],
+        [path, remote_url, now],
     )
-    return cursor.lastrowid
 
 
 def upsert_file(
@@ -58,12 +77,10 @@ def insert_symbol(
     parent_symbol_id: int | None = None,
 ) -> int:
     """Insert a symbol. Returns the symbol id."""
-    cursor = conn.execute(
-        "INSERT INTO symbols (file_id, name, kind, start_line, end_line, signature, parent_symbol_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (file_id, name, kind, start_line, end_line, signature, parent_symbol_id),
+    return _insert_row(conn, "symbols",
+        ["file_id", "name", "kind", "start_line", "end_line", "signature", "parent_symbol_id"],
+        [file_id, name, kind, start_line, end_line, signature, parent_symbol_id],
     )
-    return cursor.lastrowid
 
 
 def insert_docstring(
@@ -75,12 +92,10 @@ def insert_docstring(
     symbol_id: int | None = None,
 ) -> int:
     """Insert a docstring. Returns the docstring id."""
-    cursor = conn.execute(
-        "INSERT INTO docstrings (symbol_id, file_id, content, format, parsed_fields) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (symbol_id, file_id, content, format_, parsed_fields),
+    return _insert_row(conn, "docstrings",
+        ["symbol_id", "file_id", "content", "format", "parsed_fields"],
+        [symbol_id, file_id, content, format_, parsed_fields],
     )
-    return cursor.lastrowid
 
 
 def insert_inline_comment(
@@ -93,12 +108,10 @@ def insert_inline_comment(
     symbol_id: int | None = None,
 ) -> int:
     """Insert an inline comment. Returns the comment id."""
-    cursor = conn.execute(
-        "INSERT INTO inline_comments (file_id, symbol_id, line, content, kind, is_rationale) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (file_id, symbol_id, line, content, kind, int(is_rationale)),
+    return _insert_row(conn, "inline_comments",
+        ["file_id", "symbol_id", "line", "content", "kind", "is_rationale"],
+        [file_id, symbol_id, line, content, kind, int(is_rationale)],
     )
-    return cursor.lastrowid
 
 
 def insert_dependency(
@@ -108,11 +121,10 @@ def insert_dependency(
     kind: str,
 ) -> int:
     """Insert a file-level dependency edge. Returns the dependency id."""
-    cursor = conn.execute(
-        "INSERT INTO dependencies (source_file_id, target_file_id, kind) VALUES (?, ?, ?)",
-        (source_file_id, target_file_id, kind),
+    return _insert_row(conn, "dependencies",
+        ["source_file_id", "target_file_id", "kind"],
+        [source_file_id, target_file_id, kind],
     )
-    return cursor.lastrowid
 
 
 def insert_symbol_reference(
@@ -122,12 +134,10 @@ def insert_symbol_reference(
     reference_kind: str,
 ) -> int:
     """Insert a symbol-level reference edge. Returns the reference id."""
-    cursor = conn.execute(
-        "INSERT INTO symbol_references (caller_symbol_id, callee_symbol_id, reference_kind) "
-        "VALUES (?, ?, ?)",
-        (caller_symbol_id, callee_symbol_id, reference_kind),
+    return _insert_row(conn, "symbol_references",
+        ["caller_symbol_id", "callee_symbol_id", "reference_kind"],
+        [caller_symbol_id, callee_symbol_id, reference_kind],
     )
-    return cursor.lastrowid
 
 
 def insert_commit(

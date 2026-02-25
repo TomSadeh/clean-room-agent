@@ -4,6 +4,26 @@ import sqlite3
 from datetime import datetime, timezone
 
 
+def _now() -> str:
+    """UTC timestamp in ISO format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _insert_row(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: list[str],
+    values: list,
+) -> int:
+    """Insert a row and return lastrowid. Caller is responsible for timestamp."""
+    placeholders = ", ".join(["?"] * len(values))
+    cursor = conn.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+        values,
+    )
+    return cursor.lastrowid
+
+
 def insert_index_run(
     conn: sqlite3.Connection,
     repo_path: str,
@@ -13,13 +33,10 @@ def insert_index_run(
     status: str,
 ) -> int:
     """Log an indexing run to the raw DB. Returns the run id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO index_runs (repo_path, files_scanned, files_changed, duration_ms, status, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (repo_path, files_scanned, files_changed, duration_ms, status, now),
+    return _insert_row(conn, "index_runs",
+        ["repo_path", "files_scanned", "files_changed", "duration_ms", "status", "timestamp"],
+        [repo_path, files_scanned, files_changed, duration_ms, status, _now()],
     )
-    return cursor.lastrowid
 
 
 def insert_retrieval_llm_call(
@@ -36,16 +53,12 @@ def insert_retrieval_llm_call(
     system_prompt: str | None = None,
 ) -> int:
     """Log a retrieval LLM call to the raw DB. Returns the call id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO retrieval_llm_calls "
-        "(task_id, call_type, stage_name, model, system_prompt, prompt, response, "
-        "prompt_tokens, completion_tokens, latency_ms, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, call_type, stage_name, model, system_prompt, prompt, response,
-         prompt_tokens, completion_tokens, latency_ms, now),
+    return _insert_row(conn, "retrieval_llm_calls",
+        ["task_id", "call_type", "stage_name", "model", "system_prompt", "prompt",
+         "response", "prompt_tokens", "completion_tokens", "latency_ms", "timestamp"],
+        [task_id, call_type, stage_name, model, system_prompt, prompt,
+         response, prompt_tokens, completion_tokens, latency_ms, _now()],
     )
-    return cursor.lastrowid
 
 
 def insert_retrieval_decision(
@@ -60,14 +73,12 @@ def insert_retrieval_decision(
     detail_level: str | None = None,
 ) -> int:
     """Log a retrieval file or symbol decision. Returns the decision id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO retrieval_decisions "
-        "(task_id, stage, file_id, symbol_id, detail_level, tier, included, reason, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, stage, file_id, symbol_id, detail_level, tier, int(included), reason, now),
+    return _insert_row(conn, "retrieval_decisions",
+        ["task_id", "stage", "file_id", "symbol_id", "detail_level",
+         "tier", "included", "reason", "timestamp"],
+        [task_id, stage, file_id, symbol_id, detail_level,
+         tier, int(included), reason, _now()],
     )
-    return cursor.lastrowid
 
 
 def insert_task_run(
@@ -82,16 +93,12 @@ def insert_task_run(
     plan_artifact: str | None = None,
 ) -> int:
     """Log a task run to the raw DB. Returns the task_run id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO task_runs "
-        "(task_id, repo_path, mode, execute_model, context_window, reserved_tokens, "
-        "stages, plan_artifact, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, repo_path, mode, execute_model, context_window,
-         reserved_tokens, stages, plan_artifact, now),
+    return _insert_row(conn, "task_runs",
+        ["task_id", "repo_path", "mode", "execute_model", "context_window",
+         "reserved_tokens", "stages", "plan_artifact", "timestamp"],
+        [task_id, repo_path, mode, execute_model, context_window,
+         reserved_tokens, stages, plan_artifact, _now()],
     )
-    return cursor.lastrowid
 
 
 def update_task_run(
@@ -119,13 +126,10 @@ def insert_session_archive(
     session_blob: bytes,
 ) -> int:
     """Archive a session DB blob to the raw DB. Returns the archive id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO session_archives (task_id, session_blob, archived_at) "
-        "VALUES (?, ?, ?)",
-        (task_id, session_blob, now),
+    return _insert_row(conn, "session_archives",
+        ["task_id", "session_blob", "archived_at"],
+        [task_id, session_blob, _now()],
     )
-    return cursor.lastrowid
 
 
 def insert_run_attempt(
@@ -139,16 +143,12 @@ def insert_run_attempt(
     patch_applied: bool,
 ) -> int:
     """Log a run attempt to the raw DB. Returns the attempt id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO run_attempts "
-        "(task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms, "
-        "raw_response, patch_applied, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_run_id, attempt, prompt_tokens, completion_tokens, latency_ms,
-         raw_response, int(patch_applied), now),
+    return _insert_row(conn, "run_attempts",
+        ["task_run_id", "attempt", "prompt_tokens", "completion_tokens",
+         "latency_ms", "raw_response", "patch_applied", "timestamp"],
+        [task_run_id, attempt, prompt_tokens, completion_tokens,
+         latency_ms, raw_response, int(patch_applied), _now()],
     )
-    return cursor.lastrowid
 
 
 def update_run_attempt_patch(conn: sqlite3.Connection, attempt_id: int, patch_applied: bool) -> None:
@@ -169,13 +169,12 @@ def insert_validation_result(
     failing_tests: str | None = None,
 ) -> int:
     """Log a validation result to the raw DB. Returns the result id."""
-    cursor = conn.execute(
-        "INSERT INTO validation_results "
-        "(attempt_id, success, test_output, lint_output, type_check_output, failing_tests) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (attempt_id, int(success), test_output, lint_output, type_check_output, failing_tests),
+    return _insert_row(conn, "validation_results",
+        ["attempt_id", "success", "test_output", "lint_output",
+         "type_check_output", "failing_tests"],
+        [attempt_id, int(success), test_output, lint_output,
+         type_check_output, failing_tests],
     )
-    return cursor.lastrowid
 
 
 def insert_orchestrator_run(
@@ -185,14 +184,10 @@ def insert_orchestrator_run(
     task_description: str,
 ) -> int:
     """Log an orchestrator run to the raw DB. Returns the run id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO orchestrator_runs "
-        "(task_id, repo_path, task_description, status, timestamp) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (task_id, repo_path, task_description, "running", now),
+    return _insert_row(conn, "orchestrator_runs",
+        ["task_id", "repo_path", "task_description", "status", "timestamp"],
+        [task_id, repo_path, task_description, "running", _now()],
     )
-    return cursor.lastrowid
 
 
 def update_orchestrator_run(
@@ -249,16 +244,12 @@ def insert_orchestrator_pass(
     step_id: str | None = None,
 ) -> int:
     """Log an orchestrator pass to the raw DB. Returns the pass id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO orchestrator_passes "
-        "(orchestrator_run_id, task_run_id, pass_type, part_id, step_id, "
-        "sequence_order, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (orchestrator_run_id, task_run_id, pass_type, part_id, step_id,
-         sequence_order, now),
+    return _insert_row(conn, "orchestrator_passes",
+        ["orchestrator_run_id", "task_run_id", "pass_type", "part_id",
+         "step_id", "sequence_order", "timestamp"],
+        [orchestrator_run_id, task_run_id, pass_type, part_id,
+         step_id, sequence_order, _now()],
     )
-    return cursor.lastrowid
 
 
 def insert_enrichment_output(
@@ -279,16 +270,11 @@ def insert_enrichment_output(
     file_path: str | None = None,
 ) -> int:
     """Log an enrichment output to the raw DB. Returns the output id."""
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
-        "INSERT INTO enrichment_outputs "
-        "(task_id, file_id, file_path, model, purpose, module, domain, concepts, public_api_surface, "
-        "complexity_notes, system_prompt, raw_prompt, raw_response, promoted, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            task_id, file_id, file_path, model, purpose, module, domain, concepts,
-            public_api_surface, complexity_notes, system_prompt, raw_prompt, raw_response,
-            int(promoted), now,
-        ),
+    return _insert_row(conn, "enrichment_outputs",
+        ["task_id", "file_id", "file_path", "model", "purpose", "module",
+         "domain", "concepts", "public_api_surface", "complexity_notes",
+         "system_prompt", "raw_prompt", "raw_response", "promoted", "timestamp"],
+        [task_id, file_id, file_path, model, purpose, module,
+         domain, concepts, public_api_surface, complexity_notes,
+         system_prompt, raw_prompt, raw_response, int(promoted), _now()],
     )
-    return cursor.lastrowid

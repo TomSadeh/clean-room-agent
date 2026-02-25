@@ -104,6 +104,15 @@ def enrich_repository(
                 logger.error("Enrichment failed for %s: %s", file_path, e)
                 raise
 
+            # T78: validate required fields before storing
+            _REQUIRED_ENRICHMENT_FIELDS = ("purpose", "module", "domain", "concepts")
+            for field in _REQUIRED_ENRICHMENT_FIELDS:
+                if field not in parsed:
+                    raise ValueError(
+                        f"Enrichment JSON for {file_path} missing required field '{field}'. "
+                        f"Got keys: {sorted(parsed.keys())}"
+                    )
+
             # Write to raw DB first (audit trail — not rebuildable from cra index).
             # T17: curated DB writes second — rebuildable from cra index + cra enrich.
             # A crash between commits may leave curated stale, but raw preserves the record.
@@ -113,10 +122,10 @@ def enrich_repository(
                 model=model_config.model,
                 raw_prompt=prompt,
                 raw_response=response.text,
-                purpose=parsed.get("purpose"),
-                module=parsed.get("module"),
-                domain=parsed.get("domain"),
-                concepts=json.dumps(parsed.get("concepts", [])),
+                purpose=parsed["purpose"],
+                module=parsed["module"],
+                domain=parsed["domain"],
+                concepts=json.dumps(parsed["concepts"]),
                 public_api_surface=json.dumps(parsed.get("public_api_surface", [])),
                 complexity_notes=parsed.get("complexity_notes"),
                 promoted=promote,
@@ -131,10 +140,10 @@ def enrich_repository(
                 upsert_file_metadata(
                     curated_conn,
                     file_id=file_id,
-                    purpose=parsed.get("purpose"),
-                    module=parsed.get("module"),
-                    domain=parsed.get("domain"),
-                    concepts=json.dumps(parsed.get("concepts", [])),
+                    purpose=parsed["purpose"],
+                    module=parsed["module"],
+                    domain=parsed["domain"],
+                    concepts=json.dumps(parsed["concepts"]),
                     public_api_surface=json.dumps(parsed.get("public_api_surface", [])),
                     complexity_notes=parsed.get("complexity_notes"),
                 )

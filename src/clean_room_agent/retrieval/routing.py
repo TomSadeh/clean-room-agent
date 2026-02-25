@@ -1,6 +1,6 @@
 """Stage routing: LLM-based selection of which retrieval stages to run."""
 
-from clean_room_agent.llm.client import LLMClient
+from clean_room_agent.llm.client import LLMClient, LoggedLLMClient
 from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.dataclasses import TaskQuery
 from clean_room_agent.retrieval.utils import parse_json_response
@@ -65,9 +65,21 @@ def route_stages(
 ) -> tuple[list[str], str]:
     """Select which retrieval stages to run via LLM.
 
+    Args:
+        llm: Must be a LoggedLLMClient (or wrapper around one) so that the
+             routing decision is recorded in the raw DB audit trail.
+
     Returns (selected_stage_names, reasoning). Empty list is valid (0 stages).
     Raises ValueError if LLM returns unparseable response or unknown stage names.
     """
+    # T79: Enforce that the LLM client supports audit logging.
+    # The caller must pass a client with flush() capability (LoggedLLMClient or
+    # a wrapper like EnvironmentLLMClient that delegates to one).
+    if not hasattr(llm, "flush"):
+        raise TypeError(
+            f"route_stages() requires a logging-capable LLM client (with flush()), "
+            f"got {type(llm).__name__}"
+        )
     prompt = build_routing_prompt(task_query, available_stages)
 
     input_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(ROUTING_SYSTEM)
