@@ -361,6 +361,7 @@ def plan(task, repo_path, stages, output, trace_flag, trace_output, verbose):
                             call["elapsed_ms"],
                             stage_name="execute_plan",
                             system_prompt=call["system"],
+                            thinking=call.get("thinking"),
                         )
                     raw_conn.commit()
                 finally:

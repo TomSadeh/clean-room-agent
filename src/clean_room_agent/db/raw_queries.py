@@ -51,13 +51,16 @@ def insert_retrieval_llm_call(
     latency_ms: int,
     stage_name: str | None = None,
     system_prompt: str | None = None,
+    thinking: str | None = None,
 ) -> int:
     """Log a retrieval LLM call to the raw DB. Returns the call id."""
     return _insert_row(conn, "retrieval_llm_calls",
         ["task_id", "call_type", "stage_name", "model", "system_prompt", "prompt",
-         "response", "prompt_tokens", "completion_tokens", "latency_ms", "timestamp"],
+         "response", "prompt_tokens", "completion_tokens", "latency_ms",
+         "thinking", "timestamp"],
         [task_id, call_type, stage_name, model, system_prompt, prompt,
-         response, prompt_tokens, completion_tokens, latency_ms, _now()],
+         response, prompt_tokens, completion_tokens, latency_ms,
+         thinking, _now()],
     )
 
 
@@ -207,6 +210,7 @@ def update_orchestrator_run(
     steps_completed: int | None = None,
     status: str | None = None,
     completed_at: str | None = None,
+    error_message: str | None = None,
 ) -> None:
     """Update an orchestrator run with progress/completion data."""
     sets = []
@@ -229,6 +233,9 @@ def update_orchestrator_run(
     if completed_at is not None:
         sets.append("completed_at = ?")
         params.append(completed_at)
+    if error_message is not None:
+        sets.append("error_message = ?")
+        params.append(error_message)
     if not sets:
         raise ValueError("update_orchestrator_run called with no fields to update")
     params.append(run_id)
@@ -243,7 +250,7 @@ def update_orchestrator_run(
 def insert_orchestrator_pass(
     conn: sqlite3.Connection,
     orchestrator_run_id: int,
-    task_run_id: int,
+    task_run_id: int | None,
     pass_type: str,
     sequence_order: int,
     *,

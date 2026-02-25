@@ -185,6 +185,7 @@ def run_pipeline(
                         call["elapsed_ms"],
                         stage_name="task_analysis",
                         system_prompt=call["system"],
+                        thinking=call.get("thinking"),
                     )
                 raw_conn.commit()
 
@@ -223,6 +224,7 @@ def run_pipeline(
                     call["elapsed_ms"],
                     stage_name="stage_routing",
                     system_prompt=call["system"],
+                    thinking=call.get("thinking"),
                 )
             raw_conn.commit()
 
@@ -287,6 +289,7 @@ def run_pipeline(
                         call["elapsed_ms"],
                         stage_name=stage_name,
                         system_prompt=call["system"],
+                        thinking=call.get("thinking"),
                     )
 
             # Log decisions only for files new or changed in this stage
@@ -336,6 +339,7 @@ def run_pipeline(
                     call["elapsed_ms"],
                     stage_name="assembly",
                     system_prompt=call["system"],
+                    thinking=call.get("thinking"),
                 )
 
         # Log assembly-stage file decisions to raw DB

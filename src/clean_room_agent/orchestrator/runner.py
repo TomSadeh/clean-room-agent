@@ -21,6 +21,7 @@ from clean_room_agent.db.raw_queries import (
     insert_retrieval_llm_call,
     insert_run_attempt,
     insert_session_archive,
+    insert_task_run,
     update_orchestrator_run,
     update_run_attempt_patch,
 )
@@ -106,6 +107,7 @@ def _flush_llm_calls(
             call["elapsed_ms"],
             stage_name=stage_name,
             system_prompt=call["system"],
+            thinking=call.get("thinking"),
         )
         prompt_tokens_list.append(call["prompt_tokens"])
         completion_tokens_list.append(call["completion_tokens"])
@@ -169,7 +171,8 @@ def _archive_session(raw_conn, repo_path: Path, task_id: str) -> None:
 
 
 def _finalize_orchestrator_run(
-    raw_conn, orch_run_id: int, status: str, **kwargs,
+    raw_conn, orch_run_id: int, status: str,
+    error_message: str | None = None, **kwargs,
 ) -> None:
     """Update orchestrator run record with final status. Logs warning on failure."""
     now = datetime.now(timezone.utc).isoformat()
@@ -178,6 +181,7 @@ def _finalize_orchestrator_run(
             raw_conn, orch_run_id,
             status=status,
             completed_at=now,
+            error_message=error_message,
             **kwargs,
         )
         raw_conn.commit()
@@ -293,6 +297,7 @@ def run_orchestrator(
     all_steps_count = 0
     sequence_order = 0
     status = "failed"
+    error_msg: str | None = None
     orch_run_id = None
 
     try:
@@ -642,8 +647,16 @@ def run_orchestrator(
                         # No else needed — doc edits are cosmetic, string-based diff
                         # tracking is only critical for code/test edits
 
+                    doc_task_run_id = insert_task_run(
+                        raw_conn, f"{task_id}:doc:{part.id}",
+                        str(repo_path), "documentation",
+                        doc_model_config.model,
+                        doc_model_config.context_window,
+                        doc_model_config.max_tokens,
+                        "",
+                    )
                     insert_orchestrator_pass(
-                        raw_conn, orch_run_id, None, "documentation", sequence_order,
+                        raw_conn, orch_run_id, doc_task_run_id, "documentation", sequence_order,
                         part_id=part.id,
                     )
                     raw_conn.commit()
@@ -896,11 +909,13 @@ def run_orchestrator(
     except (ValueError, RuntimeError, OSError) as e:
         logger.error("Orchestrator failed: %s", e)
         status = "failed"
+        error_msg = str(e)
 
     finally:
         if orch_run_id is not None:
             _finalize_orchestrator_run(
                 raw_conn, orch_run_id, status,
+                error_message=error_msg,
                 total_steps=all_steps_count,
                 parts_completed=parts_completed,
                 steps_completed=steps_completed,
@@ -994,6 +1009,7 @@ def run_single_pass(
     cumulative_diff = ""
     last_validation = None
     status = "failed"
+    error_msg: str | None = None
     steps_completed = 0
     sequence_order = 0
     orch_run_id = None
@@ -1110,11 +1126,13 @@ def run_single_pass(
     except (ValueError, RuntimeError, OSError) as e:
         logger.error("Single pass failed: %s", e)
         status = "failed"
+        error_msg = str(e)
 
     finally:
         if orch_run_id is not None:
             _finalize_orchestrator_run(
                 raw_conn, orch_run_id, status,
+                error_message=error_msg,
                 total_parts=1,
                 total_steps=1,
                 parts_completed=1 if steps_completed else 0,

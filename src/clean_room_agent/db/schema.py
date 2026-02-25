@@ -300,7 +300,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS orchestrator_passes (
             id INTEGER PRIMARY KEY,
             orchestrator_run_id INTEGER NOT NULL REFERENCES orchestrator_runs(id),
-            task_run_id INTEGER NOT NULL REFERENCES task_runs(id),
+            task_run_id INTEGER REFERENCES task_runs(id),
             pass_type TEXT NOT NULL,
             part_id TEXT,
             step_id TEXT,
@@ -325,6 +325,18 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
         pass
     try:
         conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN git_base_ref TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration (A2): add thinking column to retrieval_llm_calls
+    try:
+        conn.execute("ALTER TABLE retrieval_llm_calls ADD COLUMN thinking TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Migration (A3): add error_message column to orchestrator_runs
+    try:
+        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN error_message TEXT")
     except sqlite3.OperationalError:
         pass
 
