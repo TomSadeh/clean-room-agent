@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from clean_room_agent.orchestrator.git_ops import GitWorkflow
+from clean_room_agent.orchestrator.git_ops import GitWorkflow, cleanup_task_branches
 
 
 def _init_git_repo(path):
@@ -262,6 +262,224 @@ class TestRollbackToCheckpointExplicitSha:
         gw = GitWorkflow(tmp_path, task_id="task-no-ref")
         with pytest.raises(RuntimeError, match="No base_ref"):
             gw.rollback_to_checkpoint()
+
+
+class TestCleanUntracked:
+    def test_clean_untracked_removes_new_files(self, tmp_path):
+        """Untracked files are removed by clean_untracked()."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-clean")
+        gw.create_task_branch()
+
+        untracked = tmp_path / "junk.txt"
+        untracked.write_text("should be removed")
+        assert untracked.exists()
+
+        gw.clean_untracked()
+        assert not untracked.exists()
+
+    def test_clean_untracked_preserves_clean_room(self, tmp_path):
+        """.clean_room/ directory survives clean_untracked()."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-clean-cr")
+        gw.create_task_branch()
+
+        cr_dir = tmp_path / ".clean_room"
+        cr_dir.mkdir()
+        (cr_dir / "config.toml").write_text("[models]")
+
+        gw.clean_untracked()
+        assert (cr_dir / "config.toml").exists()
+
+    def test_return_after_reset_with_conflicting_untracked(self, tmp_path):
+        """Full rollback+clean+return sequence works when untracked files conflict."""
+        _init_git_repo(tmp_path)
+        original = _current_branch(tmp_path)
+
+        gw = GitWorkflow(tmp_path, task_id="task-full-cleanup")
+        gw.create_task_branch()
+
+        # Make a committed change and an untracked file
+        (tmp_path / "committed.py").write_text("x = 1")
+        gw.commit_checkpoint("add committed.py")
+        (tmp_path / "untracked.py").write_text("leftover")
+
+        gw.rollback_to_checkpoint()
+        gw.clean_untracked()
+        gw.return_to_original_branch()
+
+        assert _current_branch(tmp_path) == original
+        assert not (tmp_path / "committed.py").exists()
+        assert not (tmp_path / "untracked.py").exists()
+
+
+class TestDeleteTaskBranch:
+    def test_delete_task_branch(self, tmp_path):
+        """Branch is removed after return_to_original + delete."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-del")
+        gw.create_task_branch()
+
+        gw.return_to_original_branch()
+        gw.delete_task_branch()
+
+        # Branch should no longer exist
+        result = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch", "--list", "cra/task/task-del"],
+            capture_output=True, text=True,
+        )
+        assert "cra/task/task-del" not in result.stdout
+
+    def test_delete_while_on_branch_raises(self, tmp_path):
+        """Cannot delete the branch you're currently on."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-del-on")
+        gw.create_task_branch()
+
+        with pytest.raises(RuntimeError, match="Cannot delete branch"):
+            gw.delete_task_branch()
+
+
+class TestCleanupTaskBranches:
+    def test_cleanup_deletes_all_task_branches(self, tmp_path):
+        """Bulk cleanup removes all cra/task/* branches (not current)."""
+        _init_git_repo(tmp_path)
+
+        # Create several task branches, then return to main
+        for tid in ["aaa", "bbb", "ccc"]:
+            gw = GitWorkflow(tmp_path, task_id=tid)
+            gw.create_task_branch()
+            gw.return_to_original_branch()
+
+        deleted = cleanup_task_branches(tmp_path)
+        assert sorted(deleted) == ["cra/task/aaa", "cra/task/bbb", "cra/task/ccc"]
+
+        result = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch", "--list", "cra/task/*"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == ""
+
+    def test_cleanup_skips_current_branch(self, tmp_path):
+        """Current branch is preserved during cleanup."""
+        _init_git_repo(tmp_path)
+
+        gw1 = GitWorkflow(tmp_path, task_id="keep")
+        gw1.create_task_branch()
+        gw1.return_to_original_branch()
+
+        gw2 = GitWorkflow(tmp_path, task_id="current")
+        gw2.create_task_branch()
+        # Stay on cra/task/current
+
+        deleted = cleanup_task_branches(tmp_path)
+        assert "cra/task/keep" in deleted
+        assert "cra/task/current" not in deleted
+        assert _current_branch(tmp_path) == "cra/task/current"
+
+
+class TestGetHeadSha:
+    def test_get_head_sha(self, tmp_path):
+        """Returns current SHA matching rev-parse HEAD."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-sha")
+        gw.create_task_branch()
+
+        sha = gw.get_head_sha()
+        assert sha == _current_sha(tmp_path)
+        assert len(sha) == 40
+
+    def test_get_head_sha_advances_after_commit(self, tmp_path):
+        """SHA changes after a commit."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-sha-adv")
+        gw.create_task_branch()
+
+        sha_before = gw.get_head_sha()
+        (tmp_path / "new.py").write_text("x = 1")
+        gw.commit_checkpoint("advance")
+        sha_after = gw.get_head_sha()
+
+        assert sha_before != sha_after
+
+
+class TestMergeToOriginal:
+    def test_merge_ff_success(self, tmp_path):
+        """Linear history merges via fast-forward, lands on original branch."""
+        _init_git_repo(tmp_path)
+        original = _current_branch(tmp_path)
+
+        gw = GitWorkflow(tmp_path, task_id="task-merge")
+        gw.create_task_branch()
+        (tmp_path / "feature.py").write_text("feature = True")
+        commit_sha = gw.commit_checkpoint("add feature")
+
+        result = gw.merge_to_original()
+
+        assert result is True
+        assert _current_branch(tmp_path) == original
+        assert _current_sha(tmp_path) == commit_sha
+        assert (tmp_path / "feature.py").exists()
+
+    def test_merge_ff_fail_diverged(self, tmp_path):
+        """Diverged branches return False, lands on original branch."""
+        _init_git_repo(tmp_path)
+        original = _current_branch(tmp_path)
+
+        gw = GitWorkflow(tmp_path, task_id="task-merge-div")
+        gw.create_task_branch()
+        (tmp_path / "task.py").write_text("task = True")
+        gw.commit_checkpoint("task commit")
+
+        # Go back to original and create a diverging commit
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", original],
+            check=True, capture_output=True,
+        )
+        (tmp_path / "diverge.py").write_text("diverge = True")
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "add", "."],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-m", "diverge"],
+            check=True, capture_output=True,
+        )
+
+        # Go back to task branch for merge attempt
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "cra/task/task-merge-div"],
+            check=True, capture_output=True,
+        )
+
+        result = gw.merge_to_original()
+
+        assert result is False
+        assert _current_branch(tmp_path) == original
+
+    def test_merge_without_create_raises(self, tmp_path):
+        """merge_to_original before create_task_branch raises RuntimeError."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-merge-nc")
+        with pytest.raises(RuntimeError, match="No original branch"):
+            gw.merge_to_original()
+
+    def test_merge_then_delete(self, tmp_path):
+        """Merge + delete leaves no task branch."""
+        _init_git_repo(tmp_path)
+        gw = GitWorkflow(tmp_path, task_id="task-md")
+        gw.create_task_branch()
+        (tmp_path / "f.py").write_text("x")
+        gw.commit_checkpoint("add f")
+
+        gw.merge_to_original()
+        gw.delete_task_branch()
+
+        result = subprocess.run(
+            ["git", "-C", str(tmp_path), "branch", "--list", "cra/task/task-md"],
+            capture_output=True, text=True,
+        )
+        assert "cra/task/task-md" not in result.stdout
 
 
 class TestBranchNameEdgeCases:

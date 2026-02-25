@@ -139,6 +139,10 @@ class GitWorkflow:
         self._run_git("reset", "--hard", target)
         logger.info("Rolled back to %s", target[:12])
 
+    def clean_untracked(self) -> None:
+        """Remove untracked files and directories, preserving .clean_room/."""
+        self._run_git("clean", "-fd", "--exclude=.clean_room")
+
     def return_to_original_branch(self) -> None:
         """Checkout the original branch.
 
@@ -150,6 +154,46 @@ class GitWorkflow:
             )
         self._run_git("checkout", self._original_branch)
         logger.info("Returned to original branch %s", self._original_branch)
+
+    def delete_task_branch(self) -> None:
+        """Delete the task branch. Must not be on the branch when called."""
+        current = self._run_git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if current == self._branch_name:
+            raise RuntimeError(
+                f"Cannot delete branch {self._branch_name} while checked out on it"
+            )
+        self._run_git("branch", "-D", self._branch_name)
+        logger.info("Deleted task branch %s", self._branch_name)
+
+    def get_head_sha(self) -> str:
+        """Return the current HEAD SHA."""
+        return self._run_git("rev-parse", "HEAD").stdout.strip()
+
+    def merge_to_original(self) -> bool:
+        """Fast-forward merge the task branch into the original branch.
+
+        Returns True on success, False if ff-only fails (diverged history).
+        Raises RuntimeError if no original branch was recorded.
+        """
+        if self._original_branch is None:
+            raise RuntimeError(
+                "No original branch recorded — call create_task_branch() first"
+            )
+        self._run_git("checkout", self._original_branch)
+        try:
+            self._run_git("merge", "--ff-only", self._branch_name)
+            logger.info(
+                "Merged %s into %s (fast-forward)",
+                self._branch_name, self._original_branch,
+            )
+            return True
+        except RuntimeError:
+            logger.warning(
+                "Fast-forward merge of %s into %s failed — branches diverged. "
+                "Task branch preserved for manual inspection.",
+                self._branch_name, self._original_branch,
+            )
+            return False
 
     def _run_git(self, *args: str) -> subprocess.CompletedProcess:
         """Run a git command with repo_path as cwd."""
@@ -165,3 +209,49 @@ class GitWorkflow:
                 f"git {' '.join(args)} failed (exit {result.returncode}): {result.stderr.strip()}"
             )
         return result
+
+
+def cleanup_task_branches(repo_path: Path) -> list[str]:
+    """Delete all cra/task/* branches except the currently checked-out one.
+
+    Returns the list of deleted branch names. Logs warnings on individual failures.
+    """
+    result = subprocess.run(
+        ["git", "branch", "--list", "cra/task/*"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning("Failed to list task branches: %s", result.stderr.strip())
+        return []
+
+    # Get current branch to skip
+    current = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+    )
+    current_branch = current.stdout.strip() if current.returncode == 0 else ""
+
+    deleted = []
+    for line in result.stdout.splitlines():
+        branch = line.strip().lstrip("* ")
+        if not branch or branch == current_branch:
+            continue
+        try:
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            deleted.append(branch)
+        except subprocess.CalledProcessError as e:
+            logger.warning("Failed to delete branch %s: %s", branch, e.stderr.strip() if hasattr(e, 'stderr') else str(e))
+
+    if deleted:
+        logger.info("Cleaned up %d task branch(es): %s", len(deleted), deleted)
+    return deleted

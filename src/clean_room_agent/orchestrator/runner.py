@@ -341,6 +341,8 @@ def run_orchestrator(
         )
 
         for part in sorted_parts:
+            part_start_sha = git.get_head_sha() if git else None
+
             # --- PART-PLAN PASS ---
             temp_plan_path = _write_temp_plan(part.affected_files, tmp_dir)
             sub_task_id = f"{task_id}:part_plan:{part.id}"
@@ -504,6 +506,9 @@ def run_orchestrator(
                 # Update state
                 if step_success and step_result:
                     if git is not None:
+                        git.commit_checkpoint(
+                            f"cra: {part.id}:{step.id} — {step.description[:60]}"
+                        )
                         cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
                     else:
                         cumulative_diff = _cap_cumulative_diff(
@@ -612,9 +617,10 @@ def run_orchestrator(
                             trace_logger,
                         )
 
-                    # Update cumulative diff after doc edits
+                    # Commit + update cumulative diff after doc edits
                     if doc_patch_results:
                         if git is not None:
+                            git.commit_checkpoint(f"cra: {part.id}:docs")
                             cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
                         # No else needed — doc edits are cosmetic, string-based diff
                         # tracking is only critical for code/test edits
@@ -799,6 +805,9 @@ def run_orchestrator(
 
                     if test_step_success and test_step_result:
                         if git is not None:
+                            git.commit_checkpoint(
+                                f"cra: {part.id}:test:{test_step.id} — {test_step.description[:60]}"
+                            )
                             cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
                         else:
                             cumulative_diff = _cap_cumulative_diff(
@@ -826,7 +835,7 @@ def run_orchestrator(
 
                 if not validation.success:
                     if git is not None:
-                        git.rollback_part()
+                        git.rollback_to_checkpoint(commit_sha=part_start_sha)
                     else:
                         # LIFO rollback: test → doc → code
                         rollback_errors = []
@@ -854,10 +863,6 @@ def run_orchestrator(
                             if step_final_outcomes[key]:
                                 step_final_outcomes[key] = False
                                 steps_completed -= 1
-
-            # Commit checkpoint after successful part validation
-            if git is not None and (validation is None or validation.success):
-                git.commit_checkpoint(f"cra: {part.id}")
 
             parts_completed += 1
 
@@ -900,8 +905,14 @@ def run_orchestrator(
             try:
                 if status != "complete":
                     git.rollback_to_checkpoint()
+                    git.clean_untracked()
                     git.return_to_original_branch()
-                # On success: leave on task branch with all commits
+                    git.delete_task_branch()
+                else:
+                    merged = git.merge_to_original()
+                    if merged:
+                        git.delete_task_branch()
+                    # If merge failed: on original branch, task branch preserved
             except Exception as git_err:
                 logger.warning("Git cleanup failed: %s", git_err)
 
@@ -966,9 +977,13 @@ def run_single_pass(
     raw_conn = get_connection("raw", repo_path=repo_path)
     session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
 
-    # T67: Create orchestrator_run record
-    orch_run_id = insert_orchestrator_run(raw_conn, task_id, str(repo_path), task)
-    raw_conn.commit()
+    # Git workflow
+    use_git = orch_config.get("git_workflow")
+    if use_git is None:
+        raise RuntimeError(
+            "Missing git_workflow in [orchestrator] section of config.toml."
+        )
+    git = None
 
     pass_results: list[PassResult] = []
     cumulative_diff = ""
@@ -976,8 +991,23 @@ def run_single_pass(
     status = "failed"
     steps_completed = 0
     sequence_order = 0
+    orch_run_id = None
 
     try:
+        if use_git and (repo_path / ".git").exists():
+            from clean_room_agent.orchestrator.git_ops import GitWorkflow
+            git = GitWorkflow(repo_path, task_id)
+            git.create_task_branch()
+        elif use_git:
+            logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
+
+        orch_run_id = insert_orchestrator_run(
+            raw_conn, task_id, str(repo_path), task,
+            git_branch=git.branch_name if git else None,
+            git_base_ref=git.base_ref if git else None,
+        )
+        raw_conn.commit()
+
         for attempt in range(max_retries + 1):
             suffix = f":retry_{attempt}" if attempt > 0 else ""
             sub_task_id = f"{task_id}:impl{suffix}"
@@ -1047,10 +1077,14 @@ def run_single_pass(
             last_validation = run_validation(repo_path, config, raw_conn, attempt_id)
 
             if last_validation.success:
-                cumulative_diff = _cap_cumulative_diff(
-                    cumulative_diff + _build_diff_text(step_result.edits),
-                    max_chars=max_diff_chars,
-                )
+                if git is not None:
+                    git.commit_checkpoint("cra: single_pass")
+                    cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
+                else:
+                    cumulative_diff = _cap_cumulative_diff(
+                        cumulative_diff + _build_diff_text(step_result.edits),
+                        max_chars=max_diff_chars,
+                    )
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=True, artifact=step_result,
@@ -1059,7 +1093,10 @@ def run_single_pass(
                 steps_completed = 1
                 break
             else:
-                rollback_edits(patch_result, repo_path)
+                if git is not None:
+                    git.rollback_part()
+                else:
+                    rollback_edits(patch_result, repo_path)
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=False, artifact=step_result,
@@ -1070,13 +1107,14 @@ def run_single_pass(
         status = "failed"
 
     finally:
-        _finalize_orchestrator_run(
-            raw_conn, orch_run_id, status,
-            total_parts=1,
-            total_steps=1,
-            parts_completed=1 if steps_completed else 0,
-            steps_completed=steps_completed,
-        )
+        if orch_run_id is not None:
+            _finalize_orchestrator_run(
+                raw_conn, orch_run_id, status,
+                total_parts=1,
+                total_steps=1,
+                parts_completed=1 if steps_completed else 0,
+                steps_completed=steps_completed,
+            )
 
         set_state(session_conn, "cumulative_diff", cumulative_diff)
         set_state(session_conn, "orchestrator_progress", {
@@ -1088,6 +1126,21 @@ def run_single_pass(
 
         _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
+
+        # Git cleanup
+        if git is not None:
+            try:
+                if status != "complete":
+                    git.rollback_to_checkpoint()
+                    git.clean_untracked()
+                    git.return_to_original_branch()
+                    git.delete_task_branch()
+                else:
+                    merged = git.merge_to_original()
+                    if merged:
+                        git.delete_task_branch()
+            except Exception as git_err:
+                logger.warning("Git cleanup failed: %s", git_err)
 
     return OrchestratorResult(
         task_id=task_id,
