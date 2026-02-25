@@ -47,11 +47,13 @@ def extract_precision_symbols(
     candidates = []
     file_cache: dict[int, tuple[str, str]] = {}  # file_id -> (path, language)
 
-    # Cache file paths and languages
+    # Cache file paths, languages, and source
+    file_source_cache: dict[int, str] = {}  # file_id -> file_source
     for fid in file_ids:
         f = kb.get_file_by_id(fid)
         if f:
             file_cache[fid] = (f.path, f.language)
+            file_source_cache[fid] = f.file_source
 
     for fid in file_ids:
         if fid not in file_cache:
@@ -70,6 +72,7 @@ def extract_precision_symbols(
                 "end_line": sym.end_line,
                 "signature": sym.signature or "",
                 "connections": [],
+                "file_source": file_source_cache.get(fid, "project"),
             }
 
             if language == "python":
@@ -96,13 +99,14 @@ def extract_precision_symbols(
     return candidates
 
 
-_TOKENS_PER_SYMBOL = 50  # ~50 tokens per symbol line (name + path + sig + connections)
+_TOKENS_PER_SYMBOL = 70  # ~70 tokens per symbol line (name + path + sig + connections + docstring)
 
 
 def classify_symbols(
     candidates: list[dict],
     task: TaskQuery,
     llm: LLMClient,
+    kb: "KnowledgeBase | None" = None,
 ) -> list[ClassifiedSymbol]:
     """LLM classification of symbol detail levels.
 
@@ -110,6 +114,21 @@ def classify_symbols(
     """
     if not candidates:
         return []
+
+    # Batch-fetch docstrings for all involved files
+    docstring_summaries: dict[tuple[int, int], str] = {}  # (file_id, symbol_id) -> summary
+    if kb is not None:
+        file_ids_seen: set[int] = set()
+        for c in candidates:
+            fid = c["file_id"]
+            if fid not in file_ids_seen:
+                file_ids_seen.add(fid)
+                docstrings = kb.get_docstrings_for_file(fid)
+                for doc in docstrings:
+                    if doc.symbol_id is not None:
+                        first_line = doc.content.split("\n", 1)[0].strip()
+                        summary = first_line[:100]
+                        docstring_summaries[(fid, doc.symbol_id)] = summary
 
     # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
@@ -127,11 +146,16 @@ def classify_symbols(
         symbol_lines = []
         for c in batch:
             conn_info = ", ".join(c["connections"]) if c["connections"] else "no connections"
-            symbol_lines.append(
+            line = (
                 f"- {c['name']} ({c['kind']}) in {c['file_path']}:{c['start_line']}-{c['end_line']} "
                 f"[{conn_info}]"
                 + (f" sig: {c['signature']}" if c['signature'] else "")
             )
+            doc_key = (c["file_id"], c["symbol_id"])
+            doc_summary = docstring_summaries.get(doc_key)
+            if doc_summary:
+                line += f" doc: {doc_summary}"
+            symbol_lines.append(line)
 
         prompt = task_header + "\n".join(symbol_lines)
 
@@ -165,6 +189,17 @@ def classify_symbols(
             detail_level = "excluded"
         reason = cl.get("reason", "")
 
+        file_source = c.get("file_source", "project")
+
+        # Library symbols cannot be "primary" — downgrade to "type_context"
+        if file_source == "library" and detail_level == "primary":
+            logger.warning(
+                "Library symbol %s in %s classified as primary — downgrading to type_context",
+                c["name"], c["file_path"],
+            )
+            detail_level = "type_context"
+            reason = f"downgraded from primary (library file): {reason}"
+
         results.append(ClassifiedSymbol(
             symbol_id=c["symbol_id"],
             file_id=c["file_id"],
@@ -175,6 +210,7 @@ def classify_symbols(
             detail_level=detail_level,
             reason=reason,
             signature=c.get("signature", ""),
+            file_source=file_source,
         ))
 
     return results
@@ -205,7 +241,7 @@ class PrecisionStage:
             max_callees=rp.get("max_callees", MAX_CALLEES),
             max_callers=rp.get("max_callers", MAX_CALLERS),
         )
-        classified = classify_symbols(candidates, task, llm)
+        classified = classify_symbols(candidates, task, llm, kb=kb)
 
         context.classified_symbols = classified
         return context

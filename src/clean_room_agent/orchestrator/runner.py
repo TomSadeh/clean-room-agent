@@ -8,8 +8,12 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clean_room_agent.config import require_models_config
+
+if TYPE_CHECKING:
+    from clean_room_agent.trace import TraceLogger
 from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
     insert_orchestrator_pass,
@@ -85,6 +89,7 @@ def _resolve_stages(config: dict) -> list[str]:
 
 def _flush_llm_calls(
     llm: LoggedLLMClient, raw_conn, task_id: str, call_type: str, stage_name: str,
+    trace_logger: "TraceLogger | None" = None,
 ) -> tuple[int | None, int | None, int]:
     """Flush LLM call records to raw DB.
 
@@ -94,7 +99,10 @@ def _flush_llm_calls(
     prompt_tokens_list: list[int | None] = []
     completion_tokens_list: list[int | None] = []
     total_latency = 0
-    for call in llm.flush():
+    calls = llm.flush()
+    if trace_logger is not None:
+        trace_logger.log_calls(stage_name, call_type, calls, llm.config.model)
+    for call in calls:
         insert_retrieval_llm_call(
             raw_conn, task_id, call_type, llm.config.model,
             call["prompt"], call["response"],
@@ -212,7 +220,10 @@ def _topological_sort(items, get_id, get_deps):
     return result
 
 
-def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorResult:
+def run_orchestrator(
+    task: str, repo_path: Path, config: dict,
+    trace_logger: "TraceLogger | None" = None,
+) -> OrchestratorResult:
     """Run the full orchestrator loop.
 
     meta_plan -> parts (topo-sorted) -> steps -> implement -> test -> retry -> adjust
@@ -250,7 +261,21 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
     tmp_dir = repo_path / ".clean_room" / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    orch_run_id = insert_orchestrator_run(raw_conn, task_id, str(repo_path), task)
+    # Git workflow: branch-per-task lifecycle
+    use_git = orch_config.get("git_workflow", True)
+    git = None
+    if use_git and (repo_path / ".git").exists():
+        from clean_room_agent.orchestrator.git_ops import GitWorkflow
+        git = GitWorkflow(repo_path, task_id)
+        git.create_task_branch()
+    elif use_git:
+        logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
+
+    orch_run_id = insert_orchestrator_run(
+        raw_conn, task_id, str(repo_path), task,
+        git_branch=git.branch_name if git else None,
+        git_base_ref=git.base_ref if git else None,
+    )
     raw_conn.commit()
 
     pass_results: list[PassResult] = []
@@ -274,6 +299,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
             mode="plan",
             task_id=sub_task_id,
             config=config,
+            trace_logger=trace_logger,
         )
 
         with LoggedLLMClient(reasoning_config) as llm:
@@ -281,7 +307,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                 context, task, llm,
                 pass_type="meta_plan",
             )
-            _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
+            _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan", trace_logger)
 
         meta_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
@@ -325,6 +351,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     task_id=sub_task_id,
                     config=config,
                     plan_artifact_path=temp_plan_path,
+                    trace_logger=trace_logger,
                 )
 
                 with LoggedLLMClient(reasoning_config) as llm:
@@ -333,7 +360,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         pass_type="part_plan",
                         cumulative_diff=cumulative_diff or None,
                     )
-                    _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan")
+                    _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan", trace_logger)
 
                 part_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
 
@@ -396,6 +423,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             task_id=sub_task_id,
                             config=config,
                             plan_artifact_path=temp_plan_path,
+                            trace_logger=trace_logger,
                         )
 
                         with LoggedLLMClient(coding_config) as impl_llm:
@@ -407,6 +435,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             impl_pt, impl_ct, impl_ms = _flush_llm_calls(
                                 impl_llm, raw_conn, sub_task_id,
                                 "execute_implement", "execute_implement",
+                                trace_logger,
                             )
 
                         impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
@@ -470,10 +499,13 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
 
                 # Update state
                 if step_success and step_result:
-                    cumulative_diff = _cap_cumulative_diff(
-                        cumulative_diff + _build_diff_text(step_result.edits),
-                        max_chars=max_diff_chars,
-                    )
+                    if git is not None:
+                        cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
+                    else:
+                        cumulative_diff = _cap_cumulative_diff(
+                            cumulative_diff + _build_diff_text(step_result.edits),
+                            max_chars=max_diff_chars,
+                        )
                     set_state(session_conn, f"step_result:{part.id}:{step.id}", {
                         "success": True, "edits_count": len(step_result.edits),
                     })
@@ -502,6 +534,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             mode="plan",
                             task_id=adj_sub_task_id,
                             config=config,
+                            trace_logger=trace_logger,
                         )
 
                         with LoggedLLMClient(reasoning_config) as adj_llm:
@@ -511,7 +544,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                 prior_results=[step_result] if step_result else None,
                                 cumulative_diff=cumulative_diff or None,
                             )
-                            _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust")
+                            _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust", trace_logger)
 
                         adj_task_run_id = _get_task_run_id(raw_conn, adj_sub_task_id)
 
@@ -576,6 +609,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                         task_id=test_plan_task_id,
                         config=config,
                         plan_artifact_path=temp_plan_path,
+                        trace_logger=trace_logger,
                     )
 
                     with LoggedLLMClient(reasoning_config) as tp_llm:
@@ -584,7 +618,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             pass_type="test_plan",
                             cumulative_diff=cumulative_diff or None,
                         )
-                        _flush_llm_calls(tp_llm, raw_conn, test_plan_task_id, "execute_plan", "execute_plan")
+                        _flush_llm_calls(tp_llm, raw_conn, test_plan_task_id, "execute_plan", "execute_plan", trace_logger)
 
                     tp_task_run_id = _get_task_run_id(raw_conn, test_plan_task_id)
 
@@ -635,6 +669,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                 task_id=test_sub_task_id,
                                 config=config,
                                 plan_artifact_path=temp_plan_path,
+                                trace_logger=trace_logger,
                             )
 
                             with LoggedLLMClient(coding_config) as test_llm:
@@ -646,6 +681,7 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                                 ti_pt, ti_ct, ti_ms = _flush_llm_calls(
                                     test_llm, raw_conn, test_sub_task_id,
                                     "execute_test_implement", "execute_test_implement",
+                                    trace_logger,
                                 )
 
                             ti_task_run_id = _get_task_run_id(raw_conn, test_sub_task_id)
@@ -702,10 +738,13 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     step_final_outcomes[step_key] = test_step_success
 
                     if test_step_success and test_step_result:
-                        cumulative_diff = _cap_cumulative_diff(
-                            cumulative_diff + _build_diff_text(test_step_result.edits),
-                            max_chars=max_diff_chars,
-                        )
+                        if git is not None:
+                            cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
+                        else:
+                            cumulative_diff = _cap_cumulative_diff(
+                                cumulative_diff + _build_diff_text(test_step_result.edits),
+                                max_chars=max_diff_chars,
+                            )
                         set_state(session_conn, f"test_step_result:{part.id}:{test_step.id}", {
                             "success": True, "edits_count": len(test_step_result.edits),
                         })
@@ -726,20 +765,23 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                     validation = run_validation(repo_path, config, raw_conn, 0)
 
                 if not validation.success:
-                    # LIFO rollback: test edits first, then code edits
-                    rollback_errors = []
-                    for tp in reversed(test_patch_results):
-                        try:
-                            rollback_edits(tp, repo_path)
-                        except (RuntimeError, OSError) as e:
-                            rollback_errors.append(str(e))
-                    for cp in reversed(code_patch_results):
-                        try:
-                            rollback_edits(cp, repo_path)
-                        except (RuntimeError, OSError) as e:
-                            rollback_errors.append(str(e))
-                    if rollback_errors:
-                        raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
+                    if git is not None:
+                        git.rollback_part()
+                    else:
+                        # LIFO rollback: test edits first, then code edits
+                        rollback_errors = []
+                        for tp in reversed(test_patch_results):
+                            try:
+                                rollback_edits(tp, repo_path)
+                            except (RuntimeError, OSError) as e:
+                                rollback_errors.append(str(e))
+                        for cp in reversed(code_patch_results):
+                            try:
+                                rollback_edits(cp, repo_path)
+                            except (RuntimeError, OSError) as e:
+                                rollback_errors.append(str(e))
+                        if rollback_errors:
+                            raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
 
                     # Mark all steps for this part as failed since validation failed
                     for key in list(step_final_outcomes):
@@ -747,6 +789,10 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
                             if step_final_outcomes[key]:
                                 step_final_outcomes[key] = False
                                 steps_completed -= 1
+
+            # Commit checkpoint after successful part validation
+            if git is not None and (validation is None or validation.success):
+                git.commit_checkpoint(f"cra: {part.id}")
 
             parts_completed += 1
 
@@ -783,6 +829,16 @@ def run_orchestrator(task: str, repo_path: Path, config: dict) -> OrchestratorRe
         _archive_session(raw_conn, repo_path, task_id)
         raw_conn.close()
 
+        # Git cleanup
+        if git is not None:
+            try:
+                if status != "complete":
+                    git.rollback_to_checkpoint()
+                    git.return_to_original_branch()
+                # On success: leave on task branch with all commits
+            except Exception as git_err:
+                logger.warning("Git cleanup failed: %s", git_err)
+
         # Cleanup temp files (T77: log failures instead of silent swallow)
         try:
             for f in tmp_dir.glob("plan_*.json"):
@@ -806,6 +862,7 @@ def run_single_pass(
     config: dict,
     *,
     plan_path: Path,
+    trace_logger: "TraceLogger | None" = None,
 ) -> OrchestratorResult:
     """Run a single atomic implement pass from a pre-computed plan.
 
@@ -866,6 +923,7 @@ def run_single_pass(
                 task_id=sub_task_id,
                 config=config,
                 plan_artifact_path=plan_path,
+                trace_logger=trace_logger,
             )
 
             with LoggedLLMClient(coding_config) as impl_llm:
@@ -876,6 +934,7 @@ def run_single_pass(
                 impl_pt, impl_ct, impl_ms = _flush_llm_calls(
                     impl_llm, raw_conn, sub_task_id,
                     "execute_implement", "execute_implement",
+                    trace_logger,
                 )
 
             impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)

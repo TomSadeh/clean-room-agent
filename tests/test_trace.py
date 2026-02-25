@@ -1,0 +1,187 @@
+"""Tests for pipeline trace log (TraceLogger)."""
+
+from pathlib import Path
+
+import pytest
+
+from clean_room_agent.trace import TraceLogger
+
+
+def _make_call(
+    *,
+    system="You are helpful",
+    prompt="What is 2+2?",
+    response="4",
+    thinking="",
+    prompt_tokens=10,
+    completion_tokens=5,
+    elapsed_ms=100,
+    error="",
+):
+    """Build a call dict with sensible defaults, allowing per-field overrides."""
+    return {
+        "system": system,
+        "prompt": prompt,
+        "response": response,
+        "thinking": thinking,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "elapsed_ms": elapsed_ms,
+        "error": error,
+    }
+
+
+class TestTraceLogger:
+    def test_format_basic_call(self, tmp_path):
+        """Log a single call, verify stage name, response, and system prompt details tag."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-001", task_description="basic test")
+        logger.log_calls("scope", "retrieval", [_make_call()])
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # Stage name appears in call header
+        assert "scope" in content
+        # Response text rendered inline
+        assert "4" in content
+        # System prompt inside a <details> tag
+        assert "<details>" in content
+        assert "You are helpful" in content
+
+    def test_format_thinking_content(self, tmp_path):
+        """Log a call with thinking content, verify thinking section rendered."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-002", task_description="thinking test")
+        logger.log_calls(
+            "precision",
+            "classification",
+            [_make_call(thinking="Let me reason step by step about this problem")],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        assert "### Thinking" in content
+        assert "Let me reason step by step about this problem" in content
+
+    def test_format_error_call(self, tmp_path):
+        """Log a call with error info, verify error section appears."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-003", task_description="error test")
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(error="Connection timed out after 30s")],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        assert "### Error" in content
+        assert "Connection timed out after 30s" in content
+
+    def test_empty_trace(self, tmp_path):
+        """Finalize with no calls produces header-only file with task_id and 0 calls."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-004", task_description="empty trace")
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        assert "task-004" in content
+        assert "0 calls" in content
+
+    def test_summary_stats(self, tmp_path):
+        """Log multiple calls with known token counts and latencies, verify aggregates."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-005", task_description="stats test")
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [
+                _make_call(prompt_tokens=100, completion_tokens=50, elapsed_ms=200),
+                _make_call(prompt_tokens=150, completion_tokens=75, elapsed_ms=300),
+            ],
+        )
+        logger.log_calls(
+            "precision",
+            "classification",
+            [_make_call(prompt_tokens=80, completion_tokens=40, elapsed_ms=150)],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # 3 total calls
+        assert "3 calls" in content
+        # Prompt tokens: 100 + 150 + 80 = 330
+        assert "Prompt tokens: 330" in content
+        # Completion tokens: 50 + 75 + 40 = 165
+        assert "Completion tokens: 165" in content
+        # Total latency: 200 + 300 + 150 = 650
+        assert "Total latency: 650ms" in content
+
+    def test_missing_tokens_annotated(self, tmp_path):
+        """When token counts are None, annotated as N/A in call section and summary."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-006", task_description="na test")
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(prompt_tokens=None, completion_tokens=None)],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+        # Summary header shows N/A for both token types
+        assert "Prompt tokens: N/A" in content
+        assert "Completion tokens: N/A" in content
+
+    def test_output_file_created(self, tmp_path):
+        """Finalize creates file and parent directories for nested path."""
+        out = tmp_path / "deep" / "nested" / "dir" / "trace.md"
+        logger = TraceLogger(out, task_id="task-007", task_description="mkdir test")
+        logger.log_calls("scope", "retrieval", [_make_call()])
+        path = logger.finalize()
+
+        assert path.exists()
+        assert path.is_file()
+        assert path == out
+        # Verify parent directories were created
+        assert (tmp_path / "deep" / "nested" / "dir").is_dir()
+
+    def test_multiple_stages(self, tmp_path):
+        """Log calls from different stages, verify they appear in order with correct headers."""
+        out = tmp_path / "trace.md"
+        logger = TraceLogger(out, task_id="task-008", task_description="multi-stage")
+
+        logger.log_calls(
+            "task_analysis",
+            "analysis",
+            [_make_call(response="Parsed task intent")],
+        )
+        logger.log_calls(
+            "scope",
+            "retrieval",
+            [_make_call(response="Found 5 relevant files")],
+        )
+        logger.log_calls(
+            "precision",
+            "classification",
+            [_make_call(response="Classified symbols at detail levels")],
+        )
+        path = logger.finalize()
+
+        content = path.read_text(encoding="utf-8")
+
+        # All three stage names present
+        assert "task_analysis" in content
+        assert "scope" in content
+        assert "precision" in content
+
+        # Verify ordering: task_analysis before scope before precision
+        pos_analysis = content.index("task_analysis")
+        pos_scope = content.index("scope", pos_analysis + 1)
+        pos_precision = content.index("precision", pos_scope + 1)
+        assert pos_analysis < pos_scope < pos_precision
+
+        # All responses present
+        assert "Parsed task intent" in content
+        assert "Found 5 relevant files" in content
+        assert "Classified symbols at detail levels" in content

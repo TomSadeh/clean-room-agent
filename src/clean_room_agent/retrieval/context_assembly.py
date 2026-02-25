@@ -102,6 +102,7 @@ def assemble_context(
             token_estimate=rf["tokens"],
             detail_level=rf["detail"],
             included_symbols=file_symbols.get(rf["file_id"], []),
+            metadata_summary=rf.get("metadata_summary", ""),
         ))
 
     for fc in file_contents:
@@ -185,6 +186,11 @@ def _read_and_render_files(
 
     Raises RuntimeError for unreadable primary files (R1).
     """
+    # Batch-fetch metadata for all files
+    metadata_map = {}
+    if kb is not None:
+        metadata_map = kb.get_file_metadata_batch(list(sorted_fids))
+
     rendered_files: list[dict] = []
     for fid in sorted_fids:
         info = file_info[fid]
@@ -206,13 +212,29 @@ def _read_and_render_files(
         content_tokens = estimate_tokens(rendered)
         framing_tokens = estimate_framing_tokens(info["path"], info["language"], detail)
 
+        # Build metadata summary from enrichment data
+        metadata_summary = ""
+        meta = metadata_map.get(fid)
+        if meta:
+            parts = []
+            if meta.purpose:
+                parts.append(f"Purpose: {meta.purpose}")
+            if meta.domain:
+                parts.append(f"Domain: {meta.domain}")
+            if parts:
+                metadata_summary = " | ".join(parts)
+
+        # R5: account for metadata_summary tokens in budget
+        meta_tokens = estimate_tokens(metadata_summary) if metadata_summary else 0
+
         rendered_files.append({
             "file_id": fid,
             "path": info["path"],
             "language": info["language"],
             "detail": detail,
             "rendered": rendered,
-            "tokens": content_tokens + framing_tokens,
+            "tokens": content_tokens + framing_tokens + meta_tokens,
+            "metadata_summary": metadata_summary,
         })
 
     return rendered_files

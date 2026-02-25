@@ -19,7 +19,8 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
             path TEXT NOT NULL,
             language TEXT NOT NULL,
             content_hash TEXT NOT NULL,
-            size_bytes INTEGER NOT NULL
+            size_bytes INTEGER NOT NULL,
+            file_source TEXT NOT NULL DEFAULT 'project'
         );
 
         CREATE TABLE IF NOT EXISTS symbols (
@@ -128,6 +129,12 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_file_metadata_module ON file_metadata(module);
         CREATE INDEX IF NOT EXISTS idx_adapter_stage_active ON adapter_metadata(stage_name, active);
     """)
+
+    # Migration: add file_source column for existing DBs
+    try:
+        conn.execute("ALTER TABLE files ADD COLUMN file_source TEXT NOT NULL DEFAULT 'project'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
 
 def create_raw_schema(conn: sqlite3.Connection) -> None:
@@ -310,6 +317,16 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE enrichment_outputs ADD COLUMN file_path TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists (new DB or migration already applied)
+
+    # Migration: add git fields to orchestrator_runs
+    try:
+        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN git_branch TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN git_base_ref TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 def create_session_schema(conn: sqlite3.Connection) -> None:

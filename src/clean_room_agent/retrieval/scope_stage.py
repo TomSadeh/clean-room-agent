@@ -173,13 +173,14 @@ def expand_scope(
     return list(seen.values())
 
 
-_TOKENS_PER_SCOPE_CANDIDATE = 20  # ~20 tokens per candidate line (path + tier info)
+_TOKENS_PER_SCOPE_CANDIDATE = 50  # ~50 tokens per candidate line (path + tier + metadata)
 
 
 def judge_scope(
     candidates: list[ScopedFile],
     task: TaskQuery,
     llm: LLMClient,
+    kb: KnowledgeBase | None = None,
 ) -> list[ScopedFile]:
     """LLM judgment on scope candidates. Seeds (tier 0/1) always relevant.
 
@@ -200,6 +201,12 @@ def judge_scope(
     if not non_seeds:
         return candidates
 
+    # Batch-fetch metadata for all non-seed candidates
+    metadata_map = {}
+    if kb is not None:
+        all_fids = [sf.file_id for sf in non_seeds]
+        metadata_map = kb.get_file_metadata_batch(all_fids)
+
     # Calculate batch size from available context (conservative to match LLMClient gate)
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
     batch_size = calculate_judgment_batch_size(
@@ -212,10 +219,21 @@ def judge_scope(
     verdict_map: dict[str, dict] = {}
     for i in range(0, len(non_seeds), batch_size):
         batch = non_seeds[i:i + batch_size]
-        candidate_lines = [
-            f"- {sf.path} (tier={sf.tier}, language={sf.language}, reason={sf.reason})"
-            for sf in batch
-        ]
+        candidate_lines = []
+        for sf in batch:
+            line = f"- {sf.path} (tier={sf.tier}, language={sf.language}, reason={sf.reason})"
+            meta = metadata_map.get(sf.file_id)
+            if meta:
+                parts = []
+                if meta.purpose:
+                    parts.append(f"purpose={meta.purpose}")
+                if meta.domain:
+                    parts.append(f"domain={meta.domain}")
+                if meta.concepts:
+                    parts.append(f"concepts={meta.concepts}")
+                if parts:
+                    line += f" [{', '.join(parts)}]"
+            candidate_lines.append(line)
         prompt = task_header + "\n".join(candidate_lines)
 
         validate_judgment_batch(
@@ -280,7 +298,7 @@ class ScopeStage:
             max_metadata=rp.get("max_metadata", MAX_METADATA),
             max_keywords=rp.get("max_keywords", MAX_KEYWORDS),
         )
-        judged = judge_scope(candidates, task, llm)
+        judged = judge_scope(candidates, task, llm, kb=kb)
 
         context.scoped_files = judged
         context.included_file_ids = {

@@ -11,6 +11,7 @@ from clean_room_agent.query.models import (
     Docstring,
     File,
     FileContext,
+    FileMetadata,
     RepoOverview,
     Symbol,
 )
@@ -78,6 +79,53 @@ class KnowledgeBase:
         )
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_file(r) for r in rows]
+
+    def get_library_files(self, repo_id: int) -> list[File]:
+        """Get all files with file_source='library' for a repo."""
+        rows = self._conn.execute(
+            "SELECT * FROM files WHERE repo_id = ? AND file_source = 'library'",
+            (repo_id,),
+        ).fetchall()
+        return [self._row_to_file(r) for r in rows]
+
+    def get_file_metadata(self, file_id: int) -> FileMetadata | None:
+        """Get enrichment metadata for a single file."""
+        row = self._conn.execute(
+            "SELECT * FROM file_metadata WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return FileMetadata(
+            file_id=row["file_id"],
+            purpose=row["purpose"],
+            module=row["module"],
+            domain=row["domain"],
+            concepts=row["concepts"],
+            public_api_surface=row["public_api_surface"],
+            complexity_notes=row["complexity_notes"],
+        )
+
+    def get_file_metadata_batch(self, file_ids: list[int]) -> dict[int, FileMetadata]:
+        """Get enrichment metadata for multiple files. Returns {file_id: FileMetadata}."""
+        if not file_ids:
+            return {}
+        placeholders = ",".join("?" * len(file_ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM file_metadata WHERE file_id IN ({placeholders})",
+            file_ids,
+        ).fetchall()
+        return {
+            row["file_id"]: FileMetadata(
+                file_id=row["file_id"],
+                purpose=row["purpose"],
+                module=row["module"],
+                domain=row["domain"],
+                concepts=row["concepts"],
+                public_api_surface=row["public_api_surface"],
+                complexity_notes=row["complexity_notes"],
+            )
+            for row in rows
+        }
 
     # --- Symbol queries ---
 
@@ -309,6 +357,11 @@ class KnowledgeBase:
 
     @staticmethod
     def _row_to_file(row) -> File:
+        # file_source may not exist in older DBs without migration
+        try:
+            file_source = row["file_source"]
+        except (IndexError, KeyError):
+            file_source = "project"
         return File(
             id=row["id"],
             repo_id=row["repo_id"],
@@ -316,6 +369,7 @@ class KnowledgeBase:
             language=row["language"],
             content_hash=row["content_hash"],
             size_bytes=row["size_bytes"],
+            file_source=file_source,
         )
 
     @staticmethod

@@ -47,6 +47,7 @@ def upsert_file(
     language: str,
     content_hash: str,
     size_bytes: int,
+    file_source: str = "project",
 ) -> int:
     """Insert or update a file record. Returns the file id."""
     row = conn.execute(
@@ -55,13 +56,14 @@ def upsert_file(
     ).fetchone()
     if row:
         conn.execute(
-            "UPDATE files SET language = ?, content_hash = ?, size_bytes = ? WHERE id = ?",
-            (language, content_hash, size_bytes, row["id"]),
+            "UPDATE files SET language = ?, content_hash = ?, size_bytes = ?, file_source = ? WHERE id = ?",
+            (language, content_hash, size_bytes, file_source, row["id"]),
         )
         return row["id"]
     cursor = conn.execute(
-        "INSERT INTO files (repo_id, path, language, content_hash, size_bytes) VALUES (?, ?, ?, ?, ?)",
-        (repo_id, path, language, content_hash, size_bytes),
+        "INSERT INTO files (repo_id, path, language, content_hash, size_bytes, file_source) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (repo_id, path, language, content_hash, size_bytes, file_source),
     )
     return cursor.lastrowid
 

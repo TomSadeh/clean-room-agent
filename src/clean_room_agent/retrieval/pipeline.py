@@ -1,11 +1,17 @@
 """Pipeline runner: orchestrates task analysis, retrieval stages, and context assembly."""
 
+from __future__ import annotations
+
 import json
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clean_room_agent.config import require_models_config
+
+if TYPE_CHECKING:
+    from clean_room_agent.trace import TraceLogger
 from clean_room_agent.environment import build_environment_brief, build_repo_file_tree
 from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
@@ -45,6 +51,7 @@ def run_pipeline(
     config: dict,
     plan_artifact_path: Path | None = None,
     refinement_request: RefinementRequest | None = None,
+    trace_logger: "TraceLogger | None" = None,
 ) -> ContextPackage:
     """Run the full retrieval pipeline.
 
@@ -155,7 +162,10 @@ def run_pipeline(
                 )
                 elapsed = int((time.monotonic() - start) * 1000)
 
-                for call in llm.flush():
+                calls = llm.flush()
+                if trace_logger is not None:
+                    trace_logger.log_calls("task_analysis", "task_analysis", calls, reasoning_config.model)
+                for call in calls:
                     insert_retrieval_llm_call(
                         raw_conn, task_id, "task_analysis", reasoning_config.model,
                         call["prompt"], call["response"],
@@ -190,7 +200,10 @@ def run_pipeline(
                 task_query, available_for_routing, routing_llm,
             )
 
-            for call in routing_llm.flush():
+            calls = routing_llm.flush()
+            if trace_logger is not None:
+                trace_logger.log_calls("stage_routing", "stage_routing", calls, routing_config.model)
+            for call in calls:
                 insert_retrieval_llm_call(
                     raw_conn, task_id, "stage_routing", routing_config.model,
                     call["prompt"], call["response"],
@@ -251,7 +264,10 @@ def run_pipeline(
                 elapsed = int((time.monotonic() - start) * 1000)
                 context.stage_timings[stage_name] = elapsed
 
-                for call in llm.flush():
+                calls = llm.flush()
+                if trace_logger is not None:
+                    trace_logger.log_calls(stage_name, stage_name, calls, stage_config.model)
+                for call in calls:
                     insert_retrieval_llm_call(
                         raw_conn, task_id, stage_name, stage_config.model,
                         call["prompt"], call["response"],
@@ -297,7 +313,10 @@ def run_pipeline(
             assembly_llm = EnvironmentLLMClient(base_assembly_llm, brief_text)
             package = assemble_context(context, budget, repo_path, llm=assembly_llm, kb=kb)
 
-            for call in assembly_llm.flush():
+            calls = assembly_llm.flush()
+            if trace_logger is not None:
+                trace_logger.log_calls("assembly", "assembly_refilter", calls, assembly_config.model)
+            for call in calls:
                 insert_retrieval_llm_call(
                     raw_conn, task_id, "assembly_refilter", assembly_config.model,
                     call["prompt"], call["response"],

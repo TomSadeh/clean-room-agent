@@ -11,6 +11,7 @@ class File:
     language: str
     content_hash: str
     size_bytes: int
+    file_source: str = "project"
 
 
 @dataclass

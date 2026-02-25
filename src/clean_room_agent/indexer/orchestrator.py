@@ -362,3 +362,167 @@ def _do_index(
         parse_errors=parse_errors,
         duration_ms=elapsed_ms,
     )
+
+
+@dataclass
+class LibraryIndexResult:
+    libraries_found: int
+    files_scanned: int
+    files_new: int
+    files_unchanged: int
+    parse_errors: int
+    duration_ms: int
+
+
+def index_libraries(
+    repo_path: Path,
+    indexer_config: dict | None = None,
+) -> LibraryIndexResult:
+    """Index library/dependency source files into the curated DB.
+
+    Uses the same repo_id as the project (files differentiated by file_source='library').
+    Parses symbols, signatures, docstrings. Skips git history, co-changes, inline
+    comments, symbol_references (not useful for libraries).
+    Incremental via content_hash comparison.
+    """
+    from clean_room_agent.indexer.library_scanner import (
+        resolve_library_sources,
+        scan_library,
+    )
+
+    start = time.monotonic()
+    repo_path = repo_path.resolve()
+    ic = indexer_config or {}
+
+    curated_conn = get_connection("curated", repo_path=repo_path)
+    raw_conn = get_connection("raw", repo_path=repo_path)
+
+    try:
+        # Look up repo_id (must exist from prior `cra index`)
+        repo_row = curated_conn.execute(
+            "SELECT id FROM repos WHERE path = ?", (str(repo_path),)
+        ).fetchone()
+        if not repo_row:
+            raise RuntimeError(
+                f"No indexed repo at {repo_path}. Run 'cra index' before 'cra index-libraries'."
+            )
+        repo_id = repo_row["id"]
+
+        # Resolve library sources
+        sources = resolve_library_sources(repo_path, ic)
+        max_file_size = ic.get("library_max_file_size", 524_288)
+
+        total_scanned = 0
+        total_new = 0
+        total_unchanged = 0
+        total_parse_errors = 0
+
+        # Get existing library files from DB
+        existing = curated_conn.execute(
+            "SELECT id, path, content_hash FROM files WHERE repo_id = ? AND file_source = 'library'",
+            (repo_id,),
+        ).fetchall()
+        existing_map = {r["path"]: (r["id"], r["content_hash"]) for r in existing}
+
+        for lib in sources:
+            lib_files = scan_library(lib, max_file_size=max_file_size)
+            total_scanned += len(lib_files)
+
+            for lf in lib_files:
+                # Compute content hash
+                try:
+                    content = lf.absolute_path.read_bytes()
+                except (OSError, IOError):
+                    continue
+                content_hash = hashlib.sha256(content).hexdigest()
+
+                # Check if unchanged
+                if lf.relative_path in existing_map:
+                    if existing_map[lf.relative_path][1] == content_hash:
+                        total_unchanged += 1
+                        continue
+                    # Changed: clear children
+                    queries.clear_file_children(curated_conn, existing_map[lf.relative_path][0])
+
+                # Upsert file record
+                file_id = queries.upsert_file(
+                    curated_conn, repo_id, lf.relative_path, "python",
+                    content_hash, lf.size_bytes, file_source="library",
+                )
+
+                # Parse symbols and docstrings
+                try:
+                    parser = get_parser("python")
+                    parsed = parser.parse(content, lf.relative_path)
+                except Exception as e:
+                    total_parse_errors += 1
+                    logger.warning("Parse error for library file %s: %s", lf.relative_path, e)
+                    continue
+
+                total_new += 1
+
+                # Insert symbols (two passes: parents then children)
+                symbol_records: list[dict] = []
+                for sym in parsed.symbols:
+                    if sym.parent_name is None:
+                        sym_id = queries.insert_symbol(
+                            curated_conn, file_id, sym.name, sym.kind,
+                            sym.start_line, sym.end_line, sym.signature,
+                        )
+                        symbol_records.append({
+                            "name": sym.name, "id": sym_id,
+                            "start_line": sym.start_line, "end_line": sym.end_line,
+                        })
+
+                parent_id_map = {s["name"]: s["id"] for s in symbol_records}
+                for sym in parsed.symbols:
+                    if sym.parent_name is not None:
+                        parent_id = parent_id_map.get(sym.parent_name)
+                        sym_id = queries.insert_symbol(
+                            curated_conn, file_id, sym.name, sym.kind,
+                            sym.start_line, sym.end_line, sym.signature,
+                            parent_symbol_id=parent_id,
+                        )
+                        symbol_records.append({
+                            "name": sym.name, "id": sym_id,
+                            "start_line": sym.start_line, "end_line": sym.end_line,
+                        })
+
+                # Insert docstrings with symbol attachment
+                for doc in parsed.docstrings:
+                    attached_id = _find_symbol_id_for_attachment(
+                        symbol_records,
+                        symbol_name=doc.symbol_name,
+                        line=doc.line,
+                    )
+                    queries.insert_docstring(
+                        curated_conn, file_id, doc.content,
+                        doc.format, doc.parsed_fields,
+                        symbol_id=attached_id,
+                    )
+
+            curated_conn.commit()
+
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        raw_queries.insert_index_run(
+            raw_conn,
+            repo_path=str(repo_path),
+            files_scanned=total_scanned,
+            files_changed=total_new,
+            duration_ms=elapsed_ms,
+            status="library_index",
+        )
+        raw_conn.commit()
+
+        return LibraryIndexResult(
+            libraries_found=len(sources),
+            files_scanned=total_scanned,
+            files_new=total_new,
+            files_unchanged=total_unchanged,
+            parse_errors=total_parse_errors,
+            duration_ms=elapsed_ms,
+        )
+    finally:
+        curated_conn.close()
+        raw_conn.close()

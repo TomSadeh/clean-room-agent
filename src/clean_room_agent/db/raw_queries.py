@@ -182,12 +182,19 @@ def insert_orchestrator_run(
     task_id: str,
     repo_path: str,
     task_description: str,
+    git_branch: str | None = None,
+    git_base_ref: str | None = None,
 ) -> int:
     """Log an orchestrator run to the raw DB. Returns the run id."""
-    return _insert_row(conn, "orchestrator_runs",
-        ["task_id", "repo_path", "task_description", "status", "timestamp"],
-        [task_id, repo_path, task_description, "running", _now()],
-    )
+    columns = ["task_id", "repo_path", "task_description", "status", "timestamp"]
+    values: list = [task_id, repo_path, task_description, "running", _now()]
+    if git_branch is not None:
+        columns.append("git_branch")
+        values.append(git_branch)
+    if git_base_ref is not None:
+        columns.append("git_base_ref")
+        values.append(git_base_ref)
+    return _insert_row(conn, "orchestrator_runs", columns, values)
 
 
 def update_orchestrator_run(

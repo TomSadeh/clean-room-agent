@@ -89,6 +89,7 @@ class ClassifiedSymbol:
     reason: str = ""
     signature: str = ""
     group_id: str | None = None
+    file_source: str = "project"
 
     def __post_init__(self):
         if self.detail_level not in VALID_DETAIL_LEVELS:
@@ -110,6 +111,7 @@ class FileContent:
     token_estimate: int
     detail_level: str  # primary, supporting, type_context
     included_symbols: list[str] = field(default_factory=list)
+    metadata_summary: str = ""
 
     def __post_init__(self):
         if self.detail_level not in VALID_FILE_DETAIL_LEVELS:
@@ -142,7 +144,8 @@ class ContextPackage:
             parts.append(f"# Intent\n{self.task.intent_summary}\n")
         for fc in self.files:
             header = f"## {fc.path} [{fc.language}] ({fc.detail_level})"
-            parts.append(f"{header}\n<code lang=\"{fc.language}\">\n{fc.content}\n</code>\n")
+            meta_line = f"{fc.metadata_summary}\n" if fc.metadata_summary else ""
+            parts.append(f"{header}\n{meta_line}<code lang=\"{fc.language}\">\n{fc.content}\n</code>\n")
         return "\n".join(parts)
 
 
