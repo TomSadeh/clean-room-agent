@@ -237,28 +237,25 @@ class EnvironmentLLMClient:
 
     The logged prompt includes the brief (traceability).  Budget validation
     accounts for it (it's part of the total prompt size sent to LLMClient).
+
+    All attributes not explicitly defined here (config, flush, close, etc.)
+    are delegated to the inner client via __getattr__.  __enter__/__exit__
+    are explicit because Python's dunder dispatch bypasses __getattr__.
     """
 
     def __init__(self, inner: LoggedLLMClient, environment_brief: str):
         self._inner = inner
         self._brief = environment_brief
 
-    @property
-    def config(self) -> ModelConfig:
-        return self._inner.config
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
     def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
         enriched = f"{self._brief}\n\n{prompt}" if self._brief else prompt
         return self._inner.complete(enriched, system=system)
 
-    def flush(self) -> list[dict]:
-        return self._inner.flush()
-
-    def close(self) -> None:
-        self._inner.close()
-
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
-        self.close()
+        self._inner.close()

@@ -1,6 +1,7 @@
 """Scope stage: tiered expansion + LLM judgment."""
 
 import logging
+from typing import NamedTuple
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
@@ -19,6 +20,24 @@ MAX_DEPS = 30
 MAX_CO_CHANGES = 20
 MAX_METADATA = 20
 MAX_KEYWORDS = 5
+
+class ScopeCandidate(NamedTuple):
+    """A candidate file for scope expansion with its sort score."""
+    file_id: int
+    path: str
+    language: str
+    reason: str
+    score: int
+
+
+def _dedup_by_score(candidates: list[ScopeCandidate]) -> list[ScopeCandidate]:
+    """Deduplicate candidates by file_id, keeping the highest score."""
+    best: dict[int, ScopeCandidate] = {}
+    for c in candidates:
+        if c.file_id not in best or c.score > best[c.file_id].score:
+            best[c.file_id] = c
+    return sorted(best.values(), key=lambda c: c.score, reverse=True)
+
 
 SCOPE_JUDGMENT_SYSTEM = (
     "You are Jane, a code retrieval judge. Given a task description and a list of candidate files, "
@@ -92,60 +111,49 @@ def expand_scope(
         seed_imports[fid] = {d.target_file_id for d in kb.get_dependencies(fid, "imports")}
         seed_imported_by[fid] = {d.source_file_id for d in kb.get_dependencies(fid, "imported_by")}
 
-    dep_candidates: list[tuple[int, str, str, str, int]] = []  # (fid, path, lang, reason, seed_connections)
+    dep_candidates: list[ScopeCandidate] = []
     for fid in base_fids:
         for target_fid in seed_imports[fid]:
             info = _file_lookup(target_fid)
             if info and info["id"] not in seen:
                 seed_conns = sum(1 for sf in base_fids if target_fid in seed_imports.get(sf, set()))
-                dep_candidates.append((info["id"], info["path"], info["language"],
-                                       f"imported by {fid}", seed_conns))
+                dep_candidates.append(ScopeCandidate(
+                    info["id"], info["path"], info["language"],
+                    f"imported by {fid}", seed_conns))
         for source_fid in seed_imported_by[fid]:
             info = _file_lookup(source_fid)
             if info and info["id"] not in seen:
                 seed_conns = sum(1 for sf in base_fids if source_fid in seed_imported_by.get(sf, set()))
-                dep_candidates.append((info["id"], info["path"], info["language"],
-                                       f"imports {fid}", seed_conns))
+                dep_candidates.append(ScopeCandidate(
+                    info["id"], info["path"], info["language"],
+                    f"imports {fid}", seed_conns))
 
-    # Dedup by file_id, keeping highest seed_connections
-    dep_dedup: dict[int, tuple[int, str, str, str, int]] = {}
-    for fid, path, lang, reason, sc in dep_candidates:
-        if fid not in dep_dedup or sc > dep_dedup[fid][4]:
-            dep_dedup[fid] = (fid, path, lang, reason, sc)
-
-    # R6: sort by seed connections descending, then apply cap
-    sorted_deps = sorted(dep_dedup.values(), key=lambda x: x[4], reverse=True)
-    for fid, path, lang, reason, _ in sorted_deps[:max_deps]:
-        _add(fid, path, lang, 2, reason)
+    # R6: dedup by file_id (highest score wins), sort descending, then cap
+    for c in _dedup_by_score(dep_candidates)[:max_deps]:
+        _add(c.file_id, c.path, c.language, 2, c.reason)
 
     # Tier 3: co-change neighbors — R6: collect globally, sort by count, then cap
-    co_candidates: list[tuple[int, str, str, str, int]] = []
+    co_candidates: list[ScopeCandidate] = []
     for fid in base_fids:
         neighbors = kb.get_co_change_neighbors(fid, min_count=2)
         for cc in neighbors:
             other_fid = cc.file_b_id if cc.file_a_id == fid else cc.file_a_id
             info = _file_lookup(other_fid)
             if info and info["id"] not in seen:
-                co_candidates.append((
+                co_candidates.append(ScopeCandidate(
                     info["id"], info["path"], info["language"],
                     f"co-changed {cc.count}x with {fid}", cc.count,
                 ))
 
-    # Dedup by file_id, keeping highest count
-    co_dedup: dict[int, tuple[int, str, str, str, int]] = {}
-    for fid_c, path_c, lang_c, reason_c, count_c in co_candidates:
-        if fid_c not in co_dedup or count_c > co_dedup[fid_c][4]:
-            co_dedup[fid_c] = (fid_c, path_c, lang_c, reason_c, count_c)
-
-    sorted_co = sorted(co_dedup.values(), key=lambda x: x[4], reverse=True)
-    for fid_c, path_c, lang_c, reason_c, _ in sorted_co[:max_co_changes]:
-        _add(fid_c, path_c, lang_c, 3, reason_c)
+    # R6: dedup by file_id (highest score wins), sort descending, then cap
+    for c in _dedup_by_score(co_candidates)[:max_co_changes]:
+        _add(c.file_id, c.path, c.language, 3, c.reason)
 
     # Tier 4: metadata search (enrichment)
     if task.keywords:
         # R6b: order keywords by length (longer = more specific) before capping
         ordered_keywords = sorted(task.keywords, key=len, reverse=True)[:max_keywords]
-        meta_candidates: list[tuple[int, str, str, str, int]] = []  # (fid, path, lang, reason, kw_specificity)
+        meta_candidates: list[ScopeCandidate] = []
         for kw_idx, kw in enumerate(ordered_keywords):
             matches = kb.search_files_by_metadata(repo_id, concepts=kw)
             if not matches:
@@ -154,18 +162,12 @@ def expand_scope(
                 if f.id not in seen:
                     # R6b: specificity = keyword length + position priority (earlier = more specific)
                     specificity = len(kw) * 10 + (len(ordered_keywords) - kw_idx)
-                    meta_candidates.append((f.id, f.path, f.language, f"metadata match: {kw}", specificity))
+                    meta_candidates.append(ScopeCandidate(
+                        f.id, f.path, f.language, f"metadata match: {kw}", specificity))
 
-        # Dedup by file_id, keeping highest specificity
-        meta_dedup: dict[int, tuple[int, str, str, str, int]] = {}
-        for fid, path, lang, reason, spec in meta_candidates:
-            if fid not in meta_dedup or spec > meta_dedup[fid][4]:
-                meta_dedup[fid] = (fid, path, lang, reason, spec)
-
-        # R6: sort by specificity descending, then apply cap
-        sorted_meta = sorted(meta_dedup.values(), key=lambda x: x[4], reverse=True)
-        for fid, path, lang, reason, _ in sorted_meta[:max_metadata]:
-            _add(fid, path, lang, 4, reason)
+        # R6: dedup by file_id (highest score wins), sort descending, then cap
+        for c in _dedup_by_score(meta_candidates)[:max_metadata]:
+            _add(c.file_id, c.path, c.language, 4, c.reason)
 
         if not meta_candidates:
             logger.info("No enrichment data matched keywords; Tier 4 skipped.")

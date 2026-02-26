@@ -33,63 +33,16 @@ All 4 items implemented and verified. 1062 tests passing.
 
 ---
 
-## Batch 2: Isolated Low-Risk (R9, R14, R15, R16, A8, A9, A14)
+## Batch 2: Isolated Low-Risk (R9, R14, R15, R16, A8, A9, A14) — DONE
 
-Single-file changes, no cross-dependencies. Can be implemented in any order.
+All 7 items implemented and verified. 1062 tests passing.
 
-### R9 + R14: Scope stage NamedTuple + dedup helper
-
-**Modify** `src/clean_room_agent/retrieval/scope_stage.py`:
-- Add `ScopeCandidate(NamedTuple)` with fields `file_id, path, language, reason, score`
-- Replace all `tuple[int,str,str,str,int]` construction and `x[4]` indexing with named fields
-- Extract `_dedup_by_score(candidates: list[ScopeCandidate]) -> list[ScopeCandidate]`
-- Replace 3 identical dedup+sort blocks (deps lines 111-118, co-changes 135-142, metadata 160-167)
-
-### R15: `__getattr__` delegation in EnvironmentLLMClient
-
-**Modify** `src/clean_room_agent/llm/client.py`:
-- Remove explicit `config` property, `flush()`, `close()` delegations
-- Add `__getattr__` that delegates to `self._inner`
-- Keep `__enter__`/`__exit__` explicit (Python dunder dispatch doesn't use `__getattr__`)
-- Keep `complete()` (the only method with custom behavior)
-
-### R16: Library scanner logging
-
-**Modify** `src/clean_room_agent/indexer/library_scanner.py`:
-- Line 87: `except Exception:` -> `except (OSError, ValueError, SyntaxError) as e:` + `logger.debug()`
-- Line 101: `except Exception:` -> `except (ImportError, ValueError, AttributeError) as e:` + `logger.debug()`
-- Add `logger = logging.getLogger(__name__)` if missing
-
-### A8: Log enrichment R3 skip reasons to raw DB (P2)
-
-**Audit finding:** P2-2 (W2-C10). Files skipped due to R3 (prompt too large) are only logged via `logger.warning()`. No raw DB record.
-
-**Modify** `src/clean_room_agent/llm/enrichment.py`:
-- After the R3 skip warning (line ~93), call `insert_enrichment_output()` with `raw_prompt=""`, `raw_response=f"R3_SKIP: {input_tokens} tokens > {available} available"`, `system_prompt=ENRICHMENT_SYSTEM`, `purpose=None`, `module=None`, `domain=None`, `concepts="[]"`, `file_path=file_path`
-
-### A9: Log enrichment already-enriched skips (P2)
-
-**Audit finding:** P2-3 (W2-C11). Already-enriched files are skipped with zero logging — not even `logger.debug()`.
-
-**Modify** `src/clean_room_agent/llm/enrichment.py`:
-- After the `if existing: skipped += 1; continue` block (line ~83), add `logger.debug("Enrichment skip: %s already enriched (id=%d)", file_path, existing[0])`
-
-### A14: Enrichment raw LLMClient missing metadata (P2, supplementary)
-
-**Audit finding:** S-1 (W1-C4 supplementary). Enrichment uses raw `LLMClient` — does not capture thinking, latency, or token counts.
-
-**Modify** `src/clean_room_agent/llm/enrichment.py`:
-- Capture `response.thinking` and pass to `insert_enrichment_output()` (requires A2's thinking column pattern)
-- Capture `elapsed_ms` via `time.monotonic()` bracketing the `client.complete()` call
-- Pass token counts from `response.prompt_tokens` / `response.completion_tokens` to `insert_enrichment_output()`
-
-**Modify** `src/clean_room_agent/db/raw_queries.py`:
-- Add `thinking`, `prompt_tokens`, `completion_tokens`, `latency_ms` parameters to `insert_enrichment_output()`
-
-**Modify** `src/clean_room_agent/db/schema.py`:
-- Add migrations: `ALTER TABLE enrichment_outputs ADD COLUMN thinking TEXT`, `ADD COLUMN prompt_tokens INTEGER`, `ADD COLUMN completion_tokens INTEGER`, `ADD COLUMN latency_ms INTEGER`
-
-**Test**: Run full suite.
+- **R9+R14:** Added `ScopeCandidate(NamedTuple)` and `_dedup_by_score()` helper to `scope_stage.py`. Replaced 3 identical dedup+sort blocks and all raw tuple indexing with named fields.
+- **R15:** Replaced explicit `config`/`flush`/`close` delegations in `EnvironmentLLMClient` with `__getattr__` to `_inner`. Kept `complete()` (custom) and `__enter__`/`__exit__` (dunder dispatch).
+- **R16:** Narrowed `except Exception:` to specific types in `library_scanner.py` (`OSError|ValueError|SyntaxError` for parse, `ImportError|ValueError|AttributeError|ModuleNotFoundError` for find_spec). Added `logger.debug()`.
+- **A8 (P2):** R3 skip now calls `insert_enrichment_output()` with `R3_SKIP` response — raw DB record for every skipped file.
+- **A9 (P2):** Already-enriched skips now log via `logger.debug()`.
+- **A14 (P2):** Enrichment captures `thinking`, `prompt_tokens`, `completion_tokens`, `latency_ms` from LLM response. Added 4 new columns to `enrichment_outputs` (schema migration + `insert_enrichment_output` signature).
 
 ---
 

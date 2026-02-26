@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +81,7 @@ def enrich_repository(
                 "SELECT id FROM enrichment_outputs WHERE file_path = ?", (file_path,)
             ).fetchone()
             if existing:
+                logger.debug("Enrichment skip: %s already enriched (id=%d)", file_path, existing["id"])
                 skipped += 1
                 continue
 
@@ -94,11 +96,23 @@ def enrich_repository(
                     "R3: enrichment prompt for %s too large (%d tokens, available %d) — skipping",
                     file_path, input_tokens, available,
                 )
+                insert_enrichment_output(
+                    raw_conn,
+                    file_id=file_id,
+                    model=model_config.model,
+                    raw_prompt="",
+                    raw_response=f"R3_SKIP: {input_tokens} tokens > {available} available",
+                    system_prompt=ENRICHMENT_SYSTEM,
+                    file_path=file_path,
+                )
+                raw_conn.commit()
                 skipped += 1
                 continue
 
             try:
+                t0 = time.monotonic()
                 response = client.complete(prompt, system=ENRICHMENT_SYSTEM)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
                 parsed = _parse_enrichment_response(response.text)
             except Exception as e:
                 logger.error("Enrichment failed for %s: %s", file_path, e)
@@ -131,6 +145,10 @@ def enrich_repository(
                 promoted=promote,
                 system_prompt=ENRICHMENT_SYSTEM,
                 file_path=file_path,
+                thinking=response.thinking,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                latency_ms=elapsed_ms,
             )
             raw_conn.commit()
             enriched += 1

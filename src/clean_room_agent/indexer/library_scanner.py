@@ -84,7 +84,8 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
             continue
         try:
             result = parser.parse(source, str(py_file.relative_to(repo_path)))
-        except Exception:
+        except (OSError, ValueError, SyntaxError) as e:
+            logger.debug("Failed to parse %s for import scanning: %s", py_file, e)
             continue
         for imp in result.imports:
             if not imp.is_relative:
@@ -98,7 +99,8 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
     for name in sorted(import_names):
         try:
             spec = importlib.util.find_spec(name)
-        except Exception:
+        except (ImportError, ValueError, AttributeError, ModuleNotFoundError) as e:
+            logger.debug("Failed to resolve library %s: %s", name, e)
             continue
         if spec is None or spec.origin is None:
             continue

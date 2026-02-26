@@ -340,6 +340,19 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Migration (A14): add thinking, prompt_tokens, completion_tokens, latency_ms
+    # to enrichment_outputs for full LLM call traceability
+    for col, col_type in [
+        ("thinking", "TEXT"),
+        ("prompt_tokens", "INTEGER"),
+        ("completion_tokens", "INTEGER"),
+        ("latency_ms", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE enrichment_outputs ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
 
 def create_session_schema(conn: sqlite3.Connection) -> None:
     """Create session DB table. Idempotent."""

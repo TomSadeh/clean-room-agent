@@ -247,13 +247,21 @@ def insert_enrichment_output(
     system_prompt: str | None = None,
     task_id: str | None = None,
     file_path: str | None = None,
+    thinking: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    latency_ms: int | None = None,
 ) -> int:
     """Log an enrichment output to the raw DB. Returns the output id."""
     return _insert_row(conn, "enrichment_outputs",
         ["task_id", "file_id", "file_path", "model", "purpose", "module",
          "domain", "concepts", "public_api_surface", "complexity_notes",
-         "system_prompt", "raw_prompt", "raw_response", "promoted", "timestamp"],
+         "system_prompt", "raw_prompt", "raw_response", "promoted",
+         "thinking", "prompt_tokens", "completion_tokens", "latency_ms",
+         "timestamp"],
         [task_id, file_id, file_path, model, purpose, module,
          domain, concepts, public_api_surface, complexity_notes,
-         system_prompt, raw_prompt, raw_response, int(promoted), _now()],
+         system_prompt, raw_prompt, raw_response, int(promoted),
+         thinking, prompt_tokens, completion_tokens, latency_ms,
+         _now()],
     )
