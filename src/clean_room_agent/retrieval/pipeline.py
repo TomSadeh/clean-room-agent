@@ -369,32 +369,63 @@ def run_pipeline(
 
         return package
 
+    except (ValueError, RuntimeError):
+        # Expected failures: bad LLM response, validation, config error
+        _mark_task_failed(raw_conn, task_run_id, total_start)
+        raise
     except Exception:
-        if task_run_id is not None:
-            try:
-                total_elapsed = int((time.monotonic() - total_start) * 1000)
-                update_task_run(raw_conn, task_run_id, success=False, total_latency_ms=total_elapsed)
-                raw_conn.commit()
-            except Exception as db_err:
-                logger.warning("Failed to log error to raw DB: %s", db_err)
+        # Unexpected: DB error, OS error, or internal bug
+        _mark_task_failed(raw_conn, task_run_id, total_start)
+        logger.error("Unexpected error in retrieval pipeline", exc_info=True)
         raise
     finally:
         curated_conn.close()
         session_conn.close()
 
         # Archive session DB to raw, then delete the file
-        session_file = _db_path(repo_path, "session", task_id)
-        if session_file.exists():
-            try:
-                session_blob = session_file.read_bytes()
-                insert_session_archive(raw_conn, task_id, session_blob)
-                raw_conn.commit()
-                session_file.unlink()
-                logger.debug("Archived and removed session DB for task %s", task_id)
-            except Exception as archive_err:
-                logger.warning("Failed to archive session DB: %s", archive_err)
+        _archive_session_finally(raw_conn, repo_path, task_id)
 
         raw_conn.close()
+
+
+def _mark_task_failed(raw_conn, task_run_id: int | None, total_start: float) -> None:
+    """Log task failure to raw DB. Best-effort — warns on DB errors."""
+    if task_run_id is not None:
+        try:
+            total_elapsed = int((time.monotonic() - total_start) * 1000)
+            update_task_run(raw_conn, task_run_id, success=False, total_latency_ms=total_elapsed)
+            raw_conn.commit()
+        except Exception as db_err:
+            logger.warning("Failed to log error to raw DB: %s", db_err)
+
+
+def _archive_session_finally(raw_conn, repo_path: Path, task_id: str) -> None:
+    """Archive session DB to raw DB and delete the file. Separated error handling."""
+    session_file = _db_path(repo_path, "session", task_id)
+    if not session_file.exists():
+        return
+
+    # Step 1: Read file — OSError means we can't archive at all
+    try:
+        session_blob = session_file.read_bytes()
+    except OSError as e:
+        logger.warning("Failed to read session DB for archival: %s", e)
+        return
+
+    # Step 2: Insert into raw DB — sqlite3 error means preserve the file
+    try:
+        insert_session_archive(raw_conn, task_id, session_blob)
+        raw_conn.commit()
+    except Exception as e:
+        logger.warning("Failed to insert session archive into raw DB: %s (preserving file)", e)
+        return
+
+    # Step 3: Delete file — best-effort, archive already succeeded
+    try:
+        session_file.unlink()
+        logger.debug("Archived and removed session DB for task %s", task_id)
+    except OSError as e:
+        logger.warning("Session archived but failed to delete file: %s", e)
 
 
 def _restore_session_from_archive(

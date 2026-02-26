@@ -10,35 +10,15 @@ Remaining findings from code reviews and audits. Completed items removed — see
 ### ~~A2. Schema migrations catch `OperationalError` with bare `pass`~~ — DONE
 ### ~~A3. Library scanner `except OSError: return` with no logging~~ — DONE
 
-### A4. Pipeline `except Exception` wraps ~250 lines
-- File: `retrieval/pipeline.py:372-380`
-- Single catch-all wraps the entire pipeline body (task analysis through assembly).
-  Recoverable stage errors and fatal DB corruption handled identically.
-- Fix: catch `(ValueError, RuntimeError)` separately from unexpected exceptions.
-
-### A5. Archive session `except Exception` swallows all errors
-- File: `orchestrator/runner.py:192-199`
-- 5-line try block (read, insert, commit, unlink) with one `except Exception`.
-  DB insert failure means file is never deleted. Code logs warning and continues.
-- Fix: separate catches for `OSError` (file read/delete) vs `sqlite3.Error` (DB insert).
-
-### A6. `_git_cleanup` single `except Exception` leaves repo in unknown state
-- File: `orchestrator/runner.py:222-235`
-- Entire rollback+merge+branch-delete wrapped in one catch. If rollback fails, branch
-  delete is skipped. Caller can't tell whether cleanup succeeded.
-- Fix: per-operation catches. Rollback/return-to-original failures should raise; branch
-  delete failure is best-effort warning.
+### ~~A4. Pipeline `except Exception` wraps ~250 lines~~ — DONE
+### ~~A5. Archive session `except Exception` swallows all errors~~ — DONE
+### ~~A6. `_git_cleanup` single `except Exception` leaves repo in unknown state~~ — DONE
 
 ### ~~A7. Detail level falls back to `"type_context"` (violates R2)~~ — DONE
 ### ~~A8. Hardcoded defaults for coding_style~~ — BY DESIGN (supplementary, not core logic)
 ### ~~A9. Validator timeout defaults to 120 seconds~~ — DONE
 
-### A10. 3-level config fallback chain for context_window
-- File: `commands/retrieve.py:40-47`
-- Falls through CLI → `[budget].context_window` → `[models].context_window`.
-  The `[models]` fallback is undocumented. Comment says "single source of truth"
-  but code treats it as fallback.
-- Fix: explicit required config with clear error message listing all valid sources.
+### ~~A10. 3-level config fallback chain for context_window~~ — DONE
 
 ### ~~A11. Task type falls back to `"unknown"`~~ — DONE
 ### ~~A12. Precision JSON fields fall back to empty strings~~ — DONE
@@ -80,28 +60,9 @@ Remaining findings from code reviews and audits. Completed items removed — see
 
 ## P3 — Low
 
-### T72. Python/TS/JS signature extraction falls back to string split (R4)
-
-Three places use `split("\n")[0]` instead of AST structure for signature extraction:
-
-1. `parsers/python_parser.py:230` — module-level variable assignments.
-2. `parsers/python_parser.py:254-256` — fallback when body node not found.
-3. `parsers/ts_js_parser.py:157,166` — variable/arrow function symbols.
-
-These violate R4 ("use parsed structure, not string heuristics"). Multi-line assignments or
-arrow functions get truncated to their first line. Low impact since these are signatures
-(not source bodies) and the truncation only loses parameter continuation lines.
-
-### T73. Grammatical error in TEST_IMPLEMENT_SYSTEM prompt
-
-`execute/prompts.py:121-122` — "For new test files, use an empty <search></search> is not
-allowed —" is grammatically broken. Should be: "For new test files, empty <search></search>
-is not allowed; instead, use a search string that matches the insertion point context."
-
-### T74. `_topological_sort()` gives unhelpful errors on malformed items
-
-`orchestrator/runner.py:127-155` — If items lack expected attributes, the lambda accessors
-raise `AttributeError` with no context about which item was malformed.
+### ~~T72. Python/TS/JS signature extraction falls back to string split (R4)~~ — DONE
+### ~~T73. Grammatical error in TEST_IMPLEMENT_SYSTEM prompt~~ — DONE
+### ~~T74. `_topological_sort()` gives unhelpful errors on malformed items~~ — DONE
 
 ---
 

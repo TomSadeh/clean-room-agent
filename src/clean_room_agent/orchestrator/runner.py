@@ -186,17 +186,32 @@ def _accumulate_optional_tokens(values: list[int | None]) -> int | None:
 
 
 def _archive_session(raw_conn, repo_path: Path, task_id: str) -> None:
-    """Archive session DB to raw DB and delete the file."""
+    """Archive session DB to raw DB and delete the file. Separated error handling."""
     session_file = _db_path(repo_path, "session", task_id)
-    if session_file.exists():
-        try:
-            session_blob = session_file.read_bytes()
-            insert_session_archive(raw_conn, task_id, session_blob)
-            raw_conn.commit()
-            session_file.unlink()
-            logger.debug("Archived and removed session DB for task %s", task_id)
-        except Exception as archive_err:
-            logger.warning("Failed to archive session DB: %s", archive_err)
+    if not session_file.exists():
+        return
+
+    # Step 1: Read file — OSError means we can't archive at all
+    try:
+        session_blob = session_file.read_bytes()
+    except OSError as e:
+        logger.warning("Failed to read session DB for archival: %s", e)
+        return
+
+    # Step 2: Insert into raw DB — sqlite3 error means preserve the file
+    try:
+        insert_session_archive(raw_conn, task_id, session_blob)
+        raw_conn.commit()
+    except sqlite3.Error as e:
+        logger.warning("Failed to insert session archive into raw DB: %s (preserving file)", e)
+        return
+
+    # Step 3: Delete file — best-effort, archive already succeeded
+    try:
+        session_file.unlink()
+        logger.debug("Archived and removed session DB for task %s", task_id)
+    except OSError as e:
+        logger.warning("Session archived but failed to delete file: %s", e)
 
 
 def _finalize_orchestrator_run(
@@ -219,20 +234,30 @@ def _finalize_orchestrator_run(
 
 
 def _git_cleanup(git, status: str) -> None:
-    """Run git end-of-task cleanup: rollback+delete on failure, merge+delete on success."""
-    try:
-        if status != "complete":
-            git.rollback_to_checkpoint()
-            git.clean_untracked()
-            git.return_to_original_branch()
+    """Run git end-of-task cleanup: rollback+delete on failure, merge+delete on success.
+
+    Critical operations (rollback, return-to-original, merge) propagate exceptions.
+    Branch deletion is best-effort — logged warning on failure.
+    """
+    if status != "complete":
+        # Failure path: rollback, clean, return — all critical, let propagate
+        git.rollback_to_checkpoint()
+        git.clean_untracked()
+        git.return_to_original_branch()
+        # Branch delete is best-effort
+        try:
             git.delete_task_branch()
-        else:
-            merged = git.merge_to_original()
-            if merged:
+        except Exception as e:
+            logger.warning("Failed to delete task branch after rollback: %s", e)
+    else:
+        # Success path: merge is critical, let propagate
+        merged = git.merge_to_original()
+        if merged:
+            # Branch delete is best-effort
+            try:
                 git.delete_task_branch()
-            # If merge failed: on original branch, task branch preserved
-    except Exception as git_err:
-        logger.warning("Git cleanup failed: %s", git_err)
+            except Exception as e:
+                logger.warning("Failed to delete task branch after merge: %s", e)
 
 
 def _rollback_part(
@@ -282,13 +307,30 @@ def _rollback_part(
 
 def _topological_sort(items, get_id, get_deps):
     """Topological sort items by depends_on. Falls back to original order on cycles."""
-    id_to_item = {get_id(item): item for item in items}
+    try:
+        id_to_item = {get_id(item): item for item in items}
+    except (AttributeError, TypeError, KeyError) as e:
+        # Find the offending item for a useful error message
+        for item in items:
+            try:
+                get_id(item)
+            except (AttributeError, TypeError, KeyError):
+                raise RuntimeError(
+                    f"_topological_sort: get_id failed on item {item!r}: {e}"
+                ) from e
+        raise  # pragma: no cover — shouldn't reach here
     in_degree = {get_id(item): 0 for item in items}
     adjacency = {get_id(item): [] for item in items}
     valid_ids = set(id_to_item.keys())
 
     for item in items:
-        for dep in get_deps(item):
+        try:
+            deps = get_deps(item)
+        except (AttributeError, TypeError, KeyError) as e:
+            raise RuntimeError(
+                f"_topological_sort: get_deps failed on item {item!r}: {e}"
+            ) from e
+        for dep in deps:
             if dep in valid_ids:
                 adjacency[dep].append(get_id(item))
                 in_degree[get_id(item)] += 1

@@ -366,6 +366,85 @@ class TestRunPipeline:
             )
 
 
+class TestPipelineExceptionHandling:
+    """A4: Split exception handling — expected vs unexpected errors."""
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_unexpected_error_logs_with_exc_info(self, mock_llm_class, pipeline_repo, caplog):
+        """A4: Unexpected exceptions (not ValueError/RuntimeError) log with exc_info."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        # Make the scope stage raise a TypeError (unexpected)
+        call_count = 0
+        def _side_effect(prompt, system=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                return _mock_llm_complete(prompt, system)
+            raise TypeError("unexpected type error")
+
+        mock_instance = _make_mock_llm_instance()
+        mock_instance.complete.side_effect = _side_effect
+        mock_llm_class.return_value = mock_instance
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        import logging
+        with caplog.at_level(logging.ERROR, logger="clean_room_agent.retrieval.pipeline"):
+            with pytest.raises(TypeError, match="unexpected type error"):
+                run_pipeline(
+                    raw_task="Fix the main function in src/main.py",
+                    repo_path=tmp_path,
+                    stage_names=["scope", "precision"],
+                    budget=budget,
+                    mode="plan",
+                    task_id="test-unexpected-001",
+                    config=_make_config(),
+                )
+
+        assert any("Unexpected error in retrieval pipeline" in r.message for r in caplog.records)
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_expected_error_no_extra_log(self, mock_llm_class, pipeline_repo, caplog):
+        """A4: Expected exceptions (ValueError, RuntimeError) do not log extra error."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+
+        call_count = 0
+        def _side_effect(prompt, system=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                return _mock_llm_complete(prompt, system)
+            raise ValueError("bad LLM response")
+
+        mock_instance = _make_mock_llm_instance()
+        mock_instance.complete.side_effect = _side_effect
+        mock_llm_class.return_value = mock_instance
+
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+
+        import logging
+        with caplog.at_level(logging.ERROR, logger="clean_room_agent.retrieval.pipeline"):
+            with pytest.raises(ValueError, match="bad LLM response"):
+                run_pipeline(
+                    raw_task="Fix the main function in src/main.py",
+                    repo_path=tmp_path,
+                    stage_names=["scope", "precision"],
+                    budget=budget,
+                    mode="plan",
+                    task_id="test-expected-001",
+                    config=_make_config(),
+                )
+
+        assert not any("Unexpected error in retrieval pipeline" in r.message for r in caplog.records)
+
+
 class TestPipelineTraceability:
     """T1/T2/T3: Verify full traceability of LLM calls and decisions in raw DB."""
 

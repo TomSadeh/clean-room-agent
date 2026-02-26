@@ -33,16 +33,13 @@ def run_retrieve(
     repo = Path(repo_path).resolve()
     config = load_config(repo)
 
-    # Resolve budget: CLI flag -> [budget] config -> [models].context_window -> hard error
+    # Resolve budget: CLI flag -> [budget] config -> hard error
     cw = context_window
     rt = reserved_tokens
     if cw is None or rt is None:
         budget_config = (config or {}).get("budget", {})
         if cw is None:
             cw = budget_config.get("context_window")
-        if cw is None:
-            # Fall back to models.context_window (single source of truth)
-            cw = (config or {}).get("models", {}).get("context_window")
         if rt is None:
             rt = budget_config.get("reserved_tokens")
     if cw is None or rt is None:

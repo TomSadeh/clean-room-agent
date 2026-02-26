@@ -114,7 +114,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "- Import functions under test correctly\n"
         "- Each test function should test one behavior\n"
         "- All edits must be in one response\n"
-        "- For new test files, use an empty <search></search> is not allowed — "
+        "- For new test files, empty <search></search> is not allowed; "
         "use a search string that matches the insertion point or create file content\n"
         "- For new code insertion, use a search string that matches the insertion point context"
     ),

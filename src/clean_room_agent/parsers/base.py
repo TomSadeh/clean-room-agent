@@ -116,12 +116,21 @@ def node_text(node, source: bytes) -> str:
 def extract_body_signature(node, source: bytes) -> str:
     """Extract declaration header using AST body node position (R4/T12).
 
-    Returns everything from node start to body start. Falls back to
-    first line if no body field is found.
+    Returns everything from node start to body start. For nodes without a
+    body field, checks child nodes (e.g., arrow_function inside a
+    variable_declarator). Falls back to full node text for truly bodyless
+    nodes like variable assignments (T72: no split heuristics).
     """
     body = node.child_by_field_name("body")
     if body is not None:
         header_bytes = source[node.start_byte:body.start_byte]
         return header_bytes.decode("utf-8", errors="replace").rstrip()
-    logger.debug("extract_body_signature: no body field for node type %s — first-line fallback", node.type)
-    return node_text(node, source).split("\n")[0]
+    # Check child nodes for body (e.g., arrow_function inside variable_declarator)
+    for child in node.children:
+        child_body = child.child_by_field_name("body")
+        if child_body is not None:
+            header_bytes = source[node.start_byte:child_body.start_byte]
+            return header_bytes.decode("utf-8", errors="replace").rstrip()
+    # Truly bodyless (variable assignments, etc.) — full node text IS the signature (T72)
+    logger.debug("extract_body_signature: no body field for node type %s — using full node text", node.type)
+    return node_text(node, source)

@@ -131,6 +131,24 @@ class TestRetrieveCLI:
         assert "Budget not configured" not in result.output
 
 
+class TestRetrieveModelsOnlyFallback:
+    """A10: config with only [models].context_window and no [budget] section fails."""
+
+    def test_models_only_context_window_fails(self, tmp_path):
+        """A10: [models].context_window no longer used as fallback for retrieve budget."""
+        clean_room = tmp_path / ".clean_room"
+        clean_room.mkdir()
+        (clean_room / "config.toml").write_text(
+            '[models]\nprovider = "ollama"\ncoding = "m"\nreasoning = "m"\n'
+            'base_url = "http://x"\ncontext_window = 32768\n'
+            '[stages]\ndefault = "scope,precision"\n'
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["retrieve", "fix bug", "--repo", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "Budget not configured" in result.output
+
+
 class TestPlanCLI:
     def test_plan_help(self):
         runner = CliRunner()

@@ -1361,3 +1361,131 @@ class TestDocumentationPass:
         # The pass_results should contain a "documentation" entry
         pass_types = [pr.pass_type for pr in result.pass_results]
         assert "documentation" in pass_types
+
+
+class TestArchiveSessionSeparation:
+    """A5: _archive_session separated catches — DB insert failure preserves file."""
+
+    def test_db_insert_failure_preserves_file(self, tmp_path):
+        """A5: If insert_session_archive raises sqlite3.Error, session file is NOT deleted."""
+        import sqlite3
+        from clean_room_agent.orchestrator.runner import _archive_session
+
+        # Create a fake session file
+        session_dir = tmp_path / ".clean_room" / "sessions"
+        session_dir.mkdir(parents=True)
+        session_file = session_dir / "session_test-preserve.sqlite"
+        session_file.write_bytes(b"fake session data")
+
+        mock_conn = MagicMock()
+
+        with patch("clean_room_agent.orchestrator.runner._db_path", return_value=session_file):
+            with patch("clean_room_agent.orchestrator.runner.insert_session_archive",
+                       side_effect=sqlite3.OperationalError("disk full")):
+                _archive_session(mock_conn, tmp_path, "test-preserve")
+
+        # File must still exist because DB insert failed
+        assert session_file.exists(), "Session file should be preserved when DB insert fails"
+
+    def test_read_failure_returns_early(self, tmp_path):
+        """A5: If file read raises OSError, no DB call is made."""
+        from clean_room_agent.orchestrator.runner import _archive_session
+
+        # Create a path that will be considered "existing" but fail on read
+        session_dir = tmp_path / ".clean_room" / "sessions"
+        session_dir.mkdir(parents=True)
+        session_file = session_dir / "session_test-read-fail.sqlite"
+        session_file.write_bytes(b"data")
+
+        mock_conn = MagicMock()
+
+        with patch("clean_room_agent.orchestrator.runner._db_path", return_value=session_file):
+            with patch.object(Path, "read_bytes", side_effect=OSError("permission denied")):
+                _archive_session(mock_conn, tmp_path, "test-read-fail")
+
+        # insert_session_archive should NOT have been called
+        mock_conn.commit.assert_not_called()
+
+
+class TestGitCleanupPropagation:
+    """A6: _git_cleanup — critical ops propagate, branch delete is best-effort."""
+
+    def test_rollback_failure_propagates(self):
+        """A6: If rollback_to_checkpoint raises, exception propagates to caller."""
+        from clean_room_agent.orchestrator.runner import _git_cleanup
+
+        git = MagicMock()
+        git.rollback_to_checkpoint.side_effect = RuntimeError("rollback failed")
+
+        with pytest.raises(RuntimeError, match="rollback failed"):
+            _git_cleanup(git, status="failed")
+
+    def test_merge_failure_propagates(self):
+        """A6: If merge_to_original raises on success path, exception propagates."""
+        from clean_room_agent.orchestrator.runner import _git_cleanup
+
+        git = MagicMock()
+        git.merge_to_original.side_effect = RuntimeError("merge conflict")
+
+        with pytest.raises(RuntimeError, match="merge conflict"):
+            _git_cleanup(git, status="complete")
+
+    def test_branch_delete_failure_after_merge_logs_warning(self, caplog):
+        """A6: Branch delete failure after successful merge logs warning, doesn't raise."""
+        import logging
+        from clean_room_agent.orchestrator.runner import _git_cleanup
+
+        git = MagicMock()
+        git.merge_to_original.return_value = True
+        git.delete_task_branch.side_effect = RuntimeError("branch in use")
+
+        with caplog.at_level(logging.WARNING, logger="clean_room_agent.orchestrator.runner"):
+            _git_cleanup(git, status="complete")
+
+        assert any("Failed to delete task branch after merge" in r.message for r in caplog.records)
+        git.merge_to_original.assert_called_once()
+
+    def test_branch_delete_failure_after_rollback_logs_warning(self, caplog):
+        """A6: Branch delete failure after rollback logs warning, doesn't raise."""
+        import logging
+        from clean_room_agent.orchestrator.runner import _git_cleanup
+
+        git = MagicMock()
+        git.delete_task_branch.side_effect = RuntimeError("branch locked")
+
+        with caplog.at_level(logging.WARNING, logger="clean_room_agent.orchestrator.runner"):
+            _git_cleanup(git, status="failed")
+
+        assert any("Failed to delete task branch after rollback" in r.message for r in caplog.records)
+        git.rollback_to_checkpoint.assert_called_once()
+        git.clean_untracked.assert_called_once()
+        git.return_to_original_branch.assert_called_once()
+
+
+class TestTopologicalSortMalformedItems:
+    """T74: _topological_sort gives contextual errors on malformed items."""
+
+    def test_missing_id_attribute_raises_with_context(self):
+        """T74: Item missing expected attribute raises RuntimeError with repr."""
+        from clean_room_agent.orchestrator.runner import _topological_sort
+
+        # Use a dict instead of an object with .id attribute
+        items = [{"name": "broken_item"}]
+
+        with pytest.raises(RuntimeError, match="get_id failed on item"):
+            _topological_sort(items, lambda x: x.id, lambda x: x.depends_on)
+
+    def test_missing_deps_attribute_raises_with_context(self):
+        """T74: Item with valid id but no deps attribute raises RuntimeError with repr."""
+        from clean_room_agent.orchestrator.runner import _topological_sort
+
+        class FakeItem:
+            def __init__(self, id):
+                self.id = id
+            def __repr__(self):
+                return f"FakeItem(id={self.id!r})"
+
+        items = [FakeItem("s1")]
+
+        with pytest.raises(RuntimeError, match="get_deps failed on item"):
+            _topological_sort(items, lambda x: x.id, lambda x: x.depends_on)

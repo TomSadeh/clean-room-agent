@@ -312,21 +312,24 @@ Y = [
 ]
 '''
 
-    def test_multiline_dict_assignment_single_line_signature(self):
+    def test_multiline_dict_assignment_full_text_signature(self):
+        """T72: Bodyless nodes use full node text — no split("\n")[0] truncation."""
         parser = PythonParser()
         result = parser.parse(self.MULTILINE_ASSIGNMENT, "assign.py")
         by_name = {s.name: s for s in result.symbols}
         assert "X" in by_name
         sig = by_name["X"].signature
-        # Should be just the first line, not the whole dict
-        assert "\n" not in sig
+        # T72: Full node text preserved for bodyless nodes (R4 compliance)
         assert "X = {" in sig
+        assert '"a": 1' in sig
 
-    def test_multiline_list_assignment_single_line_signature(self):
+    def test_multiline_list_assignment_full_text_signature(self):
+        """T72: Bodyless nodes use full node text — no split("\n")[0] truncation."""
         parser = PythonParser()
         result = parser.parse(self.MULTILINE_ASSIGNMENT, "assign.py")
         by_name = {s.name: s for s in result.symbols}
         assert "Y" in by_name
         sig = by_name["Y"].signature
-        assert "\n" not in sig
+        # T72: Full node text preserved for bodyless nodes (R4 compliance)
         assert "Y = [" in sig
+        assert "1," in sig
