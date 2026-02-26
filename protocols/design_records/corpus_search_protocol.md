@@ -77,10 +77,44 @@ A gap-first, three-gate evaluation protocol run opportunistically in Claude Code
 | Pre-filter script for automated screening | Over-engineering for a process with low volume. Manual for now, script if volume demands it |
 | Cherry-picking subdirectories from large repos | Unnecessary complexity. Storage is cheap. Just copy the whole repo |
 | Training on domain content directly | Content teaches WHAT, not HOW. Domain content goes to KB for retrieval. Training pipeline only gets repos that teach reasoning patterns through code and commit history |
+| Exclude gray domains entirely | Loses useful knowledge. The curated training pipeline (below) solves the leakage problem without exclusion |
+| "KB only, never training" as a clean boundary | The boundary leaks: KB content → retrieval → prompt → logged call → raw DB → training data. Any content on the machine eventually influences training through the pipeline |
+| Separate "potential bullshit" DB on the machine | Risk/reward wrong. If retrievable, it influences training. If not retrievable, it's dead weight. Non-transparent domains stay off the machine entirely |
+
+## Domain Confidence and Training Data Leakage
+
+The raw-to-curated promotion boundary solves the gray domain problem.
+
+**The leakage path:** Gray content in KB → retrieved into prompt → prompt+response logged to raw DB → raw DB mined for training data. Any content on the machine eventually touches training.
+
+**The solution:** Cut the leakage at the curation step, not at retrieval.
+
+1. Gray domain content enters KB tagged with `domain_confidence: "gray"` (transparent domains get `domain_confidence: "transparent"`)
+2. Retrieval pulls gray content into prompts when relevant — Jane can use it for tasks
+3. The prompt + response is logged to raw DB as always (append-only, traceability)
+4. **The tag propagates** — if retrieval included gray-tagged content, the logged call in raw DB carries that tag
+5. `cra curate-data` filters: any logged call that touched gray content is **excluded** from training data extraction
+6. Training datasets contain ONLY prompts built entirely from transparent-domain content
+
+**Domain tiers:**
+
+| Domain quality | On the machine? | Retrievable? | Enters training? |
+|---|---|---|---|
+| **Transparent** (verifiable, or transparent about limitations) | Yes | Yes | Yes |
+| **Gray** (useful knowledge, methodology has known weaknesses) | Yes | Yes (tagged) | **No** — excluded at curate-data step |
+| **Non-transparent** (obscures limitations, unfalsifiable) | **No** | No | No |
+
+This is the same default-deny principle that governs the retrieval pipeline: content without a positive curation signal doesn't get promoted. `domain_confidence != "transparent"` → exclude from training datasets.
+
+**Implementation requirements:**
+- `domain_confidence` field on KB entries
+- Tag propagation through retrieval decisions to logged calls in raw DB
+- Filter in `cra curate-data` pipeline excluding gray-tainted calls
 
 ## Open Questions
 
 1. **Reasoning pattern taxonomy** — deferred to Claude Chat research session. A general taxonomy of thought patterns would help answer the novelty gate more consistently. Not a blocker for running the protocol.
+2. **Gray domain boundary in practice** — the transparent/gray distinction requires judgment calls per domain. We'll learn the boundary by doing. Some humanities have rigorous parts and non-rigorous parts within the same discipline — the tag may need to be per-source, not per-domain.
 
 ## Validation Criteria
 

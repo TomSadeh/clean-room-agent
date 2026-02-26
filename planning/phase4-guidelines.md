@@ -295,7 +295,10 @@ The repo corpus is a living document. New repos are discovered and evaluated per
 
 3. **Three-gate evaluation** — in order, all must pass:
 
-   **Gate 1 — Domain transparency:** Does this domain's methodology practice transparency about its reasoning limitations? Inherently verifiable domains (math, CS, engineering) pass. Domains with formal hedging methods (epidemiology, Bayesian statistics, experimental physics) pass — they teach reasoning under uncertainty. Domains that obscure limitations, make unfalsifiable claims, or use circular reasoning are rejected. This is the project's core principle ("Transparency Is Load-Bearing") applied to domain selection.
+   **Gate 1 — Domain transparency:** Does this domain's methodology practice transparency about its reasoning limitations? This is the project's core principle ("Transparency Is Load-Bearing") applied to domain selection. Three tiers:
+   - **Transparent** (inherently verifiable, or transparent about limitations with formal hedging) → full corpus, enters training. Math, CS, engineering, epidemiology, Bayesian statistics, experimental physics.
+   - **Gray** (useful knowledge, but methodology has known weaknesses) → KB only, tagged `domain_confidence: "gray"`. Retrievable for tasks, but excluded from training data at the `cra curate-data` step. Tag propagates through retrieval decisions to logged calls.
+   - **Non-transparent** (obscures limitations, unfalsifiable claims, circular reasoning) → not on the machine at all.
 
    **Gate 2 — Implementation quality (high bar):** Clean code. Decent commit history. Documentation that explains the why. Actively maintained or feature-complete. License doesn't matter (air-gapped, nothing leaves).
 
