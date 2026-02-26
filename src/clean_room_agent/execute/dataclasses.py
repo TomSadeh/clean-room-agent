@@ -17,12 +17,19 @@ class _SerializableMixin:
         _NESTED: {field_name: element_type} for list fields of nested dataclasses
         _VALIDATE_LISTS: field names that must be validated as list type (non-nested)
         _EXCLUDE: field names to omit from to_dict output
+        _NON_EMPTY: field names that must be truthy (non-empty) after construction
     """
 
     _REQUIRED: tuple[str, ...] = ()
     _NESTED: dict[str, type] = {}
     _VALIDATE_LISTS: tuple[str, ...] = ()
     _EXCLUDE: frozenset[str] = frozenset()
+    _NON_EMPTY: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        for name in self._NON_EMPTY:
+            if not getattr(self, name):
+                raise ValueError(f"{type(self).__name__}.{name} must be non-empty")
 
     def to_dict(self) -> dict:
         result = {}
@@ -85,12 +92,7 @@ class PlanStep(_SerializableMixin):
     depends_on: list[str] = field(default_factory=list)
 
     _REQUIRED = ("id", "description")
-
-    def __post_init__(self):
-        if not self.id:
-            raise ValueError("PlanStep.id must be non-empty")
-        if not self.description:
-            raise ValueError("PlanStep.description must be non-empty")
+    _NON_EMPTY = ("id", "description")
 
 
 @dataclass
@@ -102,12 +104,7 @@ class MetaPlanPart(_SerializableMixin):
     depends_on: list[str] = field(default_factory=list)
 
     _REQUIRED = ("id", "description")
-
-    def __post_init__(self):
-        if not self.id:
-            raise ValueError("MetaPlanPart.id must be non-empty")
-        if not self.description:
-            raise ValueError("MetaPlanPart.description must be non-empty")
+    _NON_EMPTY = ("id", "description")
 
 
 @dataclass
@@ -119,14 +116,7 @@ class MetaPlan(_SerializableMixin):
 
     _REQUIRED = ("task_summary", "parts", "rationale")
     _NESTED = {"parts": MetaPlanPart}
-
-    def __post_init__(self):
-        if not self.task_summary:
-            raise ValueError("MetaPlan.task_summary must be non-empty")
-        if not self.parts:
-            raise ValueError("MetaPlan.parts must be non-empty")
-        if not self.rationale:
-            raise ValueError("MetaPlan.rationale must be non-empty")
+    _NON_EMPTY = ("task_summary", "parts", "rationale")
 
 
 @dataclass
@@ -139,16 +129,7 @@ class PartPlan(_SerializableMixin):
 
     _REQUIRED = ("part_id", "task_summary", "steps", "rationale")
     _NESTED = {"steps": PlanStep}
-
-    def __post_init__(self):
-        if not self.part_id:
-            raise ValueError("PartPlan.part_id must be non-empty")
-        if not self.task_summary:
-            raise ValueError("PartPlan.task_summary must be non-empty")
-        if not self.steps:
-            raise ValueError("PartPlan.steps must be non-empty")
-        if not self.rationale:
-            raise ValueError("PartPlan.rationale must be non-empty")
+    _NON_EMPTY = ("part_id", "task_summary", "steps", "rationale")
 
 
 @dataclass
@@ -161,10 +142,7 @@ class PlanAdjustment(_SerializableMixin):
     _REQUIRED = ("revised_steps", "rationale", "changes_made")
     _NESTED = {"revised_steps": PlanStep}
     _VALIDATE_LISTS = ("changes_made",)
-
-    def __post_init__(self):
-        if not self.rationale:
-            raise ValueError("PlanAdjustment.rationale must be non-empty")
+    _NON_EMPTY = ("rationale",)
 
 
 # -- User-facing plan format --
@@ -178,10 +156,7 @@ class PlanArtifact(_SerializableMixin):
     rationale: str
 
     _REQUIRED = ("task_summary", "affected_files", "execution_order", "rationale")
-
-    def __post_init__(self):
-        if not self.task_summary:
-            raise ValueError("PlanArtifact.task_summary must be non-empty")
+    _NON_EMPTY = ("task_summary",)
 
     @classmethod
     def from_meta_plan(cls, meta_plan: MetaPlan) -> PlanArtifact:
@@ -214,12 +189,7 @@ class PatchEdit(_SerializableMixin):
     replacement: str
 
     _REQUIRED = ("file_path", "search", "replacement")
-
-    def __post_init__(self):
-        if not self.file_path:
-            raise ValueError("PatchEdit.file_path must be non-empty")
-        if not self.search:
-            raise ValueError("PatchEdit.search must be non-empty")
+    _NON_EMPTY = ("file_path", "search")
 
 
 @dataclass
@@ -271,10 +241,7 @@ class PassResult(_SerializableMixin):
     artifact: Any = None
 
     _REQUIRED = ("pass_type", "success")
-
-    def __post_init__(self):
-        if not self.pass_type:
-            raise ValueError("PassResult.pass_type must be non-empty")
+    _NON_EMPTY = ("pass_type",)
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
@@ -302,10 +269,10 @@ class OrchestratorResult(_SerializableMixin):
 
     _REQUIRED = ("task_id", "status")
     _NESTED = {"pass_results": PassResult}
+    _NON_EMPTY = ("task_id",)
 
     def __post_init__(self):
-        if not self.task_id:
-            raise ValueError("OrchestratorResult.task_id must be non-empty")
+        super().__post_init__()
         if self.status not in VALID_ORCHESTRATOR_STATUSES:
             raise ValueError(
                 f"OrchestratorResult.status must be one of "

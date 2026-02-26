@@ -1,27 +1,8 @@
 """Raw DB insert helpers."""
 
 import sqlite3
-from datetime import datetime, timezone
 
-
-def _now() -> str:
-    """UTC timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _insert_row(
-    conn: sqlite3.Connection,
-    table: str,
-    columns: list[str],
-    values: list,
-) -> int:
-    """Insert a row and return lastrowid. Caller is responsible for timestamp."""
-    placeholders = ", ".join(["?"] * len(values))
-    cursor = conn.execute(
-        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-        values,
-    )
-    return cursor.lastrowid
+from clean_room_agent.db.helpers import _build_update_clause, _insert_row, _now
 
 
 def insert_index_run(
@@ -213,34 +194,18 @@ def update_orchestrator_run(
     error_message: str | None = None,
 ) -> None:
     """Update an orchestrator run with progress/completion data."""
-    sets = []
-    params = []
-    if total_parts is not None:
-        sets.append("total_parts = ?")
-        params.append(total_parts)
-    if total_steps is not None:
-        sets.append("total_steps = ?")
-        params.append(total_steps)
-    if parts_completed is not None:
-        sets.append("parts_completed = ?")
-        params.append(parts_completed)
-    if steps_completed is not None:
-        sets.append("steps_completed = ?")
-        params.append(steps_completed)
-    if status is not None:
-        sets.append("status = ?")
-        params.append(status)
-    if completed_at is not None:
-        sets.append("completed_at = ?")
-        params.append(completed_at)
-    if error_message is not None:
-        sets.append("error_message = ?")
-        params.append(error_message)
-    if not sets:
-        raise ValueError("update_orchestrator_run called with no fields to update")
+    set_clause, params = _build_update_clause({
+        "total_parts": total_parts,
+        "total_steps": total_steps,
+        "parts_completed": parts_completed,
+        "steps_completed": steps_completed,
+        "status": status,
+        "completed_at": completed_at,
+        "error_message": error_message,
+    })
     params.append(run_id)
     cursor = conn.execute(
-        f"UPDATE orchestrator_runs SET {', '.join(sets)} WHERE id = ?",
+        f"UPDATE orchestrator_runs SET {set_clause} WHERE id = ?",
         params,
     )
     if cursor.rowcount == 0:

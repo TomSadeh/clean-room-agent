@@ -9,13 +9,7 @@ from clean_room_agent.execute.dataclasses import (
     ValidationResult,
 )
 from clean_room_agent.execute.prompts import (
-    ADJUSTMENT_SYSTEM,
-    IMPLEMENT_SYSTEM,
-    META_PLAN_SYSTEM,
-    PART_PLAN_SYSTEM,
     SYSTEM_PROMPTS,
-    TEST_IMPLEMENT_SYSTEM,
-    TEST_PLAN_SYSTEM,
     build_implement_prompt,
     build_plan_prompt,
 )
@@ -77,7 +71,7 @@ class TestBuildPlanPrompt:
             context_package, "Add validation",
             pass_type="meta_plan", model_config=model_config,
         )
-        assert system == META_PLAN_SYSTEM
+        assert system == SYSTEM_PROMPTS["meta_plan"]
         assert "Add validation" in user
         assert "src/main.py" in user
 
@@ -86,14 +80,14 @@ class TestBuildPlanPrompt:
             context_package, "Implement part 1",
             pass_type="part_plan", model_config=model_config,
         )
-        assert system == PART_PLAN_SYSTEM
+        assert system == SYSTEM_PROMPTS["part_plan"]
 
     def test_adjustment_system(self, context_package, model_config):
         system, user = build_plan_prompt(
             context_package, "Adjust plan",
             pass_type="adjustment", model_config=model_config,
         )
-        assert system == ADJUSTMENT_SYSTEM
+        assert system == SYSTEM_PROMPTS["adjustment"]
 
     def test_unknown_pass_type_raises(self, context_package, model_config):
         with pytest.raises(ValueError, match="Unknown plan pass_type"):
@@ -162,7 +156,7 @@ class TestBuildPlanPrompt:
             context, "Analyze codebase",
             pass_type="meta_plan", model_config=model_config,
         )
-        assert system == META_PLAN_SYSTEM
+        assert system == SYSTEM_PROMPTS["meta_plan"]
         # Should still contain the task description
         assert "Analyze codebase" in user
         # Should not contain any file sections (no ## header)
@@ -175,7 +169,7 @@ class TestBuildImplementPrompt:
         system, user = build_implement_prompt(
             context_package, step, model_config=model_config,
         )
-        assert system == IMPLEMENT_SYSTEM
+        assert system == SYSTEM_PROMPTS["implement"]
         assert "s1" in user
         assert "Add hello endpoint" in user
 
@@ -245,7 +239,7 @@ class TestBuildPlanPromptTestPlan:
             context_package, "Plan tests for part p1",
             pass_type="test_plan", model_config=model_config,
         )
-        assert system == TEST_PLAN_SYSTEM
+        assert system == SYSTEM_PROMPTS["test_plan"]
         assert "Plan tests" in user
 
     def test_test_plan_with_cumulative_diff(self, context_package, model_config):
@@ -265,7 +259,7 @@ class TestBuildTestImplementPrompt:
             context_package, step,
             pass_type="test_implement", model_config=model_config,
         )
-        assert system == TEST_IMPLEMENT_SYSTEM
+        assert system == SYSTEM_PROMPTS["test_implement"]
         assert "t1" in user
         assert "Test hello endpoint" in user
         assert "Test Step to Implement" in user

@@ -22,41 +22,14 @@ All 5 fixes implemented and verified. 12 new tests in `tests/test_batch0_audit_f
 
 ---
 
-## Batch 1: Foundations (R8, R5, R12, A10)
+## Batch 1: Foundations (R8, R5, R12, A10) — DONE
 
-Zero-dependency infrastructure. Creates shared utilities that later batches build on.
+All 4 items implemented and verified. 1062 tests passing.
 
-### R8: Extract `db/helpers.py`
-
-**Create** `src/clean_room_agent/db/helpers.py`:
-- Move `_now()` and `_insert_row()` (identical in both `db/raw_queries.py:7-24` and `db/queries.py:7-24`)
-- Extract `_build_update_clause(fields: dict) -> tuple[str, list]` from `raw_queries.py:212-231` (the verbose if-block chain in `update_orchestrator_run`)
-
-**Modify** `db/raw_queries.py` and `db/queries.py`: replace definitions with `from .helpers import _now, _insert_row`. Refactor `update_orchestrator_run` to use `_build_update_clause`.
-
-### R5: Collapse prompt constants
-
-**Modify** `src/clean_room_agent/execute/prompts.py`:
-- Replace the 7 individual string variables (lines 18-144) + `SYSTEM_PROMPTS` dict (lines 148-156) with a single `SYSTEM_PROMPTS` dict containing the strings directly
-- Verify no external module imports the individual constants (search confirms they're only accessed via the dict)
-- Update `tests/execute/test_prompts.py` if any tests reference the individual names
-
-### R12: `_NON_EMPTY` validation in `_SerializableMixin`
-
-**Modify** `src/clean_room_agent/execute/dataclasses.py`:
-- Add `_NON_EMPTY: tuple[str, ...] = ()` class var to `_SerializableMixin`
-- Add default `__post_init__` that validates all `_NON_EMPTY` fields
-- Replace manual `__post_init__` bodies in 8 dataclasses with `_NON_EMPTY` declarations + `super().__post_init__()`
-- `OrchestratorResult` keeps its custom status-enum check but calls super first
-
-### A10: Add task_id validation to TaskQuery (P2)
-
-**Audit finding:** P2-7 (W5-C2). `TaskQuery.__post_init__` validates `task_type` but not `task_id`. Empty `task_id` would silently break the traceability chain.
-
-**Modify** `src/clean_room_agent/retrieval/dataclasses.py`:
-- Add `if not self.task_id: raise ValueError("task_id must be non-empty")` to `TaskQuery.__post_init__`
-
-**Test**: Run full suite.
+- **R8:** Created `db/helpers.py` with `_now()`, `_insert_row()`, `_build_update_clause()`. Both `db/raw_queries.py` and `db/queries.py` import from helpers. `update_orchestrator_run` refactored to use `_build_update_clause()`.
+- **R5:** Collapsed 7 individual prompt string constants into single `SYSTEM_PROMPTS` dict in `execute/prompts.py`. Updated `tests/execute/test_prompts.py` to use `SYSTEM_PROMPTS["key"]` instead of individual names.
+- **R12:** Added `_NON_EMPTY` class var + default `__post_init__` to `_SerializableMixin`. Replaced manual `__post_init__` in 8 dataclasses (PlanStep, MetaPlanPart, MetaPlan, PartPlan, PlanAdjustment, PlanArtifact, PatchEdit, PassResult). `OrchestratorResult` calls `super().__post_init__()` then custom status-enum check.
+- **A10 (P2):** Added `task_id` non-empty validation to `TaskQuery.__post_init__`.
 
 ---
 

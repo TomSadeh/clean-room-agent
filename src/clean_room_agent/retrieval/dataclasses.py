@@ -50,6 +50,8 @@ class TaskQuery:
     seed_symbol_ids: list[int] = field(default_factory=list)
 
     def __post_init__(self):
+        if not self.task_id:
+            raise ValueError("task_id must be non-empty")
         if self.task_type not in VALID_TASK_TYPES:
             raise ValueError(
                 f"task_type must be one of {VALID_TASK_TYPES}, got {self.task_type!r}"
