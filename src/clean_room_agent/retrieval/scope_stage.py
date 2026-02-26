@@ -7,7 +7,7 @@ from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
-from clean_room_agent.retrieval.stage import StageContext, register_stage
+from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
 logger = logging.getLogger(__name__)
 
@@ -278,10 +278,10 @@ class ScopeStage:
         rp = context.retrieval_params
         candidates = expand_scope(
             task, kb, context.repo_id, plan_file_ids,
-            max_deps=rp.get("max_deps", MAX_DEPS),
-            max_co_changes=rp.get("max_co_changes", MAX_CO_CHANGES),
-            max_metadata=rp.get("max_metadata", MAX_METADATA),
-            max_keywords=rp.get("max_keywords", MAX_KEYWORDS),
+            max_deps=resolve_retrieval_param(rp, "max_deps"),
+            max_co_changes=resolve_retrieval_param(rp, "max_co_changes"),
+            max_metadata=resolve_retrieval_param(rp, "max_metadata"),
+            max_keywords=resolve_retrieval_param(rp, "max_keywords"),
         )
         judged = judge_scope(candidates, task, llm, kb=kb)
 

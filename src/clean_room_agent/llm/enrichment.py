@@ -117,6 +117,18 @@ def enrich_repository(
                 parsed = _parse_enrichment_response(response.text)
             except Exception as e:
                 logger.error("Enrichment failed for %s: %s", file_path, e)
+                # H1: record failure to raw DB for audit trail
+                client.flush()
+                insert_enrichment_output(
+                    raw_conn,
+                    file_id=file_id,
+                    model=model_config.model,
+                    raw_prompt=prompt,
+                    raw_response=f"[ERROR] {type(e).__name__}: {e}",
+                    system_prompt=ENRICHMENT_SYSTEM,
+                    file_path=file_path,
+                )
+                raw_conn.commit()
                 raise
 
             # T78: validate required fields before storing

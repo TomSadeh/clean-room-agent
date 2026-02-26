@@ -51,8 +51,10 @@ class ModelRouter:
             "reasoning": temps.get("reasoning", 0.0),
         }
 
-        # max_tokens per role: must be int or dict with both role keys
-        mt = models_config.get("max_tokens", {"coding": 4096, "reasoning": 4096})
+        # max_tokens per role: optional, derived from context_window // 8 when absent
+        mt = models_config.get("max_tokens")
+        if mt is None:
+            mt = {r: self._context_window[r] // 8 for r in self._VALID_ROLES}
         if isinstance(mt, int):
             self._max_tokens = {"coding": mt, "reasoning": mt}
         elif isinstance(mt, dict):

@@ -53,10 +53,12 @@ Command definitions, argument conventions, required inputs, config file format, 
 
 ```toml
 [models]
-provider = "ollama"                          # "ollama", "openai_compat", or "remote_api"
-coding = "qwen2.5-coder:3b-instruct"
-reasoning = "qwen3:4b-instruct-2507"
-base_url = "http://localhost:11434"
+provider = "ollama"                          # Required
+coding = "qwen2.5-coder:3b-instruct"        # Required
+reasoning = "qwen3:4b-instruct-2507"        # Required
+base_url = "http://localhost:11434"          # Required
+context_window = 32768                       # Required
+# max_tokens = 4096  # defaults to context_window // 8 if omitted
 
 [models.overrides]
 # scope = "qwen3:4b-scope-v1"
@@ -71,16 +73,25 @@ base_url = "http://localhost:11434"
 # reasoning = 0.0
 
 [budget]
-context_window = 32768
-reserved_tokens = 4096
-
-[orchestrator]
-max_retries_per_step = 1
-max_adjustment_rounds = 3
-# max_cumulative_diff_chars = 50000
+# context_window: defaults to [models].context_window if omitted
+reserved_tokens = 4096                       # Required
 
 [stages]
-default = "scope,precision"
+default = "scope,precision"                  # Required
+
+[testing]
+test_command = "pytest tests/"               # Required
+# lint_command = "ruff check src/"
+# type_check_command = "mypy src/"
+timeout = 120                                # Required
+
+[orchestrator]
+max_retries_per_step = 1                     # Required
+# max_retries_per_test_step = 1  # defaults to max_retries_per_step if omitted
+max_adjustment_rounds = 3                    # Required
+git_workflow = true                          # Required
+max_cumulative_diff_chars = 50000            # Required
+documentation_pass = true                    # Optional (default: true)
 
 # [retrieval]
 # max_deps = 30              # tier-2 dependency cap
@@ -96,12 +107,6 @@ default = "scope,precision"
 # co_change_max_files = 50   # skip commits touching more files
 # co_change_min_count = 2    # minimum co-change count to keep
 # max_commits = 500          # git log depth
-
-[testing]
-test_command = "pytest tests/"
-# lint_command = "ruff check src/"
-# type_check_command = "mypy src/"
-# timeout = 120
 
 [environment]
 coding_style = "development"  # options: development, maintenance, prototyping
@@ -124,3 +129,56 @@ For every CLI input:
 ### 4.3 Config Loader
 
 `config.py`: reads TOML, returns a flat dict. Missing file returns `None` (not an error -- config is optional for `cra index`). Missing `[models]` section when an LLM command runs is a hard error at the CLI layer.
+
+### 4.4 Config Classification Policy
+
+Every config field must be classified into one of three tiers. The classification determines how missing values are handled in code and whether the field appears uncommented in the default template.
+
+| Tier | Missing behavior | Template | Code pattern |
+|------|-----------------|----------|-------------|
+| **Required** | Hard error (`raise RuntimeError`) | Uncommented with value | Direct access or explicit None check + raise |
+| **Optional** | Documented default (named constant or derivation) | Commented with default shown | `resolve_*()` helper or explicit None check + log + fallback |
+| **Supplementary** | Safe fallback, non-core | Commented or absent | `.get(key, default)` — only for non-core settings |
+
+**Rules for adding new fields:**
+
+1. Classify the field before writing any code. The classification goes in this table.
+2. Required fields must be uncommented in `create_default_config()` and fail-fast when absent.
+3. Optional fields must use a named constant or documented derivation (not a magic number in `.get()`). When the fallback fires, log the decision at INFO or higher.
+4. No field may exist in an unclassified state. If a `.get(key, default)` exists in core logic without a classification entry here, it is a bug.
+
+**Field classifications:**
+
+| Section | Field | Tier | Default / derivation | Notes |
+|---------|-------|------|---------------------|-------|
+| `[models]` | `provider` | Required | — | |
+| `[models]` | `coding` | Required | — | |
+| `[models]` | `reasoning` | Required | — | |
+| `[models]` | `base_url` | Required | — | |
+| `[models]` | `context_window` | Required | — | int or `{coding=N, reasoning=N}` |
+| `[models]` | `max_tokens` | Optional | `context_window // 8` | int or `{coding=N, reasoning=N}` |
+| `[models]` | `temperature` | Supplementary | `0.0` for both roles | |
+| `[models]` | `overrides` | Supplementary | `{}` | Per-stage model overrides |
+| `[budget]` | `reserved_tokens` | Required | — | |
+| `[stages]` | `default` | Required | — | Comma-separated stage names |
+| `[testing]` | `test_command` | Required | — | |
+| `[testing]` | `timeout` | Required | — | Seconds |
+| `[testing]` | `lint_command` | Supplementary | absent | |
+| `[testing]` | `type_check_command` | Supplementary | absent | |
+| `[orchestrator]` | `max_retries_per_step` | Required | — | |
+| `[orchestrator]` | `max_adjustment_rounds` | Required | — | |
+| `[orchestrator]` | `git_workflow` | Required | — | |
+| `[orchestrator]` | `max_cumulative_diff_chars` | Required | — | Positive integer |
+| `[orchestrator]` | `max_retries_per_test_step` | Optional | `max_retries_per_step` | Logged fallback |
+| `[orchestrator]` | `documentation_pass` | Optional | `true` | |
+| `[retrieval]` | `max_deps` | Optional | `30` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_co_changes` | Optional | `20` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_metadata` | Optional | `20` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_keywords` | Optional | `5` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_symbol_matches` | Optional | `10` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_callees` | Optional | `5` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_callers` | Optional | `5` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_candidate_pairs` | Optional | `50` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `min_composite_score` | Optional | `0.3` | Via `resolve_retrieval_param()` |
+| `[retrieval]` | `max_group_size` | Optional | `8` | Via `resolve_retrieval_param()` |
+| `[environment]` | `coding_style` | Supplementary | `"development"` | Validated against `CODING_STYLES` |

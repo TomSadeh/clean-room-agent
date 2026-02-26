@@ -7,6 +7,7 @@ from clean_room_agent.constants import KNOWN_EXTENSIONS
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.dataclasses import TaskQuery
+from clean_room_agent.retrieval.stage import resolve_retrieval_param
 from clean_room_agent.token_estimation import validate_prompt_budget
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,7 @@ def analyze_task(
     rp = retrieval_params or {}
     file_ids, symbol_ids = resolve_seeds(
         signals, kb, repo_id,
-        max_symbol_matches=rp.get("max_symbol_matches", MAX_SYMBOL_MATCHES),
+        max_symbol_matches=resolve_retrieval_param(rp, "max_symbol_matches"),
     )
     intent = enrich_task_intent(
         raw_task, signals, llm,

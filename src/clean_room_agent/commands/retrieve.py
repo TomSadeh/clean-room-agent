@@ -33,11 +33,16 @@ def run_retrieve(
     repo = Path(repo_path).resolve()
     config = load_config(repo)
 
+    if config is None:
+        raise click.UsageError(
+            "No config file found. Run 'cra init' to create .clean_room/config.toml"
+        )
+
     # Resolve budget: CLI flag -> [budget] config -> hard error
     cw = context_window
     rt = reserved_tokens
     if cw is None or rt is None:
-        budget_config = (config or {}).get("budget", {})
+        budget_config = config.get("budget", {})
         if cw is None:
             cw = budget_config.get("context_window")
         if rt is None:
@@ -53,7 +58,7 @@ def run_retrieve(
     if stages:
         stage_names = [s.strip() for s in stages.split(",")]
     else:
-        stages_config = (config or {}).get("stages", {})
+        stages_config = config.get("stages", {})
         default_stages = stages_config.get("default")
         if not default_stages:
             raise click.UsageError(
@@ -63,11 +68,6 @@ def run_retrieve(
 
     task_id = str(uuid.uuid4())
     plan_artifact = Path(plan_path) if plan_path else None
-
-    if config is None:
-        raise click.UsageError(
-            "No config file found. Run 'cra init' to create .clean_room/config.toml"
-        )
 
     trace_logger = make_trace_logger(repo, task_id, task, trace_flag, trace_output)
 

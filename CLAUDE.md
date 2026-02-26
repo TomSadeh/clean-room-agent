@@ -120,6 +120,7 @@ These rules operationalize the core transparency principle for context curation.
 - Keep `try/except` blocks minimal and intentional.
 - When catching errors, add context and re-raise; do not silently recover.
 - Prefer fail-fast behavior so incorrect assumptions break hard and early.
+- Every config field must be classified as Required (fail-fast when missing), Optional (documented default in a named constant or derivation), or Supplementary (non-core, safe fallback). Required fields are uncommented in the config template. Optional fields use named constants or derivation functions, not magic numbers in `.get()`. No field may exist in an unclassified state. See `planning/cli-and-config.md` Section 4.4.
 
 ## Validation Note
 

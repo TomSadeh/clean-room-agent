@@ -60,6 +60,25 @@ class TestModelRouter:
         with pytest.raises(RuntimeError, match="reasoning"):
             router.resolve("reasoning")
 
+    def test_max_tokens_derived_from_context_window(self):
+        """H3: max_tokens defaults to context_window // 8 when omitted."""
+        router = ModelRouter({
+            "coding": "x", "reasoning": "y", "provider": "ollama",
+            "base_url": "http://localhost:11434", "context_window": 32768,
+        })
+        assert router.resolve("coding").max_tokens == 4096
+        assert router.resolve("reasoning").max_tokens == 4096
+
+    def test_max_tokens_derived_per_role(self):
+        """H3: derivation respects per-role context_window."""
+        router = ModelRouter({
+            "coding": "x", "reasoning": "y", "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "context_window": {"coding": 16384, "reasoning": 32768},
+        })
+        assert router.resolve("coding").max_tokens == 2048
+        assert router.resolve("reasoning").max_tokens == 4096
+
     def test_missing_context_window(self):
         with pytest.raises(RuntimeError, match="context_window"):
             ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434"})

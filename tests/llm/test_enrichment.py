@@ -182,3 +182,121 @@ class TestEnrichRepository:
 
         assert result.files_skipped == 1
         assert result.files_enriched == 0
+
+
+class TestEnrichmentFailureRecording:
+    """H1: Enrichment failure records error to raw DB for audit trail."""
+
+    @staticmethod
+    def _make_curated_conn():
+        """Create a mock curated conn that handles repo, files, symbols, docstrings queries."""
+        mock = MagicMock()
+        # Use a callable side_effect so it handles arbitrary numbers of calls
+        def execute_handler(query, params=None):
+            result = MagicMock()
+            if "FROM repos" in query:
+                result.fetchone.return_value = {"id": 1}
+            elif "FROM files" in query:
+                result.fetchall.return_value = [
+                    {"id": 10, "path": "src/main.py", "repo_id": 1},
+                ]
+            elif "FROM symbols" in query:
+                result.fetchall.return_value = []
+            elif "FROM docstrings" in query:
+                result.fetchall.return_value = []
+            else:
+                result.fetchall.return_value = []
+                result.fetchone.return_value = None
+            return result
+        mock.execute.side_effect = execute_handler
+        return mock
+
+    def test_llm_failure_recorded_to_raw_db(self, tmp_path):
+        """When LLM call fails, error is recorded in enrichment_outputs."""
+        from clean_room_agent.llm.enrichment import enrich_repository
+
+        mock_curated_conn = self._make_curated_conn()
+
+        # Mock raw: no existing enrichment
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.fetchone.return_value = None
+
+        def mock_get_conn(role, *, repo_path, read_only=False):
+            if role == "curated":
+                return mock_curated_conn
+            return mock_raw_conn
+
+        # Client that fails on complete()
+        mock_client = MagicMock()
+        mock_client.complete.side_effect = RuntimeError("LLM connection lost")
+        mock_client.flush.return_value = []
+        mock_client.close.return_value = None
+
+        models_config = {
+            "provider": "ollama",
+            "reasoning": "qwen3:4b",
+            "base_url": "http://localhost:11434",
+            "context_window": 32768,
+        }
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("def hello(): pass\n")
+
+        with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
+            with patch("clean_room_agent.llm.enrichment.LoggedLLMClient", return_value=mock_client):
+                with patch("clean_room_agent.llm.enrichment.insert_enrichment_output") as mock_insert:
+                    with pytest.raises(RuntimeError, match="LLM connection lost"):
+                        enrich_repository(tmp_path, models_config)
+
+        # Verify error was recorded before re-raise
+        assert mock_insert.call_count == 1
+        call_kwargs = mock_insert.call_args
+        assert "[ERROR] RuntimeError: LLM connection lost" in str(call_kwargs)
+        mock_client.flush.assert_called()
+
+    def test_parse_failure_recorded_to_raw_db(self, tmp_path):
+        """When JSON parse fails, error is recorded in enrichment_outputs."""
+        from clean_room_agent.llm.enrichment import enrich_repository
+
+        mock_curated_conn = self._make_curated_conn()
+
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.fetchone.return_value = None
+
+        def mock_get_conn(role, *, repo_path, read_only=False):
+            if role == "curated":
+                return mock_curated_conn
+            return mock_raw_conn
+
+        # Client returns unparseable response
+        mock_response = MagicMock()
+        mock_response.text = "not valid json"
+        mock_response.thinking = None
+        mock_response.prompt_tokens = 100
+        mock_response.completion_tokens = 50
+        mock_response.latency_ms = 10
+        mock_client = MagicMock()
+        mock_client.complete.return_value = mock_response
+        mock_client.flush.return_value = []
+        mock_client.close.return_value = None
+
+        models_config = {
+            "provider": "ollama",
+            "reasoning": "qwen3:4b",
+            "base_url": "http://localhost:11434",
+            "context_window": 32768,
+        }
+
+        (tmp_path / "src").mkdir(exist_ok=True)
+        (tmp_path / "src" / "main.py").write_text("def hello(): pass\n")
+
+        with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
+            with patch("clean_room_agent.llm.enrichment.LoggedLLMClient", return_value=mock_client):
+                with patch("clean_room_agent.llm.enrichment.insert_enrichment_output") as mock_insert:
+                    with pytest.raises(ValueError, match="Failed to parse"):
+                        enrich_repository(tmp_path, models_config)
+
+        # Parse failure is caught by except Exception, so error is recorded
+        assert mock_insert.call_count == 1
+        call_kwargs = mock_insert.call_args
+        assert "[ERROR] ValueError" in str(call_kwargs)

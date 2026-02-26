@@ -1489,3 +1489,47 @@ class TestTopologicalSortMalformedItems:
 
         with pytest.raises(RuntimeError, match="get_deps failed on item"):
             _topological_sort(items, lambda x: x.id, lambda x: x.depends_on)
+
+
+class TestMaxRetriesPerTestStepFallback:
+    """H4: max_retries_per_test_step logs when falling back to max_retries_per_step."""
+
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_fallback_logs_info(self, mock_get_conn, caplog, tmp_path):
+        """When max_retries_per_test_step is not set, log the fallback."""
+        import logging
+        from clean_room_agent.orchestrator.runner import _init_orchestrator
+
+        config = _make_config()
+        # max_retries_per_test_step intentionally absent
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.lastrowid = 1
+        mock_get_conn.return_value = mock_conn
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        with caplog.at_level(logging.INFO, logger="clean_room_agent.orchestrator.runner"):
+            ctx = _init_orchestrator("task", tmp_path, config, None, needs_reasoning=False)
+
+        assert ctx.max_test_retries == config["orchestrator"]["max_retries_per_step"]
+        assert any("max_retries_per_test_step not set" in r.message for r in caplog.records)
+
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_explicit_value_no_log(self, mock_get_conn, caplog, tmp_path):
+        """When max_retries_per_test_step is explicitly set, no fallback log."""
+        import logging
+        from clean_room_agent.orchestrator.runner import _init_orchestrator
+
+        config = _make_config()
+        config["orchestrator"]["max_retries_per_test_step"] = 3
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.lastrowid = 1
+        mock_get_conn.return_value = mock_conn
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        with caplog.at_level(logging.INFO, logger="clean_room_agent.orchestrator.runner"):
+            ctx = _init_orchestrator("task", tmp_path, config, None, needs_reasoning=False)
+
+        assert ctx.max_test_retries == 3
+        assert not any("max_retries_per_test_step not set" in r.message for r in caplog.records)

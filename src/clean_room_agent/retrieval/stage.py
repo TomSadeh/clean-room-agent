@@ -150,3 +150,29 @@ def get_stage(name: str) -> RetrievalStage:
 def get_stage_descriptions() -> dict[str, str]:
     """Return {name: description} for all registered stages."""
     return {name: info.description for name, info in _STAGE_REGISTRY.items()}
+
+
+# Documented defaults for all retrieval parameters (Optional classification).
+# These are tuning knobs, not behavioral switches. Override via [retrieval] config.
+_RETRIEVAL_DEFAULTS: dict[str, int | float] = {
+    "max_deps": 30,
+    "max_co_changes": 20,
+    "max_metadata": 20,
+    "max_keywords": 5,
+    "max_symbol_matches": 10,
+    "max_callees": 5,
+    "max_callers": 5,
+    "max_candidate_pairs": 50,
+    "min_composite_score": 0.3,
+    "max_group_size": 8,
+}
+
+
+def resolve_retrieval_param(params: dict, key: str) -> int | float:
+    """Resolve retrieval parameter with documented default. Optional classification."""
+    if key not in _RETRIEVAL_DEFAULTS:
+        raise KeyError(f"Unknown retrieval parameter: {key!r}")
+    value = params.get(key, _RETRIEVAL_DEFAULTS[key])
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"Retrieval param {key!r} must be numeric, got {type(value).__name__}")
+    return value

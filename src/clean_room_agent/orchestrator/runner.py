@@ -411,7 +411,13 @@ def _init_orchestrator(
         raise RuntimeError(
             "Missing max_retries_per_step in [orchestrator] section of config.toml."
         )
-    max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
+    max_test_retries = orch_config.get("max_retries_per_test_step")
+    if max_test_retries is None:
+        max_test_retries = max_retries
+        logger.info(
+            "max_retries_per_test_step not set — using max_retries_per_step (%d)",
+            max_retries,
+        )
 
     # A11: require max_adjustment_rounds — no hardcoded fallback
     max_adj_rounds = orch_config.get("max_adjustment_rounds")

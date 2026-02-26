@@ -6,7 +6,7 @@ from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
-from clean_room_agent.retrieval.stage import StageContext, register_stage
+from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
 logger = logging.getLogger(__name__)
 
@@ -280,8 +280,8 @@ class SimilarityStage:
         rp = context.retrieval_params
         pairs = find_similar_pairs(
             context.classified_symbols, kb,
-            max_pairs=rp.get("max_candidate_pairs", MAX_CANDIDATE_PAIRS),
-            min_score=rp.get("min_composite_score", MIN_COMPOSITE_SCORE),
+            max_pairs=resolve_retrieval_param(rp, "max_candidate_pairs"),
+            min_score=resolve_retrieval_param(rp, "min_composite_score"),
         )
 
         if not pairs:
@@ -294,7 +294,7 @@ class SimilarityStage:
 
         group_map = assign_groups(
             confirmed,
-            max_group_size=rp.get("max_group_size", MAX_GROUP_SIZE),
+            max_group_size=resolve_retrieval_param(rp, "max_group_size"),
         )
 
         # Apply group_ids to existing symbols

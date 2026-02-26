@@ -99,7 +99,7 @@ class TestRetrieveCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["retrieve", "fix bug", "--repo", str(tmp_path)])
         assert result.exit_code != 0
-        assert "Budget not configured" in result.output
+        assert "No config file found" in result.output
 
     def test_retrieve_no_stages_no_config(self, tmp_path):
         # Create config with budget but no stages

@@ -374,7 +374,8 @@ def run_pipeline(
         _mark_task_failed(raw_conn, task_run_id, total_start)
         raise
     except Exception:
-        # Unexpected: DB error, OS error, or internal bug
+        # Broad catch is intentional: any unexpected error (DB, OS, internal bug)
+        # must be recorded in raw DB before propagation. Always re-raised.
         _mark_task_failed(raw_conn, task_run_id, total_start)
         logger.error("Unexpected error in retrieval pipeline", exc_info=True)
         raise

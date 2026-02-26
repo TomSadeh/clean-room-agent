@@ -6,7 +6,7 @@ from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
-from clean_room_agent.retrieval.stage import StageContext, register_stage
+from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,12 @@ def extract_precision_symbols(
         symbols = kb.get_symbols_for_file(fid)
 
         for sym in symbols:
+            sig = sym.signature or ""
+            if not sym.signature:
+                logger.debug(
+                    "Symbol %s (%s) has no signature — using empty for classification",
+                    sym.name, sym.kind,
+                )
             entry = {
                 "symbol_id": sym.id,
                 "file_id": fid,
@@ -66,7 +72,7 @@ def extract_precision_symbols(
                 "kind": sym.kind,
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
-                "signature": sym.signature or "",
+                "signature": sig,
                 "connections": [],
                 "file_source": file_source_cache.get(fid, "project"),
             }
@@ -230,8 +236,8 @@ class PrecisionStage:
         rp = context.retrieval_params
         candidates = extract_precision_symbols(
             context.included_file_ids, task, kb,
-            max_callees=rp.get("max_callees", MAX_CALLEES),
-            max_callers=rp.get("max_callers", MAX_CALLERS),
+            max_callees=resolve_retrieval_param(rp, "max_callees"),
+            max_callers=resolve_retrieval_param(rp, "max_callers"),
         )
         classified = classify_symbols(candidates, task, llm, kb=kb)
 

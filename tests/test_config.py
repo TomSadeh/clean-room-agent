@@ -103,10 +103,10 @@ class TestCreateDefaultConfig:
         config = load_config(tmp_path)
         assert "testing" in config
         assert config["testing"]["test_command"] == "pytest tests/"
+        assert config["testing"]["timeout"] == 120
 
     def test_default_config_has_orchestrator_section(self, tmp_path):
         create_default_config(tmp_path)
         config = load_config(tmp_path)
-        # orchestrator section exists but all values are commented out
-        # so it should be an empty dict
         assert "orchestrator" in config
+        assert config["orchestrator"]["documentation_pass"] is True
