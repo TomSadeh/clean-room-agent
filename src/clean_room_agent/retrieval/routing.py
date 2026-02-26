@@ -1,9 +1,9 @@
 """Stage routing: LLM-based selection of which retrieval stages to run."""
 
 from clean_room_agent.llm.client import LLMClient, LoggedLLMClient
-from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.dataclasses import TaskQuery
 from clean_room_agent.retrieval.utils import parse_json_response
+from clean_room_agent.token_estimation import validate_prompt_budget
 
 ROUTING_SYSTEM = (
     "You are Jane, a retrieval stage router. Given a task summary and "
@@ -82,12 +82,10 @@ def route_stages(
         )
     prompt = build_routing_prompt(task_query, available_stages)
 
-    input_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(ROUTING_SYSTEM)
-    available = llm.config.context_window - llm.config.max_tokens
-    if input_tokens > available:
-        raise ValueError(
-            f"R3: routing prompt too large ({input_tokens} tokens, available {available})"
-        )
+    validate_prompt_budget(
+        prompt, ROUTING_SYSTEM,
+        llm.config.context_window, llm.config.max_tokens, "routing",
+    )
 
     response = llm.complete(prompt, system=ROUTING_SYSTEM)
     selected, reasoning = parse_routing_response(response.text)

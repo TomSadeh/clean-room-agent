@@ -7,19 +7,11 @@ from pathlib import Path
 
 import pathspec
 
+from clean_room_agent.constants import LANGUAGE_MAP
+
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 1_048_576  # 1 MB
-
-LANGUAGE_MAP: dict[str, str] = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-}
 
 SKIP_DIRS: set[str] = {
     ".git",

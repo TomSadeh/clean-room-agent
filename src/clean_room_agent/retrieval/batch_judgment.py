@@ -10,6 +10,7 @@ from collections.abc import Callable, Hashable, Sequence
 
 from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 from clean_room_agent.retrieval.utils import parse_json_response
+from clean_room_agent.token_estimation import validate_prompt_budget
 
 logger = logging.getLogger(__name__)
 
@@ -33,26 +34,6 @@ def calculate_judgment_batch_size(
     header_overhead = estimate_tokens_conservative(task_header)
     available = context_window - max_tokens - system_overhead - header_overhead
     return max(1, available // tokens_per_candidate)
-
-
-def validate_judgment_batch(
-    prompt: str,
-    system_prompt: str,
-    stage_name: str,
-    context_window: int,
-    max_tokens: int,
-) -> None:
-    """Validate a judgment batch prompt fits within the context window (R3).
-
-    Raises ValueError if the prompt exceeds the available tokens.
-    """
-    actual_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(system_prompt)
-    available = context_window - max_tokens
-    if actual_tokens > available:
-        raise ValueError(
-            f"R3: {stage_name} batch prompt too large ({actual_tokens} tokens, "
-            f"available {available})"
-        )
 
 
 def log_r2_omission(label: str, stage_name: str, default_action: str) -> None:
@@ -113,9 +94,9 @@ def run_batched_judgment(
         candidate_lines = [format_item(item) for item in batch]
         prompt = task_header + "\n".join(candidate_lines)
 
-        validate_judgment_batch(
-            prompt, system_prompt, stage_name,
-            llm.config.context_window, llm.config.max_tokens,
+        validate_prompt_budget(
+            prompt, system_prompt,
+            llm.config.context_window, llm.config.max_tokens, stage_name,
         )
 
         response = llm.complete(prompt, system=system_prompt)

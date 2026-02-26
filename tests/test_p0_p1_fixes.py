@@ -67,7 +67,7 @@ class TestT57TaskAnalysisBudgetGate:
         big_task = "x" * 500  # ~167 tokens conservative
         signals = {"files": [], "symbols": [], "task_type": "bug_fix", "keywords": []}
 
-        with pytest.raises(ValueError, match="R3.*task analysis prompt too large"):
+        with pytest.raises(ValueError, match="R3.*task_analysis prompt too large"):
             enrich_task_intent(big_task, signals, llm)
 
         llm.complete.assert_not_called()
@@ -112,7 +112,7 @@ class TestT57ScopeBudgetGate:
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*scope batch prompt too large"):
+        with pytest.raises(ValueError, match="R3.*scope prompt too large"):
             judge_scope(candidates, task, llm)
 
         llm.complete.assert_not_called()
@@ -137,7 +137,7 @@ class TestT57PrecisionBudgetGate:
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*precision batch prompt too large"):
+        with pytest.raises(ValueError, match="R3.*precision prompt too large"):
             classify_symbols(candidates, task, llm)
 
         llm.complete.assert_not_called()
@@ -169,7 +169,7 @@ class TestT57SimilarityBudgetGate:
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*similarity batch prompt too large"):
+        with pytest.raises(ValueError, match="R3.*similarity prompt too large"):
             judge_similarity(pairs, task, llm)
 
         llm.complete.assert_not_called()

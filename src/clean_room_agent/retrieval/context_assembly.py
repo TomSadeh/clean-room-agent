@@ -10,8 +10,8 @@ from clean_room_agent.retrieval.budget import (
     BudgetTracker,
     estimate_framing_tokens,
     estimate_tokens,
-    estimate_tokens_conservative,
 )
+from clean_room_agent.token_estimation import check_prompt_budget
 from clean_room_agent.retrieval.dataclasses import (
     BudgetConfig,
     ContextPackage,
@@ -379,12 +379,13 @@ def _refilter_files(
     )
 
     # R3: validate prompt size before sending (conservative to match LLMClient gate)
-    prompt_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(REFILTER_SYSTEM)
-    available = llm.config.context_window - llm.config.max_tokens
-    if prompt_tokens > available:
+    estimated, available, fits = check_prompt_budget(
+        prompt, REFILTER_SYSTEM, llm.config.context_window, llm.config.max_tokens,
+    )
+    if not fits:
         logger.warning(
             "R3: refilter prompt too large (%d tokens, available %d) — falling back to priority drop",
-            prompt_tokens, available,
+            estimated, available,
         )
         return {rf["path"] for rf in _drop_by_priority(rendered_files, budget_limit)}
 

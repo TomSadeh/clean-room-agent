@@ -283,7 +283,7 @@ class TestExecutePlanBudgetOverflow:
             context_window=512,
             max_tokens=256,
         )
-        with pytest.raises(ValueError, match="Prompt too large"):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
             execute_plan(
                 context, "Add validation", llm,
                 pass_type="meta_plan",

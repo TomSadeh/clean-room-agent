@@ -202,7 +202,7 @@ class TestExecuteImplementBudgetOverflow:
             max_tokens=256,
         )
         step = PlanStep(id="s1", description="Fix the bug")
-        with pytest.raises(ValueError, match="Prompt too large"):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
             execute_implement(context, step, llm)
 
 

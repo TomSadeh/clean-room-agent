@@ -11,7 +11,7 @@ from clean_room_agent.db.queries import upsert_file_metadata
 from clean_room_agent.db.raw_queries import insert_enrichment_output
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
-from clean_room_agent.retrieval.budget import estimate_tokens_conservative
+from clean_room_agent.token_estimation import check_prompt_budget
 
 logger = logging.getLogger(__name__)
 
@@ -89,19 +89,20 @@ def enrich_repository(
             prompt = _build_prompt(file_path, file_id, curated_conn, repo_path)
 
             # R3: pre-validate prompt size before sending
-            input_tokens = estimate_tokens_conservative(prompt) + estimate_tokens_conservative(ENRICHMENT_SYSTEM)
-            available = model_config.context_window - model_config.max_tokens
-            if input_tokens > available:
+            estimated, available, fits = check_prompt_budget(
+                prompt, ENRICHMENT_SYSTEM, model_config.context_window, model_config.max_tokens,
+            )
+            if not fits:
                 logger.warning(
                     "R3: enrichment prompt for %s too large (%d tokens, available %d) — skipping",
-                    file_path, input_tokens, available,
+                    file_path, estimated, available,
                 )
                 insert_enrichment_output(
                     raw_conn,
                     file_id=file_id,
                     model=model_config.model,
                     raw_prompt="",
-                    raw_response=f"R3_SKIP: {input_tokens} tokens > {available} available",
+                    raw_response=f"R3_SKIP: {estimated} tokens > {available} available",
                     system_prompt=ENRICHMENT_SYSTEM,
                     file_path=file_path,
                 )

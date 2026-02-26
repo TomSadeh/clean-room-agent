@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from clean_room_agent.constants import language_from_extension
 from clean_room_agent.execute.dataclasses import (
     PartPlan,
     PlanStep,
@@ -10,7 +11,7 @@ from clean_room_agent.execute.dataclasses import (
 )
 from clean_room_agent.llm.client import ModelConfig
 from clean_room_agent.retrieval.dataclasses import ContextPackage
-from clean_room_agent.token_estimation import CHARS_PER_TOKEN_CONSERVATIVE
+from clean_room_agent.token_estimation import validate_prompt_budget
 
 
 # -- System prompts (data-driven lookup) --
@@ -147,25 +148,6 @@ _IMPLEMENT_STEP_HEADERS: dict[str, str] = {
 }
 
 
-def _estimate_prompt_tokens(system: str, user: str) -> int:
-    """Conservative token estimate for a (system, user) prompt pair."""
-    return (len(system) + len(user)) // CHARS_PER_TOKEN_CONSERVATIVE
-
-
-def _validate_prompt_budget(system: str, user: str, model_config: ModelConfig) -> None:
-    """R3: Validate prompt fits within model context window."""
-    estimated = _estimate_prompt_tokens(system, user)
-    available = model_config.context_window - model_config.max_tokens
-    if estimated > available:
-        raise ValueError(
-            f"Prompt too large for model context window: ~{estimated} tokens estimated, "
-            f"but only {available} tokens available "
-            f"(context_window={model_config.context_window}, "
-            f"max_tokens={model_config.max_tokens}). "
-            f"Reduce context or split the task."
-        )
-
-
 def build_plan_prompt(
     context: ContextPackage,
     task_description: str,
@@ -225,7 +207,7 @@ def build_plan_prompt(
     user = "".join(parts)
 
     # R3: Budget validation
-    _validate_prompt_budget(system, user, model_config)
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, pass_type)
 
     return system, user
 
@@ -313,7 +295,7 @@ def build_implement_prompt(
     )
 
     # R3: Budget validation
-    _validate_prompt_budget(system, user, model_config)
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, pass_type)
 
     return system, user
 
@@ -341,23 +323,12 @@ def build_documentation_prompt(
         parts.append(f"{environment_brief}\n")
 
     parts.append(f"# File: {file_path}\n")
-    parts.append(f'<code lang="{_lang_from_path(file_path)}">\n{file_content}\n</code>\n')
+    parts.append(f'<code lang="{language_from_extension(file_path) or "text"}">\n{file_content}\n</code>\n')
     parts.append(f"\n# Task Context\nTask: {task_description}\nPart: {part_description}\n")
 
     user = "".join(parts)
 
     # R3: Budget validation
-    _validate_prompt_budget(system, user, model_config)
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, "documentation")
 
     return system, user
-
-
-def _lang_from_path(file_path: str) -> str:
-    """Infer language identifier from file extension."""
-    if file_path.endswith(".py"):
-        return "python"
-    if file_path.endswith((".ts", ".tsx")):
-        return "typescript"
-    if file_path.endswith((".js", ".jsx")):
-        return "javascript"
-    return "text"

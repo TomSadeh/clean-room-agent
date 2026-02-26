@@ -132,7 +132,7 @@ class TestBuildPlanPrompt:
         assert "test_foo" in user
 
     def test_budget_overflow_raises(self, context_package, small_model_config):
-        with pytest.raises(ValueError, match="Prompt too large"):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
             build_plan_prompt(
                 context_package, "task" * 1000,
                 pass_type="meta_plan", model_config=small_model_config,
@@ -227,7 +227,7 @@ class TestBuildImplementPrompt:
 
     def test_budget_overflow_raises(self, context_package, small_model_config):
         step = PlanStep(id="s1", description="d" * 5000)
-        with pytest.raises(ValueError, match="Prompt too large"):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
             build_implement_prompt(
                 context_package, step, model_config=small_model_config,
             )
@@ -306,7 +306,7 @@ class TestBuildTestImplementPrompt:
 
     def test_budget_overflow_raises(self, context_package, small_model_config):
         step = PlanStep(id="t1", description="d" * 5000)
-        with pytest.raises(ValueError, match="Prompt too large"):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
             build_implement_prompt(
                 context_package, step,
                 pass_type="test_implement", model_config=small_model_config,

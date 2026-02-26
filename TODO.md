@@ -34,27 +34,9 @@ Remaining findings from code reviews and audits. Completed items removed — see
 
 ## Audit — Deduplication (2026-02-26)
 
-### A15. R3 budget validation repeated in 3 places
-- `execute/prompts.py:155-166` — `_validate_prompt_budget()`
-- `retrieval/routing.py:85-90` — manual estimate+check
-- `retrieval/batch_judgment.py:38-55` — `validate_judgment_batch()`
-- All implement: estimate tokens → check against available → raise ValueError.
-- Fix: single `validate_prompt_budget(prompt, system, stage_name, model_config)` in `budget.py`.
-
-### A16. JSON structure validation repeated in 4 places
-- `execute/dataclasses.py:52-79` — `_SerializableMixin.from_dict()`
-- `retrieval/routing.py:47-56` — validates dict, list, string items
-- `retrieval/batch_judgment.py:128-135` — `isinstance` checks
-- `execute/parsers.py:30-31` — `isinstance(data, dict)` check
-- Fix: shared `validate_json_structure()` helper.
-
-### A17. File extension constants scattered across 7-8 locations
-- `retrieval/task_analysis.py:15` — `KNOWN_EXTENSIONS`
-- `execute/prompts.py:357-363` — `_lang_from_path()` with `.endswith()` checks
-- `execute/documentation.py:158` — `if file_path.endswith(ext)`
-- `parsers/ts_js_parser.py:42` — `if file_path.endswith(".tsx")`
-- `extractors/dependencies.py:148,182,198` — multiple extension checks
-- Fix: centralize in `constants.py` with `LANGUAGE_EXTENSIONS` dict + `get_language_from_path()`.
+### ~~A15. R3 budget validation repeated in 6 places~~ — DONE
+### ~~A16. JSON structure validation repeated in 4 places~~ — BY DESIGN (fundamentally different operations)
+### ~~A17. File extension constants scattered across 7-8 locations~~ — DONE
 
 ---
 

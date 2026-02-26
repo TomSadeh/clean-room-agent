@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from clean_room_agent.constants import TS_JS_RESOLVE_EXTENSIONS
 from clean_room_agent.parsers.base import ExtractedImport
 
 
@@ -142,17 +143,16 @@ def _resolve_ts_js_relative(
         target = target[2:]
 
     candidates = []
-    extensions = [".ts", ".tsx", ".js", ".jsx"]
 
     # Handle explicit extension imports, e.g. import "./foo.ts"
-    if any(target.endswith(ext) for ext in extensions):
+    if any(target.endswith(ext) for ext in TS_JS_RESOLVE_EXTENSIONS):
         candidates.append(target)
 
     # Direct file with extension
-    for ext in extensions:
+    for ext in TS_JS_RESOLVE_EXTENSIONS:
         candidates.append(target + ext)
     # Index file
-    for ext in extensions:
+    for ext in TS_JS_RESOLVE_EXTENSIONS:
         candidates.append(target + "/index" + ext)
 
     return [c for c in candidates if c in file_index]
@@ -178,28 +178,26 @@ def _resolve_ts_js_baseurl(
             for target_pattern in targets:
                 target = target_pattern.replace("/*", suffix)
                 resolved = str(PurePosixPath(base_url) / target).replace("\\", "/")
-                extensions = [".ts", ".tsx", ".js", ".jsx"]
-                if any(resolved.endswith(ext) for ext in extensions):
+                if any(resolved.endswith(ext) for ext in TS_JS_RESOLVE_EXTENSIONS):
                     if resolved in file_index:
                         return [resolved]
-                for ext in extensions:
+                for ext in TS_JS_RESOLVE_EXTENSIONS:
                     candidate = resolved + ext
                     if candidate in file_index:
                         return [candidate]
-                for ext in extensions:
+                for ext in TS_JS_RESOLVE_EXTENSIONS:
                     candidate = resolved + "/index" + ext
                     if candidate in file_index:
                         return [candidate]
 
     # Try baseUrl + module
     target = str(PurePosixPath(base_url) / module).replace("\\", "/")
-    extensions = [".ts", ".tsx", ".js", ".jsx"]
     candidates = []
-    if any(target.endswith(ext) for ext in extensions):
+    if any(target.endswith(ext) for ext in TS_JS_RESOLVE_EXTENSIONS):
         candidates.append(target)
-    for ext in extensions:
+    for ext in TS_JS_RESOLVE_EXTENSIONS:
         candidates.append(target + ext)
-    for ext in extensions:
+    for ext in TS_JS_RESOLVE_EXTENSIONS:
         candidates.append(target + "/index" + ext)
 
     return [c for c in candidates if c in file_index]

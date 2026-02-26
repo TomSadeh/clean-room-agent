@@ -1,8 +1,12 @@
-"""Tests for token_estimation.py constants."""
+"""Tests for token_estimation.py constants and budget validation (A15)."""
+
+import pytest
 
 from clean_room_agent.token_estimation import (
     CHARS_PER_TOKEN,
     CHARS_PER_TOKEN_CONSERVATIVE,
+    check_prompt_budget,
+    validate_prompt_budget,
 )
 
 
@@ -49,3 +53,52 @@ class TestTokenEstimationConstants:
         planning_tokens = len(input_text) // CHARS_PER_TOKEN
         assert planning_tokens == 750
         assert planning_tokens < gate_tokens
+
+
+class TestCheckPromptBudget:
+    """A15: check_prompt_budget returns (estimated, available, fits) tuple."""
+
+    def test_fits_when_under_budget(self):
+        prompt = "a" * 30
+        system = "b" * 30
+        # 60 chars // 3 = 20 tokens estimated; available = 100 - 30 = 70
+        estimated, available, fits = check_prompt_budget(prompt, system, 100, 30)
+        assert estimated == 20
+        assert available == 70
+        assert fits is True
+
+    def test_does_not_fit_when_over_budget(self):
+        prompt = "a" * 300
+        system = "b" * 300
+        # 600 chars // 3 = 200 tokens estimated; available = 100 - 30 = 70
+        estimated, available, fits = check_prompt_budget(prompt, system, 100, 30)
+        assert estimated == 200
+        assert available == 70
+        assert fits is False
+
+    def test_exact_boundary_fits(self):
+        chars = 70 * CHARS_PER_TOKEN_CONSERVATIVE  # 210 chars total
+        prompt = "a" * chars
+        estimated, available, fits = check_prompt_budget(prompt, "", 100, 30)
+        assert estimated == 70
+        assert available == 70
+        assert fits is True
+
+
+class TestValidatePromptBudget:
+    """A15: validate_prompt_budget raises ValueError on budget exceeded."""
+
+    def test_passes_when_under_budget(self):
+        validate_prompt_budget("short", "sys", 10000, 100, "test_stage")
+
+    def test_raises_with_stage_name(self):
+        prompt = "a" * 3000
+        system = "b" * 3000
+        with pytest.raises(ValueError, match=r"R3: my_stage prompt too large"):
+            validate_prompt_budget(prompt, system, 100, 30, "my_stage")
+
+    def test_error_message_includes_token_counts(self):
+        prompt = "a" * 300
+        system = "b" * 300
+        with pytest.raises(ValueError, match=r"200 tokens.*available 70"):
+            validate_prompt_budget(prompt, system, 100, 30, "x")
