@@ -112,7 +112,7 @@ def parse_implement_response(text: str) -> list[PatchEdit]:
     matches = _EDIT_BLOCK_PATTERN.findall(text)
     if not matches:
         raise ValueError(
-            f"No valid <edit> blocks found in implement response.\nRaw: {text[:500]}"
+            f"No valid <edit> blocks found in implement response.\nRaw: {text}"
         )
 
     edits = []

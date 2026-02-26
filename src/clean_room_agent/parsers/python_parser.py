@@ -209,7 +209,7 @@ class PythonParser:
                     name = _node_text(left, source)
                     start_line = node.start_point[0] + 1
                     end_line = node.end_point[0] + 1
-                    signature = _node_text(node, source).split("\n")[0]
+                    signature = extract_body_signature(node, source)
                     symbols.append(ExtractedSymbol(
                         name=name,
                         kind="variable",

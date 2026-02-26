@@ -142,7 +142,7 @@ class TestEnrichRepository:
         }
 
         with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
-            with patch("clean_room_agent.llm.enrichment.LLMClient"):
+            with patch("clean_room_agent.llm.enrichment.LoggedLLMClient"):
                 with pytest.raises(RuntimeError, match="No indexed repo.*Run 'cra index' first"):
                     enrich_repository(tmp_path, models_config)
 
@@ -177,7 +177,7 @@ class TestEnrichRepository:
         }
 
         with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
-            with patch("clean_room_agent.llm.enrichment.LLMClient"):
+            with patch("clean_room_agent.llm.enrichment.LoggedLLMClient"):
                 result = enrich_repository(tmp_path, models_config)
 
         assert result.files_skipped == 1

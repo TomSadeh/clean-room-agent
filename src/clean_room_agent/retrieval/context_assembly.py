@@ -385,6 +385,9 @@ def _refilter_files(
 
     valid_paths = {rf["path"] for rf in rendered_files}
     keep_paths = {p for p in keep_list if isinstance(p, str) and p in valid_paths}
+    dropped = [p for p in keep_list if isinstance(p, str) and p not in valid_paths]
+    if dropped:
+        logger.warning("R2: refilter LLM suggested %d unknown paths — dropped: %s", len(dropped), dropped)
     if not keep_paths and keep_list:
         raise ValueError(
             f"R18: refilter LLM returned {len(keep_list)} paths, none valid. "

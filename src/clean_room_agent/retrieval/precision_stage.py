@@ -4,10 +4,7 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import (
-    log_r2_omission,
-    run_batched_judgment,
-)
+from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 
@@ -169,7 +166,7 @@ def classify_symbols(
 
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
 
-    class_map = run_batched_judgment(
+    class_map, omitted = run_batched_judgment(
         project_candidates,
         system_prompt=PRECISION_SYSTEM,
         task_header=task_header,
@@ -178,17 +175,13 @@ def classify_symbols(
         format_item=_format,
         extract_key=lambda cl: (cl["name"], cl.get("file_path", ""), cl.get("start_line", 0)) if "name" in cl else None,
         stage_name="precision",
+        item_key=lambda c: (c["name"], c["file_path"], c["start_line"]),
+        default_action="excluded",
     )
 
     for c in project_candidates:
         key = (c["name"], c["file_path"], c["start_line"])
-        cl = class_map.get(key)
-        if cl is None:
-            log_r2_omission(
-                f"{c['name']} in {c['file_path']}:{c['start_line']}",
-                "precision", "excluded",
-            )
-            cl = {}
+        cl = class_map.get(key, {})
         detail_level = cl.get("detail_level", "excluded")
         if detail_level not in ("primary", "supporting", "type_context", "excluded"):
             logger.warning("R2: invalid detail_level %r for %s — defaulting to excluded", detail_level, c["name"])

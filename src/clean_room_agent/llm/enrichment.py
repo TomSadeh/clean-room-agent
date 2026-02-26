@@ -9,7 +9,7 @@ from pathlib import Path
 from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db.queries import upsert_file_metadata
 from clean_room_agent.db.raw_queries import insert_enrichment_output
-from clean_room_agent.llm.client import LLMClient
+from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
 from clean_room_agent.retrieval.budget import estimate_tokens_conservative
 
@@ -52,7 +52,7 @@ def enrich_repository(
     raw_conn = None
 
     try:
-        client = LLMClient(model_config)
+        client = LoggedLLMClient(model_config)
         curated_conn = get_connection("curated", repo_path=repo_path, read_only=not promote)
         raw_conn = get_connection("raw", repo_path=repo_path)
         # Scope to the repo at this path (multi-repo safe)
@@ -151,6 +151,7 @@ def enrich_repository(
                 latency_ms=elapsed_ms,
             )
             raw_conn.commit()
+            client.flush()  # discard logged records — enrichment_outputs is canonical
             enriched += 1
 
             # Optionally promote to curated
@@ -177,6 +178,9 @@ def enrich_repository(
         )
     finally:
         if client is not None:
+            remaining = client.flush()
+            if remaining:
+                logger.warning("Enrichment: %d unflushed LLM call records (likely from errors)", len(remaining))
             client.close()
         if curated_conn is not None:
             curated_conn.close()

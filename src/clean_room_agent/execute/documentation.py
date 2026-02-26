@@ -207,6 +207,7 @@ def execute_documentation_file(
     except ValueError:
         # No edit blocks means LLM decided no changes needed — that's fine
         if "<edit" not in response.text:
+            logger.info("Documentation pass: LLM indicated no changes needed for %s", file_path)
             return StepResult(success=True, edits=[], raw_response=response.text)
         logger.warning("Documentation pass: failed to parse response for %s", file_path)
         return StepResult(
@@ -269,6 +270,7 @@ def run_documentation_pass(
             continue
 
         if not step_result.edits:
+            logger.debug("Documentation pass: no edits returned for %s — skipping", file_path)
             continue
 
         patch_result = apply_edits(step_result.edits, repo_path)

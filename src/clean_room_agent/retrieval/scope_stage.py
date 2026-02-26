@@ -5,10 +5,7 @@ from typing import NamedTuple
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import (
-    log_r2_omission,
-    run_batched_judgment,
-)
+from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 
@@ -225,7 +222,7 @@ def judge_scope(
 
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
 
-    verdict_map = run_batched_judgment(
+    verdict_map, omitted = run_batched_judgment(
         non_seeds,
         system_prompt=SCOPE_JUDGMENT_SYSTEM,
         task_header=task_header,
@@ -234,6 +231,8 @@ def judge_scope(
         format_item=_format,
         extract_key=lambda j: j.get("path"),
         stage_name="scope",
+        item_key=lambda sf: sf.path,
+        default_action="irrelevant",
     )
 
     # Apply judgments to non-seeds
@@ -248,7 +247,6 @@ def judge_scope(
             sf.relevance = verdict
             sf.reason = v.get("reason", sf.reason)
         else:
-            log_r2_omission(sf.path, "scope", "irrelevant")
             sf.relevance = "irrelevant"
 
     return candidates

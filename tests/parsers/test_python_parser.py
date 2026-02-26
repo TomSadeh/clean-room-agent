@@ -294,3 +294,39 @@ class Base(
         by_name = {s.name: s for s in result.symbols}
         sig = by_name["Base"].signature
         assert "Protocol" in sig
+
+
+class TestA5AssignmentSignature:
+    """A5: Multi-line module assignment uses extract_body_signature (first-line fallback)."""
+
+    MULTILINE_ASSIGNMENT = b'''
+X = {
+    "a": 1,
+    "b": 2,
+}
+
+Y = [
+    1,
+    2,
+    3,
+]
+'''
+
+    def test_multiline_dict_assignment_single_line_signature(self):
+        parser = PythonParser()
+        result = parser.parse(self.MULTILINE_ASSIGNMENT, "assign.py")
+        by_name = {s.name: s for s in result.symbols}
+        assert "X" in by_name
+        sig = by_name["X"].signature
+        # Should be just the first line, not the whole dict
+        assert "\n" not in sig
+        assert "X = {" in sig
+
+    def test_multiline_list_assignment_single_line_signature(self):
+        parser = PythonParser()
+        result = parser.parse(self.MULTILINE_ASSIGNMENT, "assign.py")
+        by_name = {s.name: s for s in result.symbols}
+        assert "Y" in by_name
+        sig = by_name["Y"].signature
+        assert "\n" not in sig
+        assert "Y = [" in sig

@@ -176,3 +176,35 @@ class TestJavaScriptParser:
         result = self.parser.parse(SAMPLE_JS, "test.js")
         jsdocs = [d for d in result.docstrings if d.format == "jsdoc"]
         assert len(jsdocs) >= 1
+
+
+class TestA6ArrowFunctionSignature:
+    """A6: Arrow function variable declarations use extract_body_signature."""
+
+    ARROW_MULTILINE = b'''
+const f = (a) =>
+  a + 1;
+
+const g = (x, y) => {
+  return x + y;
+};
+'''
+
+    def test_arrow_multiline_single_line_signature(self):
+        parser = TSJSParser("typescript")
+        result = parser.parse(self.ARROW_MULTILINE, "test.ts")
+        by_name = {s.name: s for s in result.symbols}
+        assert "f" in by_name
+        sig = by_name["f"].signature
+        # Should be single-line (first line of the variable_declarator)
+        assert "\n" not in sig
+        assert "f" in sig
+
+    def test_arrow_block_body_signature(self):
+        parser = TSJSParser("typescript")
+        result = parser.parse(self.ARROW_MULTILINE, "test.ts")
+        by_name = {s.name: s for s in result.symbols}
+        assert "g" in by_name
+        sig = by_name["g"].signature
+        # Should not contain the function body
+        assert "return" not in sig

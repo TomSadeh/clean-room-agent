@@ -73,7 +73,9 @@ def run_batched_judgment(
     format_item: Callable,
     extract_key: Callable[[dict], Hashable | None],
     stage_name: str,
-) -> dict[Hashable, dict]:
+    item_key: Callable | None = None,
+    default_action: str = "excluded",
+) -> tuple[dict[Hashable, dict], set[Hashable]]:
     """Run the shared batch→validate→LLM→parse loop for judgment stages.
 
     Args:
@@ -86,12 +88,18 @@ def run_batched_judgment(
         extract_key: Callback (json_dict) -> key that extracts a lookup key from
             each parsed JSON result. Return None to skip the entry.
         stage_name: Name for logging and R3 validation.
+        item_key: Optional callback (item) -> key that extracts a lookup key from
+            each input item. When provided, omitted items are tracked and logged.
+        default_action: Stage-specific R2 default label for omission logging.
 
     Returns:
-        dict mapping key -> judgment dict for all parsed LLM results.
+        Tuple of (result_map, omitted_keys):
+        - result_map: dict mapping key -> judgment dict for all parsed LLM results.
+        - omitted_keys: set of input item keys not found in result_map (empty if
+          item_key is None).
     """
     if not items:
-        return {}
+        return {}, set()
 
     batch_size = calculate_judgment_batch_size(
         system_prompt, task_header,
@@ -123,9 +131,20 @@ def run_batched_judgment(
 
         for j in judgments:
             if not isinstance(j, dict):
+                logger.warning("R2: %s judgment returned non-dict item (type=%s) — skipping", stage_name, type(j).__name__)
                 continue
             key = extract_key(j)
-            if key is not None:
-                result_map[key] = j
+            if key is None:
+                logger.warning("R2: %s judgment item missing extractable key — skipping: %s", stage_name, str(j)[:200])
+                continue
+            result_map[key] = j
 
-    return result_map
+    # Track and log omissions (R2 centralized)
+    omitted_keys: set[Hashable] = set()
+    if item_key is not None:
+        all_keys = {item_key(item) for item in items}
+        omitted_keys = all_keys - result_map.keys()
+        for key in omitted_keys:
+            log_r2_omission(str(key), stage_name, default_action)
+
+    return result_map, omitted_keys

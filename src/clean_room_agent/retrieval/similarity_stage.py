@@ -4,10 +4,7 @@ import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import (
-    log_r2_omission,
-    run_batched_judgment,
-)
+from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
 
@@ -165,7 +162,7 @@ def judge_similarity(
 
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbol pairs:\n"
 
-    judgment_map = run_batched_judgment(
+    judgment_map, omitted = run_batched_judgment(
         pairs,
         system_prompt=SIMILARITY_JUDGMENT_SYSTEM,
         task_header=task_header,
@@ -174,13 +171,14 @@ def judge_similarity(
         format_item=_format,
         extract_key=lambda j: j.get("pair_id"),
         stage_name="similarity",
+        item_key=lambda p: p["pair_id"],
+        default_action="denied",
     )
 
     confirmed: list[dict] = []
     for p in pairs:
         j = judgment_map.get(p["pair_id"])
         if j is None:
-            log_r2_omission(f"pair_id={p['pair_id']}", "similarity", "denied")
             continue
         if j.get("keep", False):
             confirmed.append({
@@ -192,8 +190,8 @@ def judge_similarity(
             })
         else:
             # A6b: log explicitly denied pairs for traceability
-            logger.info(
-                "Similarity pair denied: %s vs %s — %s",
+            logger.warning(
+                "R2: Similarity pair denied: %s vs %s — %s",
                 p["sym_a"].name, p["sym_b"].name, j.get("reason", "no reason"),
             )
 

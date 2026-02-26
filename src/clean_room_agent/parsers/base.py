@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -120,4 +123,5 @@ def extract_body_signature(node, source: bytes) -> str:
     if body is not None:
         header_bytes = source[node.start_byte:body.start_byte]
         return header_bytes.decode("utf-8", errors="replace").rstrip()
+    logger.debug("extract_body_signature: no body field for node type %s — first-line fallback", node.type)
     return node_text(node, source).split("\n")[0]

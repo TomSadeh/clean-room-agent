@@ -3,6 +3,8 @@
 import tomllib
 from pathlib import Path
 
+_DEFAULT_CODING_STYLE = "development"
+
 
 def load_config(repo_path: Path) -> dict | None:
     """Load .clean_room/config.toml. Returns None if the file doesn't exist."""
@@ -104,9 +106,9 @@ def require_environment_config(config: dict | None) -> dict:
     from clean_room_agent.environment import CODING_STYLES
 
     if config is None:
-        return {"coding_style": "development"}
+        return {"coding_style": _DEFAULT_CODING_STYLE}
     section = config.get("environment", {})
-    coding_style = section.get("coding_style", "development")
+    coding_style = section.get("coding_style", _DEFAULT_CODING_STYLE)
     if coding_style not in CODING_STYLES:
         raise ValueError(
             f"Unknown coding_style {coding_style!r} in [environment] config. "

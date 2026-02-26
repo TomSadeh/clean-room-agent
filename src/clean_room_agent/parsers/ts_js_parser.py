@@ -142,7 +142,7 @@ class TSJSParser:
                     kind=kind,
                     start_line=child.start_point[0] + 1,
                     end_line=child.end_point[0] + 1,
-                    signature=child.text.decode("utf-8", errors="replace").split("\n")[0].strip(),
+                    signature=extract_body_signature(child, source),
                     parent_name=None,
                 ))
 
