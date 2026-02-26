@@ -1,6 +1,8 @@
 """KnowledgeBase query API — reads exclusively from the curated DB."""
 
+import dataclasses
 import sqlite3
+from typing import Callable, TypeVar
 
 from clean_room_agent.query.models import (
     AdapterInfo,
@@ -15,6 +17,27 @@ from clean_room_agent.query.models import (
     RepoOverview,
     Symbol,
 )
+
+
+_T = TypeVar("_T")
+
+
+def _make_row_converter(dc_type: type[_T]) -> Callable[[sqlite3.Row], _T]:
+    """Create a row-to-dataclass converter using field introspection."""
+    field_names = [f.name for f in dataclasses.fields(dc_type)]
+    def _convert(row: sqlite3.Row) -> _T:
+        return dc_type(**{name: row[name] for name in field_names})
+    return _convert
+
+
+_row_to_file = _make_row_converter(File)
+_row_to_symbol = _make_row_converter(Symbol)
+_row_to_docstring = _make_row_converter(Docstring)
+_row_to_dep = _make_row_converter(Dependency)
+_row_to_commit = _make_row_converter(Commit)
+_row_to_co_change = _make_row_converter(CoChange)
+_row_to_file_metadata = _make_row_converter(FileMetadata)
+_row_to_adapter_info = _make_row_converter(AdapterInfo)
 
 
 class KnowledgeBase:
@@ -35,20 +58,20 @@ class KnowledgeBase:
             rows = self._conn.execute(
                 "SELECT * FROM files WHERE repo_id = ?", (repo_id,)
             ).fetchall()
-        return [self._row_to_file(r) for r in rows]
+        return [_row_to_file(r) for r in rows]
 
     def get_file_by_id(self, file_id: int) -> File | None:
         row = self._conn.execute(
             "SELECT * FROM files WHERE id = ?", (file_id,)
         ).fetchone()
-        return self._row_to_file(row) if row else None
+        return _row_to_file(row) if row else None
 
     def get_file_by_path(self, repo_id: int, path: str) -> File | None:
         row = self._conn.execute(
             "SELECT * FROM files WHERE repo_id = ? AND path = ?",
             (repo_id, path),
         ).fetchone()
-        return self._row_to_file(row) if row else None
+        return _row_to_file(row) if row else None
 
     def search_files_by_metadata(
         self,
@@ -82,7 +105,7 @@ class KnowledgeBase:
             f"WHERE {' AND '.join(conditions)}"
         )
         rows = self._conn.execute(query, params).fetchall()
-        return [self._row_to_file(r) for r in rows]
+        return [_row_to_file(r) for r in rows]
 
     def get_library_files(self, repo_id: int) -> list[File]:
         """Get all files with file_source='library' for a repo."""
@@ -90,24 +113,14 @@ class KnowledgeBase:
             "SELECT * FROM files WHERE repo_id = ? AND file_source = 'library'",
             (repo_id,),
         ).fetchall()
-        return [self._row_to_file(r) for r in rows]
+        return [_row_to_file(r) for r in rows]
 
     def get_file_metadata(self, file_id: int) -> FileMetadata | None:
         """Get enrichment metadata for a single file."""
         row = self._conn.execute(
             "SELECT * FROM file_metadata WHERE file_id = ?", (file_id,)
         ).fetchone()
-        if not row:
-            return None
-        return FileMetadata(
-            file_id=row["file_id"],
-            purpose=row["purpose"],
-            module=row["module"],
-            domain=row["domain"],
-            concepts=row["concepts"],
-            public_api_surface=row["public_api_surface"],
-            complexity_notes=row["complexity_notes"],
-        )
+        return _row_to_file_metadata(row) if row else None
 
     def get_file_metadata_batch(self, file_ids: list[int]) -> dict[int, FileMetadata]:
         """Get enrichment metadata for multiple files. Returns {file_id: FileMetadata}."""
@@ -118,18 +131,7 @@ class KnowledgeBase:
             f"SELECT * FROM file_metadata WHERE file_id IN ({placeholders})",
             file_ids,
         ).fetchall()
-        return {
-            row["file_id"]: FileMetadata(
-                file_id=row["file_id"],
-                purpose=row["purpose"],
-                module=row["module"],
-                domain=row["domain"],
-                concepts=row["concepts"],
-                public_api_surface=row["public_api_surface"],
-                complexity_notes=row["complexity_notes"],
-            )
-            for row in rows
-        }
+        return {row["file_id"]: _row_to_file_metadata(row) for row in rows}
 
     # --- Symbol queries ---
 
@@ -137,7 +139,7 @@ class KnowledgeBase:
         row = self._conn.execute(
             "SELECT * FROM symbols WHERE id = ?", (symbol_id,)
         ).fetchone()
-        return self._row_to_symbol(row) if row else None
+        return _row_to_symbol(row) if row else None
 
     def get_symbols_for_file(self, file_id: int, kind: str | None = None) -> list[Symbol]:
         if kind:
@@ -149,7 +151,7 @@ class KnowledgeBase:
             rows = self._conn.execute(
                 "SELECT * FROM symbols WHERE file_id = ?", (file_id,)
             ).fetchall()
-        return [self._row_to_symbol(r) for r in rows]
+        return [_row_to_symbol(r) for r in rows]
 
     def search_symbols_by_name(self, repo_id: int, pattern: str) -> list[Symbol]:
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -159,7 +161,7 @@ class KnowledgeBase:
             "WHERE f.repo_id = ? AND s.name LIKE ? ESCAPE '\\'",
             (repo_id, f"%{escaped}%"),
         ).fetchall()
-        return [self._row_to_symbol(r) for r in rows]
+        return [_row_to_symbol(r) for r in rows]
 
     def get_symbol_neighbors(
         self,
@@ -185,7 +187,7 @@ class KnowledgeBase:
         else:
             raise ValueError(f"direction must be 'callers' or 'callees', got {direction!r}")
 
-        symbols = [self._row_to_symbol(r) for r in rows]
+        symbols = [_row_to_symbol(r) for r in rows]
         if kinds:
             symbols = [s for s in symbols if s.kind in kinds]
         return symbols
@@ -203,7 +205,7 @@ class KnowledgeBase:
             ).fetchall()
         else:
             raise ValueError(f"direction must be 'imports' or 'imported_by', got {direction!r}")
-        return [self._row_to_dep(r) for r in rows]
+        return [_row_to_dep(r) for r in rows]
 
     def get_dependency_subgraph(self, file_ids: list[int], depth: int) -> list[Dependency]:
         """BFS expansion from seed files up to `depth` hops."""
@@ -223,7 +225,7 @@ class KnowledgeBase:
             ).fetchall()
             new_frontier = set()
             for r in rows:
-                dep = self._row_to_dep(r)
+                dep = _row_to_dep(r)
                 if dep.id in seen_dep_ids:
                     continue
                 seen_dep_ids.add(dep.id)
@@ -244,15 +246,7 @@ class KnowledgeBase:
             "WHERE (file_a_id = ? OR file_b_id = ?) AND count >= ?",
             (file_id, file_id, min_count),
         ).fetchall()
-        return [
-            CoChange(
-                file_a_id=r["file_a_id"],
-                file_b_id=r["file_b_id"],
-                count=r["count"],
-                last_commit_hash=r["last_commit_hash"],
-            )
-            for r in rows
-        ]
+        return [_row_to_co_change(r) for r in rows]
 
     # --- Docstring / comment queries ---
 
@@ -260,7 +254,7 @@ class KnowledgeBase:
         rows = self._conn.execute(
             "SELECT * FROM docstrings WHERE file_id = ?", (file_id,)
         ).fetchall()
-        return [self._row_to_docstring(r) for r in rows]
+        return [_row_to_docstring(r) for r in rows]
 
     def get_rationale_comments(self, file_id: int) -> list[Comment]:
         rows = self._conn.execute(
@@ -278,7 +272,7 @@ class KnowledgeBase:
             "WHERE fc.file_id = ? ORDER BY c.timestamp DESC LIMIT ?",
             (file_id, limit),
         ).fetchall()
-        return [self._row_to_commit(r) for r in rows]
+        return [_row_to_commit(r) for r in rows]
 
     # --- Composite queries ---
 
@@ -286,7 +280,7 @@ class KnowledgeBase:
         row = self._conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
         if not row:
             return None
-        file = self._row_to_file(row)
+        file = _row_to_file(row)
         return FileContext(
             file=file,
             symbols=self.get_symbols_for_file(file_id),
@@ -345,55 +339,9 @@ class KnowledgeBase:
             "ORDER BY version DESC LIMIT 1",
             (stage_name,),
         ).fetchone()
-        if not row:
-            return None
-        return AdapterInfo(
-            id=row["id"],
-            stage_name=row["stage_name"],
-            base_model=row["base_model"],
-            model_tag=row["model_tag"],
-            version=row["version"],
-            performance_notes=row["performance_notes"],
-            deployed_at=row["deployed_at"],
-        )
+        return _row_to_adapter_info(row) if row else None
 
     # --- Row converters ---
-
-    @staticmethod
-    def _row_to_file(row) -> File:
-        return File(
-            id=row["id"],
-            repo_id=row["repo_id"],
-            path=row["path"],
-            language=row["language"],
-            content_hash=row["content_hash"],
-            size_bytes=row["size_bytes"],
-            file_source=row["file_source"],
-        )
-
-    @staticmethod
-    def _row_to_symbol(row) -> Symbol:
-        return Symbol(
-            id=row["id"],
-            file_id=row["file_id"],
-            name=row["name"],
-            kind=row["kind"],
-            start_line=row["start_line"],
-            end_line=row["end_line"],
-            signature=row["signature"],
-            parent_symbol_id=row["parent_symbol_id"],
-        )
-
-    @staticmethod
-    def _row_to_docstring(row) -> Docstring:
-        return Docstring(
-            id=row["id"],
-            file_id=row["file_id"],
-            content=row["content"],
-            format=row["format"],
-            parsed_fields=row["parsed_fields"],
-            symbol_id=row["symbol_id"],
-        )
 
     @staticmethod
     def _row_to_comment(row) -> Comment:
@@ -405,27 +353,4 @@ class KnowledgeBase:
             kind=row["kind"],
             is_rationale=bool(row["is_rationale"]),
             symbol_id=row["symbol_id"],
-        )
-
-    @staticmethod
-    def _row_to_dep(row) -> Dependency:
-        return Dependency(
-            id=row["id"],
-            source_file_id=row["source_file_id"],
-            target_file_id=row["target_file_id"],
-            kind=row["kind"],
-        )
-
-    @staticmethod
-    def _row_to_commit(row) -> Commit:
-        return Commit(
-            id=row["id"],
-            repo_id=row["repo_id"],
-            hash=row["hash"],
-            author=row["author"],
-            message=row["message"],
-            timestamp=row["timestamp"],
-            files_changed=row["files_changed"],
-            insertions=row["insertions"],
-            deletions=row["deletions"],
         )

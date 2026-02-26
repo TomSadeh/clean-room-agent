@@ -28,56 +28,22 @@ def _check_path_traversal(file_path: str, repo_path: Path) -> None:
         )
 
 
-def validate_edits(edits: list[PatchEdit], repo_path: Path) -> list[str]:
-    """Validate edits against the current filesystem state.
+def _validate_and_simulate(
+    edits: list[PatchEdit],
+    repo_path: Path,
+    *,
+    track_originals: bool = False,
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """Simulate sequential edit application and collect errors.
 
-    Simulates sequential application: each edit validates against the file
-    content after prior edits to the same file have been applied in memory.
+    Args:
+        track_originals: If True, record original file contents for rollback.
 
-    Returns list of error strings (empty = all valid).
+    Returns:
+        (simulated_contents, original_contents, errors)
     """
-    errors = []
-    # Track simulated file contents for multi-edit-per-file validation
     simulated: dict[str, str] = {}
-
-    for i, edit in enumerate(edits):
-        _check_path_traversal(edit.file_path, repo_path)
-        file_path = repo_path / edit.file_path
-        if not file_path.is_file():
-            errors.append(f"Edit {i}: file does not exist: {edit.file_path}")
-            continue
-
-        # Get current (possibly simulated) content
-        if edit.file_path in simulated:
-            content = simulated[edit.file_path]
-        else:
-            content = file_path.read_text(encoding="utf-8")
-
-        count = content.count(edit.search)
-        if count == 0:
-            errors.append(f"Edit {i}: search string not found in {edit.file_path}")
-        elif count > 1:
-            errors.append(
-                f"Edit {i}: search string found {count} times in {edit.file_path} "
-                f"(must be exactly once)"
-            )
-        else:
-            # Simulate applying this edit for subsequent edits to the same file
-            simulated[edit.file_path] = content.replace(edit.search, edit.replacement, 1)
-
-    return errors
-
-
-def apply_edits(edits: list[PatchEdit], repo_path: Path) -> PatchResult:
-    """Read files once, validate and apply edits atomically.
-
-    Reads each file exactly once (fixing TOCTOU between validate and apply).
-    Saves original contents for rollback. On any failure during application,
-    rolls back all changes and returns a failure result.
-    """
-    # Phase 1: Read all files once and validate edits against them
-    original_contents: dict[str, str] = {}
-    simulated: dict[str, str] = {}
+    originals: dict[str, str] = {}
     errors: list[str] = []
 
     for i, edit in enumerate(edits):
@@ -87,10 +53,11 @@ def apply_edits(edits: list[PatchEdit], repo_path: Path) -> PatchResult:
             errors.append(f"Edit {i}: file does not exist: {edit.file_path}")
             continue
 
-        # Read file once on first encounter
-        if edit.file_path not in original_contents:
-            original_contents[edit.file_path] = file_path.read_text(encoding="utf-8")
-            simulated[edit.file_path] = original_contents[edit.file_path]
+        if edit.file_path not in simulated:
+            content = file_path.read_text(encoding="utf-8")
+            simulated[edit.file_path] = content
+            if track_originals:
+                originals[edit.file_path] = content
 
         content = simulated[edit.file_path]
         count = content.count(edit.search)
@@ -103,6 +70,32 @@ def apply_edits(edits: list[PatchEdit], repo_path: Path) -> PatchResult:
             )
         else:
             simulated[edit.file_path] = content.replace(edit.search, edit.replacement, 1)
+
+    return simulated, originals, errors
+
+
+def validate_edits(edits: list[PatchEdit], repo_path: Path) -> list[str]:
+    """Validate edits against the current filesystem state.
+
+    Simulates sequential application: each edit validates against the file
+    content after prior edits to the same file have been applied in memory.
+
+    Returns list of error strings (empty = all valid).
+    """
+    _, _, errors = _validate_and_simulate(edits, repo_path)
+    return errors
+
+
+def apply_edits(edits: list[PatchEdit], repo_path: Path) -> PatchResult:
+    """Read files once, validate and apply edits atomically.
+
+    Reads each file exactly once (fixing TOCTOU between validate and apply).
+    Saves original contents for rollback. On any failure during application,
+    rolls back all changes and returns a failure result.
+    """
+    simulated, original_contents, errors = _validate_and_simulate(
+        edits, repo_path, track_originals=True,
+    )
 
     if errors:
         return PatchResult(success=False, error_info="; ".join(errors))

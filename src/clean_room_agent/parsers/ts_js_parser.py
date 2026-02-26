@@ -133,25 +133,18 @@ class TSJSParser:
         for child in node.children:
             if child.type == "variable_declarator":
                 name_node = _find_child(child, "identifier")
+                if not name_node:
+                    continue
                 value_node = _find_child(child, "arrow_function")
-                if name_node and value_node:
-                    out.append(ExtractedSymbol(
-                        name=name_node.text.decode("utf-8"),
-                        kind="function",
-                        start_line=child.start_point[0] + 1,
-                        end_line=child.end_point[0] + 1,
-                        signature=child.text.decode("utf-8", errors="replace").split("\n")[0].strip(),
-                        parent_name=None,
-                    ))
-                elif name_node:
-                    out.append(ExtractedSymbol(
-                        name=name_node.text.decode("utf-8"),
-                        kind="variable",
-                        start_line=child.start_point[0] + 1,
-                        end_line=child.end_point[0] + 1,
-                        signature=child.text.decode("utf-8", errors="replace").split("\n")[0].strip(),
-                        parent_name=None,
-                    ))
+                kind = "function" if value_node else "variable"
+                out.append(ExtractedSymbol(
+                    name=name_node.text.decode("utf-8"),
+                    kind=kind,
+                    start_line=child.start_point[0] + 1,
+                    end_line=child.end_point[0] + 1,
+                    signature=child.text.decode("utf-8", errors="replace").split("\n")[0].strip(),
+                    parent_name=None,
+                ))
 
     def _extract_docstrings(self, root, source: bytes, symbols: list[ExtractedSymbol]) -> list[ExtractedDocstring]:
         docstrings = []
@@ -269,19 +262,7 @@ class TSJSParser:
             if child.type == "string":
                 module = child.text.decode("utf-8").strip("'\"")
             elif child.type == "import_clause":
-                for ic in child.children:
-                    if ic.type == "identifier":
-                        names.append(ic.text.decode("utf-8"))
-                    elif ic.type == "named_imports":
-                        for spec in ic.children:
-                            if spec.type == "import_specifier":
-                                name_node = _find_child(spec, "identifier")
-                                if name_node:
-                                    names.append(name_node.text.decode("utf-8"))
-                    elif ic.type == "namespace_import":
-                        alias = _find_child(ic, "identifier")
-                        if alias:
-                            names.append(f"* as {alias.text.decode('utf-8')}")
+                names.extend(_extract_import_clause_names(child))
             elif child.type == "type" or child.text == b"type":
                 is_type_only = True
 
@@ -334,19 +315,8 @@ class TSJSParser:
                 continue
 
             # Extract names from the left side (name node)
-            name_node = child.child_by_field_name("name")
-            names = []
-            if name_node is not None:
-                if name_node.type == "identifier":
-                    names = [name_node.text.decode("utf-8")]
-                elif name_node.type == "object_pattern":
-                    for pat_child in name_node.children:
-                        if pat_child.type == "shorthand_property_identifier_pattern":
-                            names.append(pat_child.text.decode("utf-8"))
-                        elif pat_child.type == "pair_pattern":
-                            val = pat_child.child_by_field_name("value")
-                            if val and val.type == "identifier":
-                                names.append(val.text.decode("utf-8"))
+            lhs = child.child_by_field_name("name")
+            names = _extract_require_names(lhs) if lhs is not None else []
 
             return ExtractedImport(
                 module=module,
@@ -356,6 +326,42 @@ class TSJSParser:
                 is_type_only=False,
             )
         return None
+
+
+def _extract_import_clause_names(clause_node) -> list[str]:
+    """Extract imported names from an ES import_clause node."""
+    names = []
+    for ic in clause_node.children:
+        if ic.type == "identifier":
+            names.append(ic.text.decode("utf-8"))
+        elif ic.type == "named_imports":
+            for spec in ic.children:
+                if spec.type == "import_specifier":
+                    name_node = _find_child(spec, "identifier")
+                    if name_node:
+                        names.append(name_node.text.decode("utf-8"))
+        elif ic.type == "namespace_import":
+            alias = _find_child(ic, "identifier")
+            if alias:
+                names.append(f"* as {alias.text.decode('utf-8')}")
+    return names
+
+
+def _extract_require_names(name_node) -> list[str]:
+    """Extract bound names from the left side of a CommonJS require()."""
+    if name_node.type == "identifier":
+        return [name_node.text.decode("utf-8")]
+    if name_node.type == "object_pattern":
+        names = []
+        for pat_child in name_node.children:
+            if pat_child.type == "shorthand_property_identifier_pattern":
+                names.append(pat_child.text.decode("utf-8"))
+            elif pat_child.type == "pair_pattern":
+                val = pat_child.child_by_field_name("value")
+                if val and val.type == "identifier":
+                    names.append(val.text.decode("utf-8"))
+        return names
+    return []
 
 
 def _find_child(node, child_type: str):

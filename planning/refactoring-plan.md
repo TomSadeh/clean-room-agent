@@ -46,31 +46,13 @@ All 7 items implemented and verified. 1062 tests passing.
 
 ---
 
-## Batch 3: Code Simplification (R7, R10, R11, R13)
+## Batch 3: Code Simplification (R7, R10, R11, R13) — DONE
 
-Cross-file but low risk. Each item is self-contained.
+All 3 items implemented and verified. 1062 tests passing.
 
-### R7: Patch validation dedup
-
-**Modify** `src/clean_room_agent/execute/patch.py`:
-- Extract `_validate_and_simulate(edits, repo_path, *, track_originals=False) -> (simulated, originals, errors)`
-- `validate_edits()` calls it and returns errors
-- `apply_edits()` calls it with `track_originals=True` then proceeds to write
-
-### R10 + R11: TS/JS parser cleanup
-
-**Modify** `src/clean_room_agent/parsers/ts_js_parser.py`:
-- R10: Extract `_extract_import_clause_names(clause_node) -> list[str]` from `_parse_es_import` (flatten 9-level nesting to 4)
-- R10: Extract `_extract_require_names(name_node) -> list[str]` from `_parse_commonjs_require` (flatten 8-level nesting)
-- R11: Merge duplicate blocks in `_extract_variable_symbols` — single block with `kind = "function" if value_node else "variable"`
-
-### R13: Row converter factory
-
-**Modify** `src/clean_room_agent/query/api.py`:
-- Add `_make_row_converter(dc_type)` using `dataclasses.fields()` introspection
-- Replace 9 of 10 `_row_to_*` static methods (keep `_row_to_comment` which has `bool()` cast)
-
-**Test**: Run full suite.
+- **R7:** Extracted `_validate_and_simulate(edits, repo_path, *, track_originals=False)` in `patch.py`. `validate_edits()` is now a one-liner; `apply_edits()` calls with `track_originals=True`.
+- **R10+R11:** Extracted `_extract_import_clause_names()` and `_extract_require_names()` from ES/CJS import parsers. Merged duplicate variable symbol blocks into single block with `kind = "function" if value_node else "variable"`.
+- **R13:** Added `_make_row_converter(dc_type)` factory in `query/api.py`. Replaced 9 converters (5 static methods + 4 inline constructors) for File, Symbol, Docstring, Dependency, Commit, CoChange, FileMetadata, AdapterInfo. Kept `_row_to_comment` manual (`bool()` cast).
 
 ---
 
