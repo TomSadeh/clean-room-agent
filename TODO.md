@@ -70,191 +70,43 @@ Remaining findings from code reviews and audits. Completed items removed — see
 
 ### File Size Reduction / Decomposition
 
-#### R1. Decompose `run_orchestrator()` (705 lines) in runner.py
+#### R1. Decompose `run_orchestrator()` — PARTIAL
 
-The pipeline+LLM+flush+record pattern repeats 7 times (meta_plan, part_plan, code step,
-adjustment, test_plan, test_step, documentation). Extract `_run_plan_stage()` helper that
-bundles the 30-40 line sequence: `run_pipeline()` -> LoggedLLMClient context -> `execute_X()`
--> `_flush_llm_calls()` -> `_get_task_run_id()` -> `insert_orchestrator_pass()` -> `set_state()`
--> `raw_conn.commit()`.
+Steps 1-4, 8 done (context dataclass, init/cleanup, diff update, rollback). Steps 5-7
+deferred (`_run_plan_stage()`, `_execute_code_step()`, `_execute_test_loop()`). Step 9
+partial (init/cleanup done, body reduction blocked on steps 5-7).
 
-Also extract:
-- `_execute_code_step()` — step execution with retries (lines 424-542, 119 lines)
-- `_execute_test_loop()` — test step loop (lines 729-836)
-- `_update_cumulative_diff()` — git-vs-LIFO diff update (repeated 4 times)
-
-Estimated savings: 200-300 lines from main function, flatten 7-level nesting to 3-4.
-
-#### R2. Consolidate `run_single_pass()` with `run_orchestrator()`
-
-51% code duplication between the two entry points. Init (config/router/DB setup), finally
-block (archive/cleanup), and git init are near-identical. Extract:
-- `_init_orchestrator()` -> returns (router, config, connections, git)
-- `_cleanup_orchestrator()` -> finally block logic
-
-Alternative: make `run_single_pass()` call `run_orchestrator()` with a synthetic 1-part plan.
-
-Estimated savings: ~150 lines.
-
-#### R3. Extract CLI command logic into `commands/` package
-
-`cli.py` (443 lines) has 50-100 line implementations inline for `retrieve`, `plan`, `solve`.
-Extract to `commands/retrieve.py`, `commands/plan.py`, `commands/solve.py`. CLI layer becomes
-UI glue only.
-
-Estimated savings: ~243 lines from cli.py.
-
-#### R4. Decompose `_do_index()` (269 lines) in indexer/orchestrator.py
-
-Handles 10 concerns with 6 nesting levels. Extract:
-- `_register_repo_and_scan()` — repo lookup, file scan, diff
-- `_parse_and_insert_symbols()` — parse + symbol/docstring/comment insertion (lines 163-252)
-- `_resolve_and_insert_dependencies()` — deps + co-changes + references (lines 256-305)
-- `_extract_and_index_git_history()` — git extraction + insertion (lines 307-339)
-
-Symbol insertion logic (lines 195-232) is duplicated with `index_libraries()` (lines 478-503).
-Extract shared `_insert_file_symbols()`.
-
-Estimated savings: ~80-100 lines.
-
-#### R5. Collapse system prompt constants in prompts.py
-
-Seven system prompt strings defined as individual variables (lines 18-124) then re-collected
-into `SYSTEM_PROMPTS` dict (lines 148-156). Define directly in the dict — individual constants
-are never referenced elsewhere.
-
-Estimated savings: ~79 lines.
+#### ~~R2. Consolidate `run_single_pass()` with `run_orchestrator()`~~ — DONE
+#### ~~R3. Extract CLI command logic into `commands/` package~~ — DONE
+#### ~~R4. Decompose `_do_index()` in indexer/orchestrator.py~~ — DONE
+#### ~~R5. Collapse system prompt constants in prompts.py~~ — DONE
 
 ### Code Simplification / Deduplication
 
-#### R6. Shared batched judgment runner for retrieval stages
-
-Scope, precision, and similarity stages all implement identical protocol: batch by context
-window -> call LLM -> parse JSON -> apply R2 default-deny. Extract `run_batched_judgment()`
-utility that handles batching + JSON parse + R2 validation. Stages provide only a candidate
-formatter and result mapper callback.
-
-- `scope_stage.py:179-267` (judge_scope)
-- `precision_stage.py:105-215` (classify_symbols)
-- `similarity_stage.py:144-216` (judge_similarity)
-
-Estimated savings: ~80-100 lines across three files.
-
-#### R7. Deduplicate validation logic in patch.py
-
-`validate_edits()` (lines 31-68) and `apply_edits()` (lines 71-130) contain near-identical
-validation loops (path traversal check, file existence, search string matching, simulation).
-Extract `_validate_and_simulate_edits()` called by both.
-
-Estimated savings: ~47 lines.
-
-#### R8. Extract `db/helpers.py` for shared DB utilities
-
-`_now()` and `_insert_row()` are identical in both `raw_queries.py` (lines 7-24) and
-`queries.py` (lines 7-24). Extract to `db/helpers.py`. Also extract `_build_update_clause()`
-for the verbose UPDATE builder in `raw_queries.py:200-241`.
-
-Estimated savings: ~60 lines.
-
-#### R9. Use NamedTuple for scope stage candidates
-
-`scope_stage.py` uses `tuple[int, str, str, str, int]` with magic index `[4]` throughout
-(lines 101-167). Replace with `NamedTuple` (`CandidateWithScore`) for readability.
-
-#### R10. Flatten deep nesting in TS/JS parser
-
-`_parse_es_import()` (lines 262-298) has 9-level nesting. `_parse_commonjs_require()`
-(lines 300-358) has 8-level nesting. Extract `_extract_import_names()` and
-`_extract_commonjs_names()` helpers to flatten to 4 levels.
-
-#### R11. Simplify TS/JS variable symbol extraction
-
-`ts_js_parser.py:131-154` — two near-identical `ExtractedSymbol(...)` blocks for
-function vs. variable. Merge to single block with `kind = "function" if value_node else
-"variable"` and early continue.
-
-#### R12. Add `_NON_EMPTY` validation to `_SerializableMixin`
-
-`execute/dataclasses.py` — `__post_init__` non-empty validation is copy-pasted across
-5+ dataclasses. Add `_NON_EMPTY: tuple[str, ...] = ()` class var to `_SerializableMixin`
-with auto-validation in `__post_init__`.
-
-Estimated savings: ~43 lines.
-
-#### R13. Row converter boilerplate in query/api.py
-
-10 static `_row_to_*` methods (lines 362-431) follow identical patterns. Replace with a
-factory `_make_row_converter(dataclass_type)` that introspects the dataclass.
-
-Estimated savings: ~61 lines.
-
-#### R14. Scope stage dedup pattern repeated 3 times
-
-`scope_stage.py` — three identical dedup+sort blocks (lines 111-118, 135-142, 160-167)
-for deps, co-changes, and metadata candidates. Extract `dedup_by_score()` helper.
-
-Estimated savings: ~30 lines.
-
-#### R15. Use `__getattr__` delegation in EnvironmentLLMClient
-
-`client.py:235-264` — re-implements `__enter__`, `__exit__`, `close()`, `config` property
-that already exist in `LoggedLLMClient`. Use `__getattr__` for automatic delegation, keep
-only `complete()` override.
-
-Estimated savings: ~24 lines.
+#### ~~R6. Shared batched judgment runner for retrieval stages~~ — DONE
+#### ~~R7. Deduplicate validation logic in patch.py~~ — DONE
+#### ~~R8. Extract `db/helpers.py` for shared DB utilities~~ — DONE
+#### ~~R9. Use NamedTuple for scope stage candidates~~ — DONE
+#### ~~R10. Flatten deep nesting in TS/JS parser~~ — DONE
+#### ~~R11. Simplify TS/JS variable symbol extraction~~ — DONE
+#### ~~R12. Add `_NON_EMPTY` validation to `_SerializableMixin`~~ — DONE
+#### ~~R13. Row converter boilerplate in query/api.py~~ — DONE
+#### ~~R14. Scope stage dedup pattern repeated 3 times~~ — DONE
+#### ~~R15. Use `__getattr__` delegation in EnvironmentLLMClient~~ — DONE
 
 ### Fail-Fast / Transparency Violations
 
-#### R16. Silent exception swallowing in library_scanner.py
+#### ~~R16. Silent exception swallowing in library_scanner.py~~ — DONE
+#### ~~R17. Library symbol detail downgrade violates R1~~ — DONE
+#### ~~R18. Assembly refilter silent fallback~~ — DONE
 
-Two bare `except Exception: continue` blocks with **no logging**:
-- `library_scanner.py:87-88` — parse failure in `_auto_resolve()`
-- `library_scanner.py:101-102` — `find_spec()` failure in `_auto_resolve()`
-
-Fix: catch specific exceptions (`OSError`, `ValueError`, `AttributeError`, `ImportError`),
-add `logger.debug()` before continue.
-
-#### R17. Library symbol detail downgrade violates R1 (no degradation)
-
-`precision_stage.py:194-200` — downgrades library symbols from `primary` to `type_context`
-after LLM classification. This is a post-hoc band-aid, not a re-filter. Violates R1:
-"Fix decisions, not content."
-
-Fix: add deterministic pre-filter **before** LLM judgment to exclude library symbols from
-primary classification candidates entirely.
-
-#### R18. Assembly refilter silent fallback
-
-`context_assembly.py:389-390` — when LLM refilter returns only invalid paths, falls back to
-priority-based drop with a warning. Should raise `ValueError` if LLM returns garbage, not
-silently switch strategies.
-
-### LLM Enhancement Opportunities
+### LLM Enhancement Opportunities (Deferred — new LLM calls, separate feature pass)
 
 #### R19. Task-aware budget tie-breaking in context assembly
-
-`context_assembly.py` — when budget exceeded, currently drops files by detail level tier
-(type_context first, supporting second, primary last). An LLM call could instead decide
-which files matter most for *this specific task*, providing task-aware dropping instead of
-blanket tier-based dropping.
-
 #### R20. LLM-ranked dependency ordering in scope stage
-
-`scope_stage.py:100-106` — dependencies sorted by "connections to seed files" (simple count).
-A lightweight LLM call could rank deps by relevance to the task's intent summary — cheaper
-than full scope judgment but richer than counting.
-
 #### R21. Docstring-based pre-filter in precision stage
 
-`precision_stage.py:147-157` — symbols enter classification with signatures but no docstring
-context. A pre-filter LLM call on docstring summaries could reduce batch sizes by excluding
-clearly irrelevant symbols before the full classification prompt.
-
-#### R22. Consistent R2 default-deny handler across stages
-
-Each stage reimplements R2 omission handling slightly differently (scope -> "irrelevant",
-precision -> "excluded", similarity -> skip). Extract unified `handle_omitted_candidate()`
-to ensure consistent logging and policy.
+### ~~R22. Consistent R2 default-deny handler across stages~~ — DONE
 
 ---
 
