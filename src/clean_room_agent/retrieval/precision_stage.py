@@ -109,16 +109,42 @@ def classify_symbols(
 ) -> list[ClassifiedSymbol]:
     """LLM classification of symbol detail levels.
 
-    Batches symbols to fit within the model's context window.
+    Library symbols are pre-classified as type_context (R17: they cannot be
+    primary, and sending them to the LLM wastes tokens). Only project symbols
+    enter LLM judgment.
     """
     if not candidates:
         return []
+
+    # R17: partition — library symbols skip LLM, auto-classified as type_context
+    project_candidates = [c for c in candidates if c["file_source"] != "library"]
+    library_candidates = [c for c in candidates if c["file_source"] == "library"]
+
+    results: list[ClassifiedSymbol] = []
+
+    # Auto-classify library symbols
+    for c in library_candidates:
+        results.append(ClassifiedSymbol(
+            symbol_id=c["symbol_id"],
+            file_id=c["file_id"],
+            name=c["name"],
+            kind=c["kind"],
+            start_line=c["start_line"],
+            end_line=c["end_line"],
+            detail_level="type_context",
+            reason="library symbol (auto-classified)",
+            signature=c.get("signature", ""),
+            file_source="library",
+        ))
+
+    if not project_candidates:
+        return results
 
     # Batch-fetch docstrings for all involved files
     docstring_summaries: dict[tuple[int, int], str] = {}  # (file_id, symbol_id) -> summary
     if kb is not None:
         file_ids_seen: set[int] = set()
-        for c in candidates:
+        for c in project_candidates:
             fid = c["file_id"]
             if fid not in file_ids_seen:
                 file_ids_seen.add(fid)
@@ -144,7 +170,7 @@ def classify_symbols(
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
 
     class_map = run_batched_judgment(
-        candidates,
+        project_candidates,
         system_prompt=PRECISION_SYSTEM,
         task_header=task_header,
         llm=llm,
@@ -154,8 +180,7 @@ def classify_symbols(
         stage_name="precision",
     )
 
-    results = []
-    for c in candidates:
+    for c in project_candidates:
         key = (c["name"], c["file_path"], c["start_line"])
         cl = class_map.get(key)
         if cl is None:
@@ -170,17 +195,6 @@ def classify_symbols(
             detail_level = "excluded"
         reason = cl.get("reason", "")
 
-        file_source = c["file_source"]
-
-        # Library symbols cannot be "primary" — downgrade to "type_context"
-        if file_source == "library" and detail_level == "primary":
-            logger.warning(
-                "Library symbol %s in %s classified as primary — downgrading to type_context",
-                c["name"], c["file_path"],
-            )
-            detail_level = "type_context"
-            reason = f"downgraded from primary (library file): {reason}"
-
         results.append(ClassifiedSymbol(
             symbol_id=c["symbol_id"],
             file_id=c["file_id"],
@@ -191,7 +205,7 @@ def classify_symbols(
             detail_level=detail_level,
             reason=reason,
             signature=c.get("signature", ""),
-            file_source=file_source,
+            file_source=c["file_source"],
         ))
 
     return results

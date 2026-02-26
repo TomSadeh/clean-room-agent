@@ -377,17 +377,20 @@ def _refilter_files(
     response = llm.complete(prompt, system=REFILTER_SYSTEM)
     keep_list = parse_json_response(response.text, "refilter")
 
-    if isinstance(keep_list, list):
-        valid_paths = {rf["path"] for rf in rendered_files}
-        keep_paths = {p for p in keep_list if isinstance(p, str) and p in valid_paths}
-        # If LLM returned only hallucinated paths, fall back to priority drop
-        if not keep_paths and keep_list:
-            logger.warning("R1: refilter LLM returned only invalid paths — falling back to priority drop")
-            return {rf["path"] for rf in _drop_by_priority(rendered_files, budget_limit)}
-        return keep_paths
+    if not isinstance(keep_list, list):
+        raise ValueError(
+            f"R18: refilter LLM returned {type(keep_list).__name__}, expected list. "
+            f"Cannot curate context with invalid LLM response."
+        )
 
-    logger.warning("R1: refilter LLM returned non-list — falling back to priority drop")
-    return {rf["path"] for rf in _drop_by_priority(rendered_files, budget_limit)}
+    valid_paths = {rf["path"] for rf in rendered_files}
+    keep_paths = {p for p in keep_list if isinstance(p, str) and p in valid_paths}
+    if not keep_paths and keep_list:
+        raise ValueError(
+            f"R18: refilter LLM returned {len(keep_list)} paths, none valid. "
+            f"Expected paths from: {sorted(valid_paths)}"
+        )
+    return keep_paths
 
 
 def _drop_by_priority(rendered_files: list[dict], budget_limit: int) -> list[dict]:

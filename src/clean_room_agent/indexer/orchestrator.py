@@ -58,6 +58,183 @@ def _find_symbol_id_for_attachment(
     return None
 
 
+def _insert_file_symbols(
+    conn: sqlite3.Connection,
+    file_id: int,
+    parsed_result,
+) -> list[dict]:
+    """Insert symbols from a parsed result into the DB (two-pass: parents then children).
+
+    Returns list of {id, name, start_line, end_line} dicts for attachment lookups.
+    """
+    symbol_records: list[dict] = []
+
+    # First pass: top-level symbols (no parent)
+    parent_id_map: dict[str, int] = {}
+    for sym in parsed_result.symbols:
+        if sym.parent_name is None:
+            sid = queries.insert_symbol(
+                conn, file_id, sym.name, sym.kind,
+                sym.start_line, sym.end_line, sym.signature,
+            )
+            parent_id_map[sym.name] = sid
+            symbol_records.append({
+                "id": sid, "name": sym.name,
+                "start_line": sym.start_line, "end_line": sym.end_line,
+            })
+
+    # Second pass: child symbols
+    for sym in parsed_result.symbols:
+        if sym.parent_name is not None:
+            parent_id = parent_id_map.get(sym.parent_name)
+            sid = queries.insert_symbol(
+                conn, file_id, sym.name, sym.kind,
+                sym.start_line, sym.end_line, sym.signature,
+                parent_symbol_id=parent_id,
+            )
+            symbol_records.append({
+                "id": sid, "name": sym.name,
+                "start_line": sym.start_line, "end_line": sym.end_line,
+            })
+
+    return symbol_records
+
+
+def _attach_docstrings_comments(
+    conn: sqlite3.Connection,
+    file_id: int,
+    parsed_result,
+    symbol_records: list[dict],
+    *,
+    include_comments: bool = True,
+) -> None:
+    """Attach docstrings (and optionally comments) to symbols in the DB."""
+    for doc in parsed_result.docstrings:
+        sym_id = _find_symbol_id_for_attachment(
+            symbol_records, symbol_name=doc.symbol_name, line=doc.line,
+        )
+        queries.insert_docstring(
+            conn, file_id, doc.content, doc.format,
+            doc.parsed_fields, sym_id,
+        )
+
+    if include_comments:
+        for comment in parsed_result.comments:
+            sym_id = _find_symbol_id_for_attachment(
+                symbol_records, symbol_name=comment.symbol_name, line=comment.line,
+            )
+            queries.insert_inline_comment(
+                conn, file_id, comment.line, comment.content,
+                comment.kind, comment.is_rationale, sym_id,
+            )
+
+
+def _resolve_deps_and_refs(
+    conn: sqlite3.Connection,
+    file_id_map: dict[str, int],
+    all_parse_results: dict,
+    paths: set[str],
+    scanned_map: dict,
+    repo_path: Path,
+) -> None:
+    """Resolve file dependencies and symbol references for parsed files."""
+    file_index = set(file_id_map.keys())
+
+    # Dependencies
+    for p in paths:
+        if p not in all_parse_results:
+            continue
+        result = all_parse_results[p]
+        fi = scanned_map[p]
+        deps = resolve_dependencies(
+            result.imports, fi.path, fi.language, file_index, repo_path,
+        )
+        for dep in deps:
+            source_id = file_id_map.get(dep.source_path)
+            target_id = file_id_map.get(dep.target_path)
+            if source_id and target_id:
+                queries.insert_dependency(conn, source_id, target_id, dep.kind)
+    conn.commit()
+
+    # Symbol references (Python only)
+    for p in paths:
+        if p not in all_parse_results:
+            continue
+        result = all_parse_results[p]
+        file_id = file_id_map[p]
+
+        # Build local symbol name -> id map for this file.
+        # Skip ambiguous names (e.g., __init__ in multiple classes) to avoid
+        # silently linking references to the wrong symbol.
+        file_symbols = conn.execute(
+            "SELECT id, name FROM symbols WHERE file_id = ?", (file_id,)
+        ).fetchall()
+        local_sym_map: dict[str, int] = {}
+        _ambiguous: set[str] = set()
+        for r in file_symbols:
+            name = r["name"]
+            if name in local_sym_map:
+                _ambiguous.add(name)
+            else:
+                local_sym_map[name] = r["id"]
+        for name in _ambiguous:
+            del local_sym_map[name]
+
+        for ref in result.references:
+            caller_id = local_sym_map.get(ref.caller_symbol)
+            callee_id = local_sym_map.get(ref.callee_symbol)
+            if caller_id and callee_id:
+                queries.insert_symbol_reference(
+                    conn, caller_id, callee_id,
+                    ref.reference_kind,
+                )
+    conn.commit()
+
+
+def _index_git_history(
+    conn: sqlite3.Connection,
+    repo_id: int,
+    repo_path: Path,
+    file_id_map: dict[str, int],
+    remote_url: str | None,
+    indexer_config: dict,
+) -> None:
+    """Extract and store git history (commits, co-changes)."""
+    file_index = set(file_id_map.keys())
+    git_kwargs: dict = {}
+    if "max_commits" in indexer_config:
+        git_kwargs["max_commits"] = indexer_config["max_commits"]
+    if "co_change_max_files" in indexer_config:
+        git_kwargs["co_change_max_files"] = indexer_config["co_change_max_files"]
+    if "co_change_min_count" in indexer_config:
+        git_kwargs["co_change_min_count"] = indexer_config["co_change_min_count"]
+    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url, **git_kwargs)
+
+    if git_history:
+        for commit in git_history.commits:
+            # Only insert commits that touch at least one indexed file (T23).
+            # Commits touching only excluded files would create orphan rows.
+            tracked_files = [fp for fp in commit.changed_files if fp in file_id_map]
+            if not tracked_files:
+                continue
+            commit_id = queries.insert_commit(
+                conn, repo_id, commit.hash, commit.timestamp,
+                commit.author, commit.message, commit.files_changed,
+                commit.insertions, commit.deletions,
+            )
+            for fp in tracked_files:
+                queries.insert_file_commit(conn, file_id_map[fp], commit_id)
+
+        for (fa, fb), count in git_history.co_change_counts.items():
+            fa_id = file_id_map.get(fa)
+            fb_id = file_id_map.get(fb)
+            if fa_id and fb_id:
+                queries.upsert_co_change(
+                    conn, fa_id, fb_id, count=count,
+                )
+    conn.commit()
+
+
 def index_repository(
     repo_path: Path,
     continue_on_error: bool = False,
@@ -188,155 +365,21 @@ def _do_index(
 
         file_id = file_id_map[p]
 
-        # Insert symbols and keep full records for later line-aware attachment.
-        symbol_name_to_id: dict[tuple[str, int], int] = {}
-        symbol_records: list[dict] = []
-        # First pass: non-child symbols
-        for sym in result.symbols:
-            if sym.parent_name is None:
-                sid = queries.insert_symbol(
-                    curated_conn, file_id, sym.name, sym.kind,
-                    sym.start_line, sym.end_line, sym.signature,
-                )
-                symbol_name_to_id[(sym.name, sym.start_line)] = sid
-                symbol_records.append(
-                    {
-                        "id": sid,
-                        "name": sym.name,
-                        "start_line": sym.start_line,
-                        "end_line": sym.end_line,
-                    }
-                )
-
-        # Second pass: child symbols
-        for sym in result.symbols:
-            if sym.parent_name is not None:
-                # Look up parent by name — find matching key with any start_line
-                parent_id = None
-                for (sn, _sl), sid in symbol_name_to_id.items():
-                    if sn == sym.parent_name:
-                        parent_id = sid
-                        break
-                sid = queries.insert_symbol(
-                    curated_conn, file_id, sym.name, sym.kind,
-                    sym.start_line, sym.end_line, sym.signature, parent_id,
-                )
-                symbol_name_to_id[(sym.name, sym.start_line)] = sid
-                symbol_records.append(
-                    {
-                        "id": sid,
-                        "name": sym.name,
-                        "start_line": sym.start_line,
-                        "end_line": sym.end_line,
-                    }
-                )
-
-        # Insert docstrings
-        for doc in result.docstrings:
-            sym_id = _find_symbol_id_for_attachment(
-                symbol_records, symbol_name=doc.symbol_name, line=doc.line
-            )
-            queries.insert_docstring(
-                curated_conn, file_id, doc.content, doc.format,
-                doc.parsed_fields, sym_id,
-            )
-
-        # Insert comments
-        for comment in result.comments:
-            sym_id = _find_symbol_id_for_attachment(
-                symbol_records, symbol_name=comment.symbol_name, line=comment.line
-            )
-            queries.insert_inline_comment(
-                curated_conn, file_id, comment.line, comment.content,
-                comment.kind, comment.is_rationale, sym_id,
-            )
+        symbol_records = _insert_file_symbols(curated_conn, file_id, result)
+        _attach_docstrings_comments(curated_conn, file_id, result, symbol_records)
 
     curated_conn.commit()
 
-    # Resolve dependencies for all new/changed files
-    file_index = set(file_id_map.keys())
-    for p in new_paths | changed_paths:
-        if p not in all_parse_results:
-            continue
-        result = all_parse_results[p]
-        fi = scanned_map[p]
-        deps = resolve_dependencies(
-            result.imports, fi.path, fi.language, file_index, repo_path
-        )
-        for dep in deps:
-            source_id = file_id_map.get(dep.source_path)
-            target_id = file_id_map.get(dep.target_path)
-            if source_id and target_id:
-                queries.insert_dependency(curated_conn, source_id, target_id, dep.kind)
-    curated_conn.commit()
+    # Resolve dependencies and symbol references for all new/changed files
+    _resolve_deps_and_refs(
+        curated_conn, file_id_map, all_parse_results,
+        new_paths | changed_paths, scanned_map, repo_path,
+    )
 
-    # Insert symbol references (Python only)
-    for p in new_paths | changed_paths:
-        if p not in all_parse_results:
-            continue
-        result = all_parse_results[p]
-        file_id = file_id_map[p]
-
-        # Build local symbol name -> id map for this file.
-        # Skip ambiguous names (e.g., __init__ in multiple classes) to avoid
-        # silently linking references to the wrong symbol.
-        file_symbols = curated_conn.execute(
-            "SELECT id, name FROM symbols WHERE file_id = ?", (file_id,)
-        ).fetchall()
-        local_sym_map: dict[str, int] = {}
-        _ambiguous: set[str] = set()
-        for r in file_symbols:
-            name = r["name"]
-            if name in local_sym_map:
-                _ambiguous.add(name)
-            else:
-                local_sym_map[name] = r["id"]
-        for name in _ambiguous:
-            del local_sym_map[name]
-
-        for ref in result.references:
-            caller_id = local_sym_map.get(ref.caller_symbol)
-            callee_id = local_sym_map.get(ref.callee_symbol)
-            if caller_id and callee_id:
-                queries.insert_symbol_reference(
-                    curated_conn, caller_id, callee_id,
-                    ref.reference_kind,
-                )
-    curated_conn.commit()
-
-    # Extract git history (pass remote_url to avoid redundant subprocess call)
-    git_kwargs: dict = {}
-    if "max_commits" in ic:
-        git_kwargs["max_commits"] = ic["max_commits"]
-    if "co_change_max_files" in ic:
-        git_kwargs["co_change_max_files"] = ic["co_change_max_files"]
-    if "co_change_min_count" in ic:
-        git_kwargs["co_change_min_count"] = ic["co_change_min_count"]
-    git_history = extract_git_history(repo_path, file_index, remote_url=remote_url, **git_kwargs)
-
-    if git_history:
-        for commit in git_history.commits:
-            # Only insert commits that touch at least one indexed file (T23).
-            # Commits touching only excluded files would create orphan rows.
-            tracked_files = [fp for fp in commit.changed_files if fp in file_id_map]
-            if not tracked_files:
-                continue
-            commit_id = queries.insert_commit(
-                curated_conn, repo_id, commit.hash, commit.timestamp,
-                commit.author, commit.message, commit.files_changed,
-                commit.insertions, commit.deletions,
-            )
-            for fp in tracked_files:
-                queries.insert_file_commit(curated_conn, file_id_map[fp], commit_id)
-
-        for (fa, fb), count in git_history.co_change_counts.items():
-            fa_id = file_id_map.get(fa)
-            fb_id = file_id_map.get(fb)
-            if fa_id and fb_id:
-                queries.upsert_co_change(
-                    curated_conn, fa_id, fb_id, count=count,
-                )
-    curated_conn.commit()
+    # Extract and store git history
+    _index_git_history(
+        curated_conn, repo_id, repo_path, file_id_map, remote_url, ic,
+    )
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -475,45 +518,11 @@ def index_libraries(
                 else:
                     total_new += 1
 
-                # Insert symbols (two passes: parents then children)
-                symbol_records: list[dict] = []
-                for sym in parsed.symbols:
-                    if sym.parent_name is None:
-                        sym_id = queries.insert_symbol(
-                            curated_conn, file_id, sym.name, sym.kind,
-                            sym.start_line, sym.end_line, sym.signature,
-                        )
-                        symbol_records.append({
-                            "name": sym.name, "id": sym_id,
-                            "start_line": sym.start_line, "end_line": sym.end_line,
-                        })
-
-                parent_id_map = {s["name"]: s["id"] for s in symbol_records}
-                for sym in parsed.symbols:
-                    if sym.parent_name is not None:
-                        parent_id = parent_id_map.get(sym.parent_name)
-                        sym_id = queries.insert_symbol(
-                            curated_conn, file_id, sym.name, sym.kind,
-                            sym.start_line, sym.end_line, sym.signature,
-                            parent_symbol_id=parent_id,
-                        )
-                        symbol_records.append({
-                            "name": sym.name, "id": sym_id,
-                            "start_line": sym.start_line, "end_line": sym.end_line,
-                        })
-
-                # Insert docstrings with symbol attachment
-                for doc in parsed.docstrings:
-                    attached_id = _find_symbol_id_for_attachment(
-                        symbol_records,
-                        symbol_name=doc.symbol_name,
-                        line=doc.line,
-                    )
-                    queries.insert_docstring(
-                        curated_conn, file_id, doc.content,
-                        doc.format, doc.parsed_fields,
-                        symbol_id=attached_id,
-                    )
+                symbol_records = _insert_file_symbols(curated_conn, file_id, parsed)
+                _attach_docstrings_comments(
+                    curated_conn, file_id, parsed, symbol_records,
+                    include_comments=False,
+                )
 
             curated_conn.commit()
 

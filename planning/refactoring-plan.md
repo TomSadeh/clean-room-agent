@@ -204,7 +204,7 @@ Init/cleanup rewritten to use `_init_orchestrator`/`_cleanup_orchestrator`. Full
 
 ---
 
-## Batch 6: Indexer + Fail-Fast (R4, R17, R18)
+## Batch 6: Indexer + Fail-Fast (R4, R17, R18) — DONE
 
 ### R4: Indexer decomposition
 

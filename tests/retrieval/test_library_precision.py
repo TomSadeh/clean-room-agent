@@ -18,19 +18,11 @@ def _mock_llm_with_response(text):
     return mock_llm
 
 
-class TestLibrarySymbolDowngrade:
-    def test_library_symbol_downgraded_from_primary(self):
-        """A ClassifiedSymbol with file_source='library' and detail_level='primary'
-        gets downgraded to 'type_context'."""
-        # LLM classifies the library symbol as "primary"
+class TestLibrarySymbolPreFilter:
+    def test_library_symbol_auto_classified_as_type_context(self):
+        """R17: Library symbols are auto-classified as type_context without LLM."""
+        # LLM only classifies the project symbol
         mock_llm = _mock_llm_with_response(json.dumps([
-            {
-                "name": "Widget",
-                "file_path": "requests/models.py",
-                "start_line": 10,
-                "detail_level": "primary",
-                "reason": "directly used",
-            },
             {
                 "name": "handle_request",
                 "file_path": "src/app.py",
@@ -70,28 +62,28 @@ class TestLibrarySymbolDowngrade:
 
         assert len(result) == 2
 
-        # Library symbol should be downgraded from primary to type_context
+        # Library symbol auto-classified as type_context (R17)
         widget_cs = next(cs for cs in result if cs.name == "Widget")
         assert widget_cs.detail_level == "type_context"
         assert widget_cs.file_source == "library"
-        assert "downgraded from primary" in widget_cs.reason
+        assert "library symbol" in widget_cs.reason
 
-        # Project symbol should remain primary
+        # Project symbol classified by LLM as primary
         handler_cs = next(cs for cs in result if cs.name == "handle_request")
         assert handler_cs.detail_level == "primary"
         assert handler_cs.file_source == "project"
 
-    def test_library_symbol_supporting_not_downgraded(self):
-        """A library symbol classified as 'supporting' is not downgraded."""
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {
-                "name": "Config",
-                "file_path": "flask/config.py",
-                "start_line": 5,
-                "detail_level": "supporting",
-                "reason": "context for handler",
-            },
-        ]))
+        # LLM prompt should only contain project symbol, not library
+        call_args = mock_llm.complete.call_args
+        prompt = call_args[0][0]
+        assert "handle_request" in prompt
+        assert "Widget" not in prompt
+
+    def test_library_only_candidates_skip_llm(self):
+        """R17: When all candidates are library, LLM is not called."""
+        mock_llm = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
 
         candidates = [
             {
@@ -114,7 +106,7 @@ class TestLibrarySymbolDowngrade:
 
         assert len(result) == 1
         config_cs = result[0]
-        assert config_cs.detail_level == "supporting"
+        assert config_cs.detail_level == "type_context"
         assert config_cs.file_source == "library"
-        # Should NOT have the downgrade notice
-        assert "downgraded from primary" not in config_cs.reason
+        # LLM should NOT have been called
+        mock_llm.complete.assert_not_called()
