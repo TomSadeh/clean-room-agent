@@ -63,6 +63,7 @@ class TestBoundsChecks:
             "stages": {"default": "scope,precision"},
             "orchestrator": {
                 "max_retries_per_step": 1,
+                "max_adjustment_rounds": 3,
                 "git_workflow": False,
                 "max_cumulative_diff_chars": -1,
             },
@@ -84,6 +85,7 @@ class TestBoundsChecks:
             "stages": {"default": "scope,precision"},
             "orchestrator": {
                 "max_retries_per_step": 1,
+                "max_adjustment_rounds": 3,
                 "git_workflow": False,
                 "max_cumulative_diff_chars": 0,
             },
@@ -153,25 +155,31 @@ class TestSinglePassDBRecords:
     """T67: run_single_pass should create orchestrator_run/pass records."""
 
     def test_has_orchestrator_records(self):
-        """Verify the function creates orchestrator run/pass records."""
+        """Verify the function creates orchestrator run/pass records (via helpers)."""
         import inspect
         from clean_room_agent.orchestrator import runner
 
+        # run_single_pass delegates init/cleanup to shared helpers
         source = inspect.getsource(runner.run_single_pass)
-        assert "insert_orchestrator_run" in source
+        assert "_init_orchestrator" in source
+        assert "_cleanup_orchestrator" in source
         assert "insert_orchestrator_pass" in source
-        # Session archive now delegated to _archive_session helper (T80)
-        assert "_archive_session" in source
-        assert "_finalize_orchestrator_run" in source
+        # Verify the shared helpers contain the DB operations
+        init_src = inspect.getsource(runner._init_orchestrator)
+        assert "insert_orchestrator_run" in init_src
+        cleanup_src = inspect.getsource(runner._cleanup_orchestrator)
+        assert "_archive_session" in cleanup_src
+        assert "_finalize_orchestrator_run" in cleanup_src
 
     def test_has_session_db(self):
-        """Verify the function creates and archives a session DB."""
+        """Verify the function creates and archives a session DB (via helpers)."""
         import inspect
         from clean_room_agent.orchestrator import runner
 
-        source = inspect.getsource(runner.run_single_pass)
-        assert 'get_connection("session"' in source
-        assert "session_conn.close()" in source
+        init_src = inspect.getsource(runner._init_orchestrator)
+        assert 'get_connection("session"' in init_src
+        cleanup_src = inspect.getsource(runner._cleanup_orchestrator)
+        assert "session_conn.close()" in cleanup_src
 
 
 # ── T68: strip_thinking handles edge cases ──────────────────────────

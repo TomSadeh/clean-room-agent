@@ -260,7 +260,7 @@ class TestConfigTemplateNewSections:
     def test_template_has_orchestrator_diff_chars(self, tmp_path):
         create_default_config(tmp_path)
         content = (tmp_path / ".clean_room" / "config.toml").read_text()
-        assert "# max_cumulative_diff_chars = 50000" in content
+        assert "max_cumulative_diff_chars = 50000" in content
 
 
 # ---------- StageContext.retrieval_params ----------

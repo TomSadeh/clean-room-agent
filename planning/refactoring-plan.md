@@ -62,7 +62,9 @@ Incremental extraction from `runner.py`. Audit fixes (A6, A7, A11) are integrate
 
 Test after each step.
 
-### Step 1: `_OrchestratorContext` dataclass
+**Status: Steps 1-4, 8 complete. Steps 5-7 deferred. Step 9 partial (init/cleanup done, body reduction pending Steps 5-7). 1071 tests passing.**
+
+### Step 1: `_OrchestratorContext` dataclass ✓
 
 **Add** to `runner.py`:
 ```python
@@ -87,7 +89,7 @@ class _OrchestratorContext:
     reasoning_config: ModelConfig | None  # None for single_pass
 ```
 
-### Step 2: `_init_orchestrator()` (R2 part 1)
+### Step 2: `_init_orchestrator()` (R2 part 1) ✓
 
 Extract the duplicated init blocks (lines 244-311 and 954-1014):
 ```python
@@ -95,7 +97,7 @@ def _init_orchestrator(task, repo_path, config, trace_logger, *, needs_reasoning
 ```
 Handles: task_id generation, router setup, config resolution, DB connections, git setup, orch_run record.
 
-### Step 3: `_cleanup_orchestrator()` (R2 part 2, incorporates A11)
+### Step 3: `_cleanup_orchestrator()` (R2 part 2, incorporates A11) ✓
 
 Extract the duplicated finally blocks (lines 900-929 and 1114-1137):
 ```python
@@ -111,7 +113,7 @@ Handles: finalize orch run (with error_message from A4), session state, git clea
 **Modify** `src/clean_room_agent/config.py`:
 - Uncomment `max_adjustment_rounds` and `max_cumulative_diff_chars` in the default config template (make them always present)
 
-### Step 4: `_update_cumulative_diff()` (R1 part 1, incorporates A7)
+### Step 4: `_update_cumulative_diff()` (R1 part 1, incorporates A7) ✓
 
 Extract the 4 repeated diff-update blocks:
 ```python
@@ -126,7 +128,7 @@ def _update_cumulative_diff(ctx, edits, commit_msg) -> str  # returns new SHA fr
 **Modify** `src/clean_room_agent/db/raw_queries.py`:
 - Add `commit_sha: str | None = None` parameter to `insert_orchestrator_pass()`
 
-### Step 5: `_run_plan_stage()` (R1 part 2)
+### Step 5: `_run_plan_stage()` (R1 part 2) — DEFERRED
 
 Extract the pipeline+LLM+flush+record pattern (7 occurrences):
 ```python
@@ -134,21 +136,21 @@ def _run_plan_stage(ctx, *, task_desc, pass_type, plan_artifact_path=None, ...) 
 ```
 Handles: `run_pipeline()` -> `LoggedLLMClient` context -> `execute_plan()` -> `_flush_llm_calls()` -> DB records -> state update. Increments `ctx.sequence_order`.
 
-### Step 6: `_execute_code_step()` (R1 part 3)
+### Step 6: `_execute_code_step()` (R1 part 3) — DEFERRED
 
 Extract the per-step retry loop (lines 424-542):
 ```python
 def _execute_code_step(ctx, step, part_plan, part_id, max_retries) -> tuple[bool, StepResult | None, list[PatchResult]]
 ```
 
-### Step 7: `_execute_test_loop()` (R1 part 4)
+### Step 7: `_execute_test_loop()` (R1 part 4) — DEFERRED
 
 Extract the test step loop (lines 729-836):
 ```python
 def _execute_test_loop(ctx, test_plan, part_id, max_retries) -> tuple[bool, list[PatchResult]]
 ```
 
-### Step 8: `_rollback_part()` (incorporates A6)
+### Step 8: `_rollback_part()` (incorporates A6) ✓
 
 **Audit finding A6:** P2-4 (W4-C7). Rollback events are not logged to raw DB. The DB shows `run_attempt` records with `patch_applied=True` but no record that patches were reverted.
 
@@ -162,11 +164,11 @@ This helper:
 - **Logs rollback events to raw DB**: update affected `run_attempts` to `patch_applied=False`
 - Records the trigger (validation failure) via a retrieval_decision with `stage="rollback"` and reason linking to the validation_result_id
 
-### Step 9: Rewrite `run_orchestrator()` and `run_single_pass()`
+### Step 9: Rewrite `run_orchestrator()` and `run_single_pass()` — PARTIAL
 
-With all helpers extracted, both functions become ~80-120 lines each: init -> orchestration logic -> cleanup. `run_orchestrator` is the full loop; `run_single_pass` is the single-step shortcut.
+Init/cleanup rewritten to use `_init_orchestrator`/`_cleanup_orchestrator`. Full body reduction to ~80-120 lines blocked on Steps 5-7 (plan/code/test stage helpers). Current sizes: `run_orchestrator` ~636 lines, `run_single_pass` ~166 lines.
 
-**Test**: Run `tests/orchestrator/test_runner.py` after each step. Run full suite after steps 3, 5, and 9.
+**Test**: 1071 tests passing after steps 1-4 and 8.
 
 ---
 

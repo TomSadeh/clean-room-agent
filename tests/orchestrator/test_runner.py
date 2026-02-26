@@ -104,7 +104,13 @@ def _make_config():
         "budget": {"reserved_tokens": 4096},
         "stages": {"default": "scope,precision"},
         "testing": {"test_command": "pytest tests/"},
-        "orchestrator": {"max_retries_per_step": 1, "git_workflow": False, "documentation_pass": False},
+        "orchestrator": {
+            "max_retries_per_step": 1,
+            "max_adjustment_rounds": 3,
+            "max_cumulative_diff_chars": 50000,
+            "git_workflow": False,
+            "documentation_pass": False,
+        },
     }
 
 
@@ -898,6 +904,208 @@ class TestCapCumulativeDiff:
         assert lines[0] == "[earlier changes truncated]"
         # Second line should be a diff block start
         assert lines[1].startswith("diff --git ")
+
+
+class TestUpdateCumulativeDiff:
+    """A7: _update_cumulative_diff helper commits + updates diff."""
+
+    def test_with_git_returns_sha(self):
+        from clean_room_agent.orchestrator.runner import _update_cumulative_diff
+
+        git = MagicMock()
+        git.commit_checkpoint.return_value = "abc123def456"
+        git.get_cumulative_diff.return_value = "new diff content"
+
+        new_diff, sha = _update_cumulative_diff(
+            git, "old diff", [], "commit msg", 50000,
+        )
+        assert sha == "abc123def456"
+        assert new_diff == "new diff content"
+        git.commit_checkpoint.assert_called_once_with("commit msg")
+        git.get_cumulative_diff.assert_called_once_with(max_chars=50000)
+
+    def test_without_git_returns_none_sha(self):
+        from clean_room_agent.orchestrator.runner import _update_cumulative_diff
+
+        edits = [MagicMock(file_path="a.py", search="old", replacement="new")]
+        new_diff, sha = _update_cumulative_diff(
+            None, "", edits, "commit msg", 50000,
+        )
+        assert sha is None
+        assert "a.py" in new_diff
+
+    def test_caps_diff_without_git(self):
+        from clean_room_agent.orchestrator.runner import _update_cumulative_diff
+
+        edits = [MagicMock(file_path="a.py", search="x" * 100, replacement="y" * 100)]
+        new_diff, sha = _update_cumulative_diff(
+            None, "", edits, "msg", 50,
+        )
+        assert sha is None
+        assert len(new_diff) <= 200  # capped
+
+
+class TestUpdateOrchestratorPassSha:
+    """A7: commit SHAs stored in orchestrator_passes."""
+
+    def test_sha_column_exists(self, tmp_path):
+        from clean_room_agent.db.connection import get_connection
+        from clean_room_agent.db.raw_queries import (
+            insert_orchestrator_pass,
+            insert_orchestrator_run,
+            update_orchestrator_pass_sha,
+        )
+
+        conn = get_connection("raw", repo_path=tmp_path)
+        run_id = insert_orchestrator_run(
+            conn, "t1", str(tmp_path), "test task", "running",
+        )
+        pass_id = insert_orchestrator_pass(
+            conn, run_id, None, "step_implement", 1,
+        )
+        conn.commit()
+
+        # Initially NULL
+        row = conn.execute(
+            "SELECT commit_sha FROM orchestrator_passes WHERE id = ?", (pass_id,)
+        ).fetchone()
+        assert row["commit_sha"] is None
+
+        # Update with SHA
+        update_orchestrator_pass_sha(conn, pass_id, "abc123")
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT commit_sha FROM orchestrator_passes WHERE id = ?", (pass_id,)
+        ).fetchone()
+        assert row["commit_sha"] == "abc123"
+        conn.close()
+
+    def test_insert_with_sha(self, tmp_path):
+        from clean_room_agent.db.connection import get_connection
+        from clean_room_agent.db.raw_queries import (
+            insert_orchestrator_pass,
+            insert_orchestrator_run,
+        )
+
+        conn = get_connection("raw", repo_path=tmp_path)
+        run_id = insert_orchestrator_run(
+            conn, "t1", str(tmp_path), "test task", "running",
+        )
+        pass_id = insert_orchestrator_pass(
+            conn, run_id, None, "documentation", 1,
+            commit_sha="def456",
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT commit_sha FROM orchestrator_passes WHERE id = ?", (pass_id,)
+        ).fetchone()
+        assert row["commit_sha"] == "def456"
+        conn.close()
+
+
+class TestRollbackPart:
+    """A6: _rollback_part logs rollback events to raw DB."""
+
+    def test_lifo_rollback_order(self):
+        from clean_room_agent.orchestrator.runner import _rollback_part
+
+        code_patch = MagicMock()
+        doc_patch = MagicMock()
+        test_patch = MagicMock()
+        raw_conn = MagicMock()
+
+        with patch("clean_room_agent.orchestrator.runner.rollback_edits") as mock_rb:
+            _rollback_part(
+                git=None, repo_path=Path("/tmp"),
+                part_id="p1", part_start_sha=None,
+                code_patches=[code_patch],
+                doc_patches=[doc_patch],
+                test_patches=[test_patch],
+                raw_conn=raw_conn, task_id="t1",
+            )
+
+        # LIFO: test → doc → code
+        assert mock_rb.call_count == 3
+        assert mock_rb.call_args_list[0][0][0] is test_patch
+        assert mock_rb.call_args_list[1][0][0] is doc_patch
+        assert mock_rb.call_args_list[2][0][0] is code_patch
+
+    def test_git_rollback_uses_checkpoint(self):
+        from clean_room_agent.orchestrator.runner import _rollback_part
+
+        git = MagicMock()
+        raw_conn = MagicMock()
+
+        _rollback_part(
+            git=git, repo_path=Path("/tmp"),
+            part_id="p1", part_start_sha="abc123",
+            code_patches=[], doc_patches=[], test_patches=[],
+            raw_conn=raw_conn, task_id="t1",
+        )
+
+        git.rollback_to_checkpoint.assert_called_once_with(commit_sha="abc123")
+
+    def test_a6_marks_attempts_rolled_back(self, tmp_path):
+        """A6: rollback marks run_attempts as patch_applied=False."""
+        from clean_room_agent.db.connection import get_connection
+        from clean_room_agent.db.raw_queries import (
+            insert_run_attempt,
+            insert_task_run,
+            update_run_attempt_patch,
+        )
+        from clean_room_agent.orchestrator.runner import _rollback_part
+
+        conn = get_connection("raw", repo_path=tmp_path)
+
+        # Create a task_run matching the pattern
+        tr_id = insert_task_run(
+            conn, "t1:impl:p1:s1", str(tmp_path), "implement", "m", 32768, 4096, "",
+        )
+        # Create a run_attempt with patch_applied=True
+        attempt_id = insert_run_attempt(conn, tr_id, 1, 10, 5, 100, "response", False)
+        update_run_attempt_patch(conn, attempt_id, True)
+        conn.commit()
+
+        # Verify it's True
+        row = conn.execute(
+            "SELECT patch_applied FROM run_attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()
+        assert row["patch_applied"] == 1
+
+        # Rollback with git (so no rollback_edits needed)
+        git = MagicMock()
+        _rollback_part(
+            git=git, repo_path=Path(str(tmp_path)),
+            part_id="p1", part_start_sha="abc",
+            code_patches=[], doc_patches=[], test_patches=[],
+            raw_conn=conn, task_id="t1",
+        )
+
+        # A6: attempt should now be marked as rolled back
+        row = conn.execute(
+            "SELECT patch_applied FROM run_attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()
+        assert row["patch_applied"] == 0
+        conn.close()
+
+    def test_partial_rollback_failure_raises(self):
+        from clean_room_agent.orchestrator.runner import _rollback_part
+
+        patch1 = MagicMock()
+        raw_conn = MagicMock()
+
+        with patch("clean_room_agent.orchestrator.runner.rollback_edits") as mock_rb:
+            mock_rb.side_effect = RuntimeError("file not found")
+            with pytest.raises(RuntimeError, match="Rollback partially failed"):
+                _rollback_part(
+                    git=None, repo_path=Path("/tmp"),
+                    part_id="p1", part_start_sha=None,
+                    code_patches=[patch1],
+                    doc_patches=[], test_patches=[],
+                    raw_conn=raw_conn, task_id="t1",
+                )
 
 
 def _make_doc_config():

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +15,8 @@ from typing import TYPE_CHECKING
 from clean_room_agent.config import require_models_config
 
 if TYPE_CHECKING:
+    from clean_room_agent.llm.client import ModelConfig
+    from clean_room_agent.orchestrator.git_ops import GitWorkflow
     from clean_room_agent.trace import TraceLogger
 from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
@@ -22,6 +26,8 @@ from clean_room_agent.db.raw_queries import (
     insert_run_attempt,
     insert_session_archive,
     insert_task_run,
+    mark_part_attempts_rolled_back,
+    update_orchestrator_pass_sha,
     update_orchestrator_run,
     update_run_attempt_patch,
 )
@@ -146,6 +152,29 @@ def _build_diff_text(edits) -> str:
     return "".join(parts)
 
 
+def _update_cumulative_diff(
+    git: GitWorkflow | None,
+    current_diff: str,
+    edits,
+    commit_msg: str,
+    max_diff_chars: int,
+) -> tuple[str, str | None]:
+    """Commit edits (if git enabled) and update cumulative diff.
+
+    Returns (new_cumulative_diff, commit_sha).
+    commit_sha is None when git is disabled.
+    """
+    if git is not None:
+        sha = git.commit_checkpoint(commit_msg)
+        new_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
+        return new_diff, sha
+    new_diff = _cap_cumulative_diff(
+        current_diff + _build_diff_text(edits),
+        max_chars=max_diff_chars,
+    )
+    return new_diff, None
+
+
 def _accumulate_optional_tokens(values: list[int | None]) -> int | None:
     """Sum token counts, returning None if any individual value is None."""
     total = 0
@@ -206,6 +235,51 @@ def _git_cleanup(git, status: str) -> None:
         logger.warning("Git cleanup failed: %s", git_err)
 
 
+def _rollback_part(
+    *,
+    git: GitWorkflow | None,
+    repo_path: Path,
+    part_id: str,
+    part_start_sha: str | None,
+    code_patches: list,
+    doc_patches: list,
+    test_patches: list,
+    raw_conn,
+    task_id: str,
+) -> None:
+    """Rollback all patches for a part after validation failure (A6).
+
+    Uses git reset if git is enabled, otherwise LIFO rollback (test → doc → code).
+    Marks affected run_attempts as patch_applied=False in raw DB.
+    """
+    if git is not None:
+        git.rollback_to_checkpoint(commit_sha=part_start_sha)
+    else:
+        rollback_errors = []
+        for tp in reversed(test_patches):
+            try:
+                rollback_edits(tp, repo_path)
+            except (RuntimeError, OSError) as e:
+                rollback_errors.append(str(e))
+        for dp in reversed(doc_patches):
+            try:
+                rollback_edits(dp, repo_path)
+            except (RuntimeError, OSError) as e:
+                rollback_errors.append(str(e))
+        for cp in reversed(code_patches):
+            try:
+                rollback_edits(cp, repo_path)
+            except (RuntimeError, OSError) as e:
+                rollback_errors.append(str(e))
+        if rollback_errors:
+            raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
+
+    # A6: Mark affected run_attempts as rolled back in raw DB
+    mark_part_attempts_rolled_back(raw_conn, task_id, part_id)
+    raw_conn.commit()
+    logger.info("Rollback: marked run_attempts as rolled back for part %s", part_id)
+
+
 def _topological_sort(items, get_id, get_deps):
     """Topological sort items by depends_on. Falls back to original order on cycles."""
     id_to_item = {get_id(item): item for item in items}
@@ -237,6 +311,192 @@ def _topological_sort(items, get_id, get_deps):
     return result
 
 
+@dataclass
+class _OrchestratorContext:
+    """Shared state for orchestrator helpers."""
+
+    task_id: str
+    repo_path: Path
+    config: dict
+    raw_conn: sqlite3.Connection
+    session_conn: sqlite3.Connection
+    git: GitWorkflow | None
+    trace_logger: TraceLogger | None
+    orch_run_id: int
+    sequence_order: int
+    cumulative_diff: str
+    max_diff_chars: int
+    pass_results: list[PassResult]
+    stage_names: list[str]
+    impl_budget: BudgetConfig
+    coding_config: ModelConfig
+    plan_budget: BudgetConfig | None
+    reasoning_config: ModelConfig | None
+    tmp_dir: Path
+    router: ModelRouter
+    max_retries: int
+    max_test_retries: int
+    max_adj_rounds: int
+    doc_pass_enabled: bool
+
+
+def _init_orchestrator(
+    task: str,
+    repo_path: Path,
+    config: dict,
+    trace_logger: TraceLogger | None,
+    *,
+    needs_reasoning: bool = True,
+) -> _OrchestratorContext:
+    """Create orchestrator context with config resolution, DB, and git.
+
+    Config validation errors raise immediately (fail-fast).
+    Caller must use try/finally with _cleanup_orchestrator().
+    """
+    task_id = str(uuid.uuid4())
+    if trace_logger is not None:
+        trace_logger.update_task_id(task_id)
+
+    models_config = require_models_config(config)
+    router = ModelRouter(models_config)
+    coding_config = router.resolve("coding")
+    reasoning_config = router.resolve("reasoning") if needs_reasoning else None
+    stage_names = _resolve_stages(config)
+
+    orch_config = config.get("orchestrator", {})
+    max_retries = orch_config.get("max_retries_per_step")
+    if max_retries is None:
+        raise RuntimeError(
+            "Missing max_retries_per_step in [orchestrator] section of config.toml."
+        )
+    max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
+
+    # A11: require max_adjustment_rounds — no hardcoded fallback
+    max_adj_rounds = orch_config.get("max_adjustment_rounds")
+    if max_adj_rounds is None:
+        raise RuntimeError(
+            "Missing max_adjustment_rounds in [orchestrator] section of config.toml."
+        )
+
+    # A11: require max_cumulative_diff_chars — no hardcoded fallback
+    max_diff_chars = orch_config.get("max_cumulative_diff_chars")
+    if max_diff_chars is None:
+        raise RuntimeError(
+            "Missing max_cumulative_diff_chars in [orchestrator] section of config.toml."
+        )
+    # T64: bounds-check
+    if not isinstance(max_diff_chars, int) or max_diff_chars <= 0:
+        raise RuntimeError(
+            f"max_cumulative_diff_chars must be a positive integer, got {max_diff_chars!r}"
+        )
+
+    # documentation_pass: intentional default True — cosmetic feature, not behavioral
+    doc_pass_enabled = orch_config.get("documentation_pass", True)
+
+    use_git = orch_config.get("git_workflow")
+    if use_git is None:
+        raise RuntimeError(
+            "Missing git_workflow in [orchestrator] section of config.toml."
+        )
+
+    impl_budget = _resolve_budget(config, "coding")
+    plan_budget = _resolve_budget(config, "reasoning") if needs_reasoning else None
+
+    raw_conn = get_connection("raw", repo_path=repo_path)
+    session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
+
+    tmp_dir = repo_path / ".clean_room" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    git = None
+    if use_git and (repo_path / ".git").exists():
+        from clean_room_agent.orchestrator.git_ops import GitWorkflow as _GitWorkflow
+
+        git = _GitWorkflow(repo_path, task_id)
+        git.create_task_branch()
+    elif use_git:
+        logger.info(
+            "git_workflow enabled but no .git directory found — falling back to LIFO"
+        )
+
+    orch_run_id = insert_orchestrator_run(
+        raw_conn, task_id, str(repo_path), task,
+        git_branch=git.branch_name if git else None,
+        git_base_ref=git.base_ref if git else None,
+    )
+    raw_conn.commit()
+
+    return _OrchestratorContext(
+        task_id=task_id,
+        repo_path=repo_path,
+        config=config,
+        raw_conn=raw_conn,
+        session_conn=session_conn,
+        git=git,
+        trace_logger=trace_logger,
+        orch_run_id=orch_run_id,
+        sequence_order=0,
+        cumulative_diff="",
+        max_diff_chars=max_diff_chars,
+        pass_results=[],
+        stage_names=stage_names,
+        impl_budget=impl_budget,
+        coding_config=coding_config,
+        plan_budget=plan_budget,
+        reasoning_config=reasoning_config,
+        tmp_dir=tmp_dir,
+        router=router,
+        max_retries=max_retries,
+        max_test_retries=max_test_retries,
+        max_adj_rounds=max_adj_rounds,
+        doc_pass_enabled=doc_pass_enabled,
+    )
+
+
+def _cleanup_orchestrator(
+    ctx: _OrchestratorContext,
+    status: str,
+    *,
+    error_message: str | None = None,
+    cumulative_diff: str = "",
+    parts_completed: int = 0,
+    steps_completed: int = 0,
+    total_parts: int | None = None,
+    total_steps: int = 0,
+) -> None:
+    """Run orchestrator finally block: finalize, session, git, archive, close."""
+    _finalize_orchestrator_run(
+        ctx.raw_conn, ctx.orch_run_id, status,
+        error_message=error_message,
+        total_parts=total_parts,
+        total_steps=total_steps,
+        parts_completed=parts_completed,
+        steps_completed=steps_completed,
+    )
+
+    set_state(ctx.session_conn, "cumulative_diff", cumulative_diff)
+    set_state(ctx.session_conn, "orchestrator_progress", {
+        "parts_completed": parts_completed,
+        "steps_completed": steps_completed,
+        "status": status,
+    })
+    ctx.session_conn.close()
+
+    if ctx.git is not None:
+        _git_cleanup(ctx.git, status)
+
+    _archive_session(ctx.raw_conn, ctx.repo_path, ctx.task_id)
+    ctx.raw_conn.close()
+
+    try:
+        for f in ctx.tmp_dir.glob("plan_*.json"):
+            f.unlink()
+    except Exception as cleanup_err:
+        logger.warning(
+            "Failed to clean up temp files in %s: %s", ctx.tmp_dir, cleanup_err
+        )
+
+
 def run_orchestrator(
     task: str, repo_path: Path, config: dict,
     trace_logger: "TraceLogger | None" = None,
@@ -245,50 +505,27 @@ def run_orchestrator(
 
     meta_plan -> parts (topo-sorted) -> steps -> implement -> test -> retry -> adjust
     """
-    task_id = str(uuid.uuid4())
-    if trace_logger is not None:
-        trace_logger.update_task_id(task_id)
-    models_config = require_models_config(config)
-    router = ModelRouter(models_config)
-    reasoning_config = router.resolve("reasoning")
-    coding_config = router.resolve("coding")
-    stage_names = _resolve_stages(config)
-    orch_config = config.get("orchestrator", {})
-    max_retries = orch_config.get("max_retries_per_step")
-    if max_retries is None:
-        raise RuntimeError(
-            "Missing max_retries_per_step in [orchestrator] section of config.toml."
-        )
+    ctx = _init_orchestrator(task, repo_path, config, trace_logger, needs_reasoning=True)
 
-    max_test_retries = orch_config.get("max_retries_per_test_step", max_retries)
-    max_adj_rounds = orch_config.get("max_adjustment_rounds", 3)
-    max_diff_chars = orch_config.get("max_cumulative_diff_chars", _MAX_CUMULATIVE_DIFF_CHARS)
+    # Unpack context for body code
+    task_id = ctx.task_id
+    raw_conn = ctx.raw_conn
+    session_conn = ctx.session_conn
+    git = ctx.git
+    orch_run_id = ctx.orch_run_id
+    stage_names = ctx.stage_names
+    plan_budget = ctx.plan_budget
+    impl_budget = ctx.impl_budget
+    reasoning_config = ctx.reasoning_config
+    coding_config = ctx.coding_config
+    max_retries = ctx.max_retries
+    max_test_retries = ctx.max_test_retries
+    max_adj_rounds = ctx.max_adj_rounds
+    max_diff_chars = ctx.max_diff_chars
+    doc_pass_enabled = ctx.doc_pass_enabled
+    tmp_dir = ctx.tmp_dir
+    pass_results = ctx.pass_results
 
-    # T64: Bounds-check config values
-    if not isinstance(max_diff_chars, int) or max_diff_chars <= 0:
-        raise RuntimeError(
-            f"max_cumulative_diff_chars must be a positive integer, got {max_diff_chars!r}"
-        )
-
-    plan_budget = _resolve_budget(config, "reasoning")
-    impl_budget = _resolve_budget(config, "coding")
-
-    raw_conn = get_connection("raw", repo_path=repo_path)
-    session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
-
-    # Create temp dir for plan artifacts
-    tmp_dir = repo_path / ".clean_room" / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    # Git workflow: branch-per-task lifecycle
-    use_git = orch_config.get("git_workflow")
-    if use_git is None:
-        raise RuntimeError(
-            "Missing git_workflow in [orchestrator] section of config.toml."
-        )
-    git = None
-
-    pass_results: list[PassResult] = []
     step_final_outcomes: dict[str, bool] = {}  # step_key -> final success
     adjustment_counts: dict[str, int] = {}  # part_id -> adjustment count
     cumulative_diff = ""
@@ -298,23 +535,8 @@ def run_orchestrator(
     sequence_order = 0
     status = "failed"
     error_msg: str | None = None
-    orch_run_id = None
 
     try:
-        if use_git and (repo_path / ".git").exists():
-            from clean_room_agent.orchestrator.git_ops import GitWorkflow
-            git = GitWorkflow(repo_path, task_id)
-            git.create_task_branch()
-        elif use_git:
-            logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
-
-        orch_run_id = insert_orchestrator_run(
-            raw_conn, task_id, str(repo_path), task,
-            git_branch=git.branch_name if git else None,
-            git_base_ref=git.base_ref if git else None,
-        )
-        raw_conn.commit()
-
         # === META-PLAN PASS ===
         sub_task_id = f"{task_id}:meta_plan"
         context = run_pipeline(
@@ -478,7 +700,7 @@ def run_orchestrator(
                         )
                         raw_conn.commit()
 
-                        insert_orchestrator_pass(
+                        impl_pass_id = insert_orchestrator_pass(
                             raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
                             part_id=part.id, step_id=step.id,
                         )
@@ -527,16 +749,14 @@ def run_orchestrator(
 
                 # Update state
                 if step_success and step_result:
-                    if git is not None:
-                        git.commit_checkpoint(
-                            f"cra: {part.id}:{step.id} — {step.description[:60].rsplit(" ", 1)[0]}"
-                        )
-                        cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
-                    else:
-                        cumulative_diff = _cap_cumulative_diff(
-                            cumulative_diff + _build_diff_text(step_result.edits),
-                            max_chars=max_diff_chars,
-                        )
+                    cumulative_diff, commit_sha = _update_cumulative_diff(
+                        git, cumulative_diff, step_result.edits,
+                        f"cra: {part.id}:{step.id} — {step.description[:60].rsplit(' ', 1)[0]}",
+                        max_diff_chars,
+                    )
+                    if commit_sha is not None:
+                        update_orchestrator_pass_sha(raw_conn, impl_pass_id, commit_sha)
+                        raw_conn.commit()
                     set_state(session_conn, f"step_result:{part.id}:{step.id}", {
                         "success": True, "edits_count": len(step_result.edits),
                     })
@@ -613,7 +833,6 @@ def run_orchestrator(
                 step_idx += 1
 
             # --- DOCUMENTATION PASS (after code steps, before tests) ---
-            doc_pass_enabled = orch_config.get("documentation_pass", True)
             doc_patch_results: list[PatchResult] = []
 
             if doc_pass_enabled and all_code_steps_ok and cumulative_diff:
@@ -625,7 +844,7 @@ def run_orchestrator(
                             if f not in doc_modified_files:
                                 doc_modified_files.append(f)
 
-                    doc_model_config = router.resolve("reasoning", stage_name="documentation")
+                    doc_model_config = ctx.router.resolve("reasoning", stage_name="documentation")
                     with LoggedLLMClient(doc_model_config) as doc_llm:
                         doc_patch_results = run_documentation_pass(
                             doc_modified_files, repo_path,
@@ -640,12 +859,12 @@ def run_orchestrator(
                         )
 
                     # Commit + update cumulative diff after doc edits
+                    doc_sha: str | None = None
                     if doc_patch_results:
-                        if git is not None:
-                            git.commit_checkpoint(f"cra: {part.id}:docs")
-                            cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
-                        # No else needed — doc edits are cosmetic, string-based diff
-                        # tracking is only critical for code/test edits
+                        cumulative_diff, doc_sha = _update_cumulative_diff(
+                            git, cumulative_diff, [],
+                            f"cra: {part.id}:docs", max_diff_chars,
+                        )
 
                     doc_task_run_id = insert_task_run(
                         raw_conn, f"{task_id}:doc:{part.id}",
@@ -657,7 +876,7 @@ def run_orchestrator(
                     )
                     insert_orchestrator_pass(
                         raw_conn, orch_run_id, doc_task_run_id, "documentation", sequence_order,
-                        part_id=part.id,
+                        part_id=part.id, commit_sha=doc_sha,
                     )
                     raw_conn.commit()
                     sequence_order += 1
@@ -790,7 +1009,7 @@ def run_orchestrator(
                             )
                             raw_conn.commit()
 
-                            insert_orchestrator_pass(
+                            ti_pass_id = insert_orchestrator_pass(
                                 raw_conn, orch_run_id, ti_task_run_id, "test_implement", sequence_order,
                                 part_id=part.id, step_id=test_step.id,
                             )
@@ -834,16 +1053,14 @@ def run_orchestrator(
                     step_final_outcomes[step_key] = test_step_success
 
                     if test_step_success and test_step_result:
-                        if git is not None:
-                            git.commit_checkpoint(
-                                f"cra: {part.id}:test:{test_step.id} — {test_step.description[:60].rsplit(" ", 1)[0]}"
-                            )
-                            cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
-                        else:
-                            cumulative_diff = _cap_cumulative_diff(
-                                cumulative_diff + _build_diff_text(test_step_result.edits),
-                                max_chars=max_diff_chars,
-                            )
+                        cumulative_diff, commit_sha = _update_cumulative_diff(
+                            git, cumulative_diff, test_step_result.edits,
+                            f"cra: {part.id}:test:{test_step.id} — {test_step.description[:60].rsplit(' ', 1)[0]}",
+                            max_diff_chars,
+                        )
+                        if commit_sha is not None:
+                            update_orchestrator_pass_sha(raw_conn, ti_pass_id, commit_sha)
+                            raw_conn.commit()
                         set_state(session_conn, f"test_step_result:{part.id}:{test_step.id}", {
                             "success": True, "edits_count": len(test_step_result.edits),
                         })
@@ -864,28 +1081,14 @@ def run_orchestrator(
                     validation = run_validation(repo_path, config, raw_conn, 0)
 
                 if not validation.success:
-                    if git is not None:
-                        git.rollback_to_checkpoint(commit_sha=part_start_sha)
-                    else:
-                        # LIFO rollback: test → doc → code
-                        rollback_errors = []
-                        for tp in reversed(test_patch_results):
-                            try:
-                                rollback_edits(tp, repo_path)
-                            except (RuntimeError, OSError) as e:
-                                rollback_errors.append(str(e))
-                        for dp in reversed(doc_patch_results):
-                            try:
-                                rollback_edits(dp, repo_path)
-                            except (RuntimeError, OSError) as e:
-                                rollback_errors.append(str(e))
-                        for cp in reversed(code_patch_results):
-                            try:
-                                rollback_edits(cp, repo_path)
-                            except (RuntimeError, OSError) as e:
-                                rollback_errors.append(str(e))
-                        if rollback_errors:
-                            raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
+                    _rollback_part(
+                        git=git, repo_path=repo_path,
+                        part_id=part.id, part_start_sha=part_start_sha,
+                        code_patches=code_patch_results,
+                        doc_patches=doc_patch_results,
+                        test_patches=test_patch_results,
+                        raw_conn=raw_conn, task_id=task_id,
+                    )
 
                     # Mark all steps for this part as failed since validation failed
                     for key in list(step_final_outcomes):
@@ -912,36 +1115,14 @@ def run_orchestrator(
         error_msg = str(e)
 
     finally:
-        if orch_run_id is not None:
-            _finalize_orchestrator_run(
-                raw_conn, orch_run_id, status,
-                error_message=error_msg,
-                total_steps=all_steps_count,
-                parts_completed=parts_completed,
-                steps_completed=steps_completed,
-            )
-
-        set_state(session_conn, "cumulative_diff", cumulative_diff)
-        set_state(session_conn, "orchestrator_progress", {
-            "parts_completed": parts_completed,
-            "steps_completed": steps_completed,
-            "status": status,
-        })
-        session_conn.close()
-
-        # Git cleanup (before raw_conn close so failures are loggable)
-        if git is not None:
-            _git_cleanup(git, status)
-
-        _archive_session(raw_conn, repo_path, task_id)
-        raw_conn.close()
-
-        # Cleanup temp files (T77: log failures instead of silent swallow)
-        try:
-            for f in tmp_dir.glob("plan_*.json"):
-                f.unlink()
-        except Exception as cleanup_err:
-            logger.warning("Failed to clean up temp files in %s: %s", tmp_dir, cleanup_err)
+        _cleanup_orchestrator(
+            ctx, status,
+            error_message=error_msg,
+            cumulative_diff=cumulative_diff,
+            parts_completed=parts_completed,
+            steps_completed=steps_completed,
+            total_steps=all_steps_count,
+        )
 
     return OrchestratorResult(
         task_id=task_id,
@@ -966,21 +1147,19 @@ def run_single_pass(
     Creates orchestrator_run/pass DB records and session DB matching
     the full orchestrator path (T67).
     """
-    task_id = str(uuid.uuid4())
-    if trace_logger is not None:
-        trace_logger.update_task_id(task_id)
-    models_config = require_models_config(config)
-    router = ModelRouter(models_config)
-    coding_config = router.resolve("coding")
-    stage_names = _resolve_stages(config)
-    impl_budget = _resolve_budget(config, "coding")
-    orch_config = config.get("orchestrator", {})
-    max_retries = orch_config.get("max_retries_per_step")
-    if max_retries is None:
-        raise RuntimeError(
-            "Missing max_retries_per_step in [orchestrator] section of config.toml."
-        )
-    max_diff_chars = orch_config.get("max_cumulative_diff_chars", _MAX_CUMULATIVE_DIFF_CHARS)
+    ctx = _init_orchestrator(task, repo_path, config, trace_logger, needs_reasoning=False)
+
+    # Unpack context
+    task_id = ctx.task_id
+    raw_conn = ctx.raw_conn
+    git = ctx.git
+    orch_run_id = ctx.orch_run_id
+    stage_names = ctx.stage_names
+    impl_budget = ctx.impl_budget
+    coding_config = ctx.coding_config
+    max_retries = ctx.max_retries
+    max_diff_chars = ctx.max_diff_chars
+    pass_results = ctx.pass_results
 
     # Load plan artifact
     plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -994,41 +1173,14 @@ def run_single_pass(
         target_files=target_files,
     )
 
-    raw_conn = get_connection("raw", repo_path=repo_path)
-    session_conn = get_connection("session", repo_path=repo_path, task_id=task_id)
-
-    # Git workflow
-    use_git = orch_config.get("git_workflow")
-    if use_git is None:
-        raise RuntimeError(
-            "Missing git_workflow in [orchestrator] section of config.toml."
-        )
-    git = None
-
-    pass_results: list[PassResult] = []
     cumulative_diff = ""
     last_validation = None
     status = "failed"
     error_msg: str | None = None
     steps_completed = 0
     sequence_order = 0
-    orch_run_id = None
 
     try:
-        if use_git and (repo_path / ".git").exists():
-            from clean_room_agent.orchestrator.git_ops import GitWorkflow
-            git = GitWorkflow(repo_path, task_id)
-            git.create_task_branch()
-        elif use_git:
-            logger.info("git_workflow enabled but no .git directory found — falling back to LIFO")
-
-        orch_run_id = insert_orchestrator_run(
-            raw_conn, task_id, str(repo_path), task,
-            git_branch=git.branch_name if git else None,
-            git_base_ref=git.base_ref if git else None,
-        )
-        raw_conn.commit()
-
         for attempt in range(max_retries + 1):
             suffix = f":retry_{attempt}" if attempt > 0 else ""
             sub_task_id = f"{task_id}:impl{suffix}"
@@ -1069,7 +1221,7 @@ def run_single_pass(
             raw_conn.commit()
 
             # T67: Log orchestrator_pass for each attempt
-            insert_orchestrator_pass(
+            sp_pass_id = insert_orchestrator_pass(
                 raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
                 step_id="single_pass",
             )
@@ -1098,14 +1250,13 @@ def run_single_pass(
             last_validation = run_validation(repo_path, config, raw_conn, attempt_id)
 
             if last_validation.success:
-                if git is not None:
-                    git.commit_checkpoint("cra: single_pass")
-                    cumulative_diff = git.get_cumulative_diff(max_chars=max_diff_chars)
-                else:
-                    cumulative_diff = _cap_cumulative_diff(
-                        cumulative_diff + _build_diff_text(step_result.edits),
-                        max_chars=max_diff_chars,
-                    )
+                cumulative_diff, commit_sha = _update_cumulative_diff(
+                    git, cumulative_diff, step_result.edits,
+                    "cra: single_pass", max_diff_chars,
+                )
+                if commit_sha is not None:
+                    update_orchestrator_pass_sha(raw_conn, sp_pass_id, commit_sha)
+                    raw_conn.commit()
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=True, artifact=step_result,
@@ -1118,6 +1269,9 @@ def run_single_pass(
                     git.rollback_part()
                 else:
                     rollback_edits(patch_result, repo_path)
+                # A6: mark this attempt as rolled back
+                update_run_attempt_patch(raw_conn, attempt_id, False)
+                raw_conn.commit()
                 pass_results.append(PassResult(
                     pass_type="step_implement", task_run_id=impl_task_run_id,
                     success=False, artifact=step_result,
@@ -1129,30 +1283,15 @@ def run_single_pass(
         error_msg = str(e)
 
     finally:
-        if orch_run_id is not None:
-            _finalize_orchestrator_run(
-                raw_conn, orch_run_id, status,
-                error_message=error_msg,
-                total_parts=1,
-                total_steps=1,
-                parts_completed=1 if steps_completed else 0,
-                steps_completed=steps_completed,
-            )
-
-        set_state(session_conn, "cumulative_diff", cumulative_diff)
-        set_state(session_conn, "orchestrator_progress", {
-            "parts_completed": 1 if steps_completed else 0,
-            "steps_completed": steps_completed,
-            "status": status,
-        })
-        session_conn.close()
-
-        # Git cleanup (before raw_conn close so failures are loggable)
-        if git is not None:
-            _git_cleanup(git, status)
-
-        _archive_session(raw_conn, repo_path, task_id)
-        raw_conn.close()
+        _cleanup_orchestrator(
+            ctx, status,
+            error_message=error_msg,
+            cumulative_diff=cumulative_diff,
+            parts_completed=1 if steps_completed else 0,
+            steps_completed=steps_completed,
+            total_parts=1,
+            total_steps=1,
+        )
 
     return OrchestratorResult(
         task_id=task_id,

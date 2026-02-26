@@ -340,6 +340,12 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Migration (A7): add commit_sha column to orchestrator_passes
+    try:
+        conn.execute("ALTER TABLE orchestrator_passes ADD COLUMN commit_sha TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # Migration (A14): add thinking, prompt_tokens, completion_tokens, latency_ms
     # to enrichment_outputs for full LLM call traceability
     for col, col_type in [

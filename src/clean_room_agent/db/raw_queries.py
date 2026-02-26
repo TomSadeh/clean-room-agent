@@ -143,6 +143,27 @@ def update_run_attempt_patch(conn: sqlite3.Connection, attempt_id: int, patch_ap
     )
 
 
+def mark_part_attempts_rolled_back(
+    conn: sqlite3.Connection, task_id: str, part_id: str,
+) -> int:
+    """Mark all patch_applied=True attempts for a part as rolled back (A6).
+
+    Matches task_runs with task_id patterns for impl/test steps in this part.
+    Returns the number of rows updated.
+    """
+    cursor = conn.execute(
+        """
+        UPDATE run_attempts SET patch_applied = 0
+        WHERE patch_applied = 1 AND task_run_id IN (
+            SELECT tr.id FROM task_runs tr
+            WHERE tr.task_id LIKE ? OR tr.task_id LIKE ?
+        )
+        """,
+        (f"{task_id}:impl:{part_id}:%", f"{task_id}:test_impl:{part_id}:%"),
+    )
+    return cursor.rowcount
+
+
 def insert_validation_result(
     conn: sqlite3.Connection,
     attempt_id: int,
@@ -221,13 +242,26 @@ def insert_orchestrator_pass(
     *,
     part_id: str | None = None,
     step_id: str | None = None,
+    commit_sha: str | None = None,
 ) -> int:
     """Log an orchestrator pass to the raw DB. Returns the pass id."""
     return _insert_row(conn, "orchestrator_passes",
         ["orchestrator_run_id", "task_run_id", "pass_type", "part_id",
-         "step_id", "sequence_order", "timestamp"],
+         "step_id", "sequence_order", "commit_sha", "timestamp"],
         [orchestrator_run_id, task_run_id, pass_type, part_id,
-         step_id, sequence_order, _now()],
+         step_id, sequence_order, commit_sha, _now()],
+    )
+
+
+def update_orchestrator_pass_sha(
+    conn: sqlite3.Connection,
+    pass_id: int,
+    commit_sha: str,
+) -> None:
+    """Set the commit_sha on an existing orchestrator_pass record."""
+    conn.execute(
+        "UPDATE orchestrator_passes SET commit_sha = ? WHERE id = ?",
+        (commit_sha, pass_id),
     )
 
 
