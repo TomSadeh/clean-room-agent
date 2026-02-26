@@ -106,6 +106,12 @@ The raw-to-curated promotion boundary solves the gray domain problem.
 
 This is the same default-deny principle that governs the retrieval pipeline: content without a positive curation signal doesn't get promoted. `domain_confidence != "transparent"` → exclude from training datasets.
 
+**Defense in depth — three layers:**
+
+1. **Prevention:** Non-transparent content stays off the machine entirely
+2. **Curation filter:** Gray content tagged, excluded at `cra curate-data` step
+3. **Natural selection:** Even if both layers leak, the harness selects against bad reasoning patterns automatically. Flawed reasoning → bad code → tests fail → negative DPO signal. Sound reasoning → working code → tests pass → positive DPO signal. The test suite is an incorruptible oracle — you can't bullshit a compiler. Over training iterations, bad reasoning patterns don't survive because they don't produce working code. This is also why alignment is not a concern: Jane's reward signal is "does the code pass tests," which is deterministic and not reward-hackable.
+
 **Implementation requirements:**
 - `domain_confidence` field on KB entries
 - Tag propagation through retrieval decisions to logged calls in raw DB
