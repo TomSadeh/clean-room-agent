@@ -272,62 +272,48 @@ Key clarifications this document adds:
 
 ## 10. Corpus Expansion Protocol
 
-The repo corpus is a living document. New repos are discovered and evaluated periodically to inject fresh reasoning patterns and break training plateaus. This protocol is run manually or by the agent itself once capable.
+**Design record:** `protocols/design_records/corpus_search_protocol.md`
 
-### Search strategy
+The repo corpus is a living document. New repos are discovered and evaluated periodically to inject fresh reasoning patterns and break training plateaus. This protocol is run by us (human + Claude Code sessions), not by Jane.
 
-Run periodically (monthly or when plateau detected). Each run covers:
+### Triggers
 
-1. **GitHub Trending + topic search** — scan trending repos in Python, C, Rust for the past month. Search by topic tags (`machine-learning`, `scientific-computing`, `game-engine`, `cryptography`, etc.) filtered to permissive licenses.
+- **Opportunistic:** we're in a session and have bandwidth
+- **Plateau-triggered:** training metrics stall, need new reasoning patterns
+- No fixed calendar
 
-2. **Dependency graph mining** — for repos already in the corpus, check their dependencies and dependents. A library used by 3+ corpus repos is a strong candidate. A project that depends on corpus libraries exercises them in real context.
+### Process (per run)
 
-3. **Citation/fork tracing** — for scientific repos, check what cites them or forks them. Active forks with divergent features teach alternative approaches to the same problem.
+1. **Gap analysis first** (5 min) — scan `repo-corpus.md` category counts. Identify the 2-3 thinnest categories or domains with no coverage.
 
-4. **Conference/paper companion repos** — check recent NeurIPS, ICML, ACL, EMNLP, SIGGRAPH proceedings for repos attached to papers. Methods papers with code are ideal: the paper goes to the knowledge base, the code goes to the harness.
+2. **Targeted search** — for each gap, in priority order:
+   - Awesome lists for the domain
+   - Papers-with-code filtered by repo active 1+ year post-publication
+   - Dependency mining from existing corpus repos
+   - GitHub topic/language search
+   - Quick scan of trending (5 min max)
 
-5. **"Awesome" list mining** — curated awesome-* lists on GitHub aggregate quality repos by domain. Cross-reference against the corpus for gaps.
+3. **Three-gate evaluation** — in order, all must pass:
 
-6. **Domain gap analysis** — compare corpus categories against common software engineering domains. If the agent is asked to work on something and the knowledge base has no relevant content, that's a gap to fill.
+   **Gate 1 — Domain transparency:** Does this domain's methodology practice transparency about its reasoning limitations? Inherently verifiable domains (math, CS, engineering) pass. Domains with formal hedging methods (epidemiology, Bayesian statistics, experimental physics) pass — they teach reasoning under uncertainty. Domains that obscure limitations, make unfalsifiable claims, or use circular reasoning are rejected. This is the project's core principle ("Transparency Is Load-Bearing") applied to domain selection.
 
-### Evaluation criteria
+   **Gate 2 — Implementation quality (high bar):** Clean code. Decent commit history. Documentation that explains the why. Actively maintained or feature-complete. License doesn't matter (air-gapped, nothing leaves).
 
-Score each candidate on these axes. A repo needs to pass ALL hard requirements and score well on at least 3 soft criteria.
+   **Gate 3 — Novelty (low bar):** "Could Jane learn something from this that she couldn't learn from what we already have?" Even marginal variance counts — same reasoning shape in a different domain context is valuable. Only reject if exact same reasoning, same domain, same approach as an existing corpus repo. Variance compounds; hard category boundaries between reasoning patterns are not needed.
 
-**Hard requirements (must pass):**
-- [ ] Permissive license (MIT, Apache-2.0, BSD, ISC, zlib, Public Domain). GPL only if no permissive alternative exists in that domain — flag for review.
-- [ ] Actively maintained OR feature-complete and stable (archived is fine if the code is mature)
-- [ ] No obvious security concerns (no credential harvesting, no malware)
+4. **Tier assignment:**
+   - Has any validation path (tests, runnable code, observable output) → Full harness
+   - Clean code but no validation path → KB only
+   - Paper/documentation → Convert with opendataloader-pdf, index
 
-**Soft criteria (score 0-2 each):**
-- **Code quality** — clean structure, consistent style, readable without extensive domain knowledge
-- **Test coverage** — existing tests that pass, or observable behavior that enables agentic validation
-- **Math/reasoning density** — does the code exercise non-trivial reasoning patterns? (optimization, state machines, recursive structures, numerical methods)
-- **Domain novelty** — does this repo add a reasoning pattern not already represented in the corpus?
-- **Size fit** — small enough to index fully, large enough to contain meaningful patterns (~1K-100K LOC sweet spot)
-- **Commit history quality** — descriptive commit messages, atomic commits, not squash-merged. Needed for harness use.
-
-**Minimum score:** 6/12 on soft criteria to include. 8/12 for full harness tier.
-
-### Packaging decision
-
-After evaluation, assign tier:
-- **Full harness** — has tests or runnable validation + filterable commit history → package with `manifest.json`
-- **Knowledge base only** — clean code but no validation path → index and enrich only
-- **Documentation** — paper or reference material → convert via paper pipeline and index
-
-### Output
-
-Each search run produces:
-1. Updated `repo-corpus.md` with new entries (category, repo, license, tier, rationale)
-2. List of repos to package for the next USB transfer
-3. Gap analysis: domains still underrepresented
+5. **Record:**
+   - Accepted → add to `repo-corpus.md` with category, license, tier, one-line reasoning-pattern note
+   - Rejected → add to "Rejected" section at bottom of `repo-corpus.md` with one-line reason
+   - Papers → queue for opendataloader-pdf conversion
 
 ### Scientific papers and document conversion
 
-**PDF conversion tool:** `opendataloader-pdf` (MPL-2.0) — rule-based PDF → markdown/JSON. Local, no GPU, deterministic (XY-Cut++ layout analysis). Table detection, heading hierarchy, AI safety filters (removes hidden text and prompt injection from PDFs entering LLM context). Replaces the previous paper pipeline for all new conversions.
-
-**Dual use:** The converter serves both knowledge base population (papers → markdown → indexed) and training data extraction (any PDF-format documentation, API references, or specifications that accompany corpus repos).
+**PDF conversion tool:** `opendataloader-pdf` (MPL-2.0) — rule-based PDF → markdown/JSON. Local, no GPU, deterministic (XY-Cut++ layout analysis). Table detection, heading hierarchy, AI safety filters. Serves both knowledge base population and training data extraction.
 
 Run on:
 - Methods papers accompanying newly added repos

@@ -641,3 +641,13 @@ These repos deliver exceptional training signal relative to their size:
 - **ML-From-Scratch** — every classical ML algo in pure NumPy, ~8K LOC
 - **QuantEcon.py** — dynamic programming + Markov chains + game theory, ~15K LOC
 - **py-pde** — PDE solving with visible finite differences, ~20K LOC
+
+---
+
+## Rejected
+
+Repos evaluated and passed on. Recorded to prevent re-evaluation in future search runs.
+
+| Repo | Why rejected |
+|---|---|
+| *(none yet)* | |
