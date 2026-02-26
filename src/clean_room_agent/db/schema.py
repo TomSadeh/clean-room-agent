@@ -3,6 +3,16 @@
 import sqlite3
 
 
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column_def: str) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN. Re-raises non-duplicate errors."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            return  # Column already exists — expected on repeat runs
+        raise
+
+
 def create_curated_schema(conn: sqlite3.Connection) -> None:
     """Create curated DB tables and indexes. Idempotent."""
     conn.executescript("""
@@ -131,10 +141,7 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
     """)
 
     # Migration: add file_source column for existing DBs
-    try:
-        conn.execute("ALTER TABLE files ADD COLUMN file_source TEXT NOT NULL DEFAULT 'project'")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    _migrate_add_column(conn, "files", "file_source TEXT NOT NULL DEFAULT 'project'")
 
 
 def create_raw_schema(conn: sqlite3.Connection) -> None:
@@ -309,42 +316,14 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
         );
     """)
 
-    # Migration: add file_path column for existing DBs (8.2 fix).
-    # SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so catch the
-    # "duplicate column" error.  This is the one intentional silent-catch
-    # in the codebase — the migration is idempotent by construction.
-    try:
-        conn.execute("ALTER TABLE enrichment_outputs ADD COLUMN file_path TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists (new DB or migration already applied)
-
-    # Migration: add git fields to orchestrator_runs
-    try:
-        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN git_branch TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN git_base_ref TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # Migration (A2): add thinking column to retrieval_llm_calls
-    try:
-        conn.execute("ALTER TABLE retrieval_llm_calls ADD COLUMN thinking TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # Migration (A3): add error_message column to orchestrator_runs
-    try:
-        conn.execute("ALTER TABLE orchestrator_runs ADD COLUMN error_message TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # Migration (A7): add commit_sha column to orchestrator_passes
-    try:
-        conn.execute("ALTER TABLE orchestrator_passes ADD COLUMN commit_sha TEXT")
-    except sqlite3.OperationalError:
-        pass
+    # Migrations: idempotent column additions for schema evolution.
+    # _migrate_add_column re-raises non-duplicate OperationalErrors.
+    _migrate_add_column(conn, "enrichment_outputs", "file_path TEXT")
+    _migrate_add_column(conn, "orchestrator_runs", "git_branch TEXT")
+    _migrate_add_column(conn, "orchestrator_runs", "git_base_ref TEXT")
+    _migrate_add_column(conn, "retrieval_llm_calls", "thinking TEXT")
+    _migrate_add_column(conn, "orchestrator_runs", "error_message TEXT")
+    _migrate_add_column(conn, "orchestrator_passes", "commit_sha TEXT")
 
     # Migration (A14): add thinking, prompt_tokens, completion_tokens, latency_ms
     # to enrichment_outputs for full LLM call traceability
@@ -354,10 +333,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
         ("completion_tokens", "INTEGER"),
         ("latency_ms", "INTEGER"),
     ]:
-        try:
-            conn.execute(f"ALTER TABLE enrichment_outputs ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass
+        _migrate_add_column(conn, "enrichment_outputs", f"{col} {col_type}")
 
 
 def create_session_schema(conn: sqlite3.Connection) -> None:

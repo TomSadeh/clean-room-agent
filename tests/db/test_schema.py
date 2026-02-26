@@ -1,5 +1,7 @@
 """Tests for db/schema.py."""
 
+import pytest
+
 from clean_room_agent.db.connection import get_connection
 
 
@@ -69,6 +71,16 @@ class TestCuratedSchema:
             "SELECT file_source FROM files WHERE path = 'lib.py'"
         ).fetchone()
         assert row["file_source"] == "library"
+
+
+    def test_migration_reraises_non_duplicate_error(self, curated_conn):
+        """A2: non-duplicate OperationalError re-raises instead of being silently swallowed."""
+        import sqlite3
+        from clean_room_agent.db.schema import _migrate_add_column
+
+        # Try to add a column to a non-existent table — should re-raise
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            _migrate_add_column(curated_conn, "nonexistent_table", "col TEXT")
 
 
 class TestRawSchema:

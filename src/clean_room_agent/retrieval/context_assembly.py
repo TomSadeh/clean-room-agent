@@ -69,9 +69,10 @@ def assemble_context(
     assembly_decisions.extend(classify_decisions)
 
     # Phase 2: read from disk and render at classified levels
-    rendered_files = _read_and_render_files(
+    rendered_files, read_decisions = _read_and_render_files(
         sorted_fids, file_info, file_detail, repo_path, context, kb,
     )
+    assembly_decisions.extend(read_decisions)
 
     # Phase 3: trim to budget (refilter, priority drop, group integrity)
     rendered_files, trim_decisions = _trim_to_budget(
@@ -166,7 +167,7 @@ def _classify_file_inclusions(
     sorted_fids = sorted(
         file_info.keys(),
         key=lambda fid: (
-            _DETAIL_PRIORITY.get(file_detail.get(fid, "type_context"), 99),
+            _DETAIL_PRIORITY.get(file_detail[fid], 99),
             file_info[fid]["tier"],
         ),
     )
@@ -181,10 +182,11 @@ def _read_and_render_files(
     repo_path: Path,
     context: StageContext,
     kb: "KnowledgeBase | None",
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """Read files from disk and render at classified detail levels.
 
     Raises RuntimeError for unreadable primary files (R1).
+    Returns (rendered_files, decisions).
     """
     # Batch-fetch metadata for all files
     metadata_map = {}
@@ -192,9 +194,17 @@ def _read_and_render_files(
         metadata_map = kb.get_file_metadata_batch(list(sorted_fids))
 
     rendered_files: list[dict] = []
+    decisions: list[dict] = []
     for fid in sorted_fids:
         info = file_info[fid]
-        detail = file_detail.get(fid, "type_context")
+        if fid not in file_detail:
+            logger.warning("R2: file %d has no detail classification — excluding", fid)
+            decisions.append({
+                "file_id": fid, "included": False,
+                "reason": "R2: no detail classification — default exclude",
+            })
+            continue
+        detail = file_detail[fid]
         abs_path = repo_path / info["path"]
 
         try:
@@ -206,6 +216,10 @@ def _read_and_render_files(
                     f"Primary files must be readable — fix the file or re-run retrieval."
                 ) from e
             logger.warning("Cannot read %s: %s — skipping (detail=%s)", info["path"], e, detail)
+            decisions.append({
+                "file_id": fid, "included": False,
+                "reason": f"read_error: {detail} file unreadable: {e}",
+            })
             continue
 
         rendered = _render_at_level(source, detail, fid, context, kb=kb)
@@ -239,7 +253,7 @@ def _read_and_render_files(
             "metadata_summary": metadata_summary,
         })
 
-    return rendered_files
+    return rendered_files, decisions
 
 
 def _trim_to_budget(

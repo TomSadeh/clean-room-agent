@@ -315,6 +315,70 @@ class TestAllSymbolsExcluded:
         assert r2_exclusions[0]["file_id"] == 2
 
 
+class TestR2DefaultDenyInRender:
+    """A7: file in sorted_fids without file_detail entry gets R2 excluded."""
+
+    def test_file_without_detail_excluded(self, task, source_files):
+        """A7: file present in sorted_fids but missing from file_detail is excluded."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=2, path="src/models.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 2}
+        # Only file 1 has classified symbols — file 2 has none
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="primary"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        # Only file 1 should be included
+        assert len(pkg.files) == 1
+        assert pkg.files[0].file_id == 1
+        # File 2 should have an R2 exclusion decision
+        decisions = pkg.metadata["assembly_decisions"]
+        r2_exclusions = [d for d in decisions if not d["included"] and "R2" in d["reason"]]
+        assert any(d["file_id"] == 2 for d in r2_exclusions)
+
+
+class TestReadFailureDecision:
+    """A14: unreadable supporting file produces a decision entry."""
+
+    def test_supporting_read_failure_recorded_in_decisions(self, task, source_files):
+        """A14: unreadable supporting file produces read_error decision entry."""
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
+        ctx.scoped_files = [
+            ScopedFile(file_id=1, path="src/auth.py", language="python",
+                       tier=1, relevance="relevant"),
+            ScopedFile(file_id=99, path="nonexistent_supporting.py", language="python",
+                       tier=2, relevance="relevant"),
+        ]
+        ctx.included_file_ids = {1, 99}
+        ctx.classified_symbols = [
+            ClassifiedSymbol(symbol_id=1, file_id=1, name="AuthManager",
+                             kind="class", start_line=1, end_line=8,
+                             detail_level="primary"),
+            ClassifiedSymbol(symbol_id=99, file_id=99, name="Helper",
+                             kind="function", start_line=1, end_line=5,
+                             detail_level="supporting"),
+        ]
+
+        pkg = assemble_context(ctx, budget, source_files)
+        # File 1 included, file 99 unreadable
+        assert len(pkg.files) == 1
+        decisions = pkg.metadata["assembly_decisions"]
+        read_errors = [d for d in decisions if not d["included"] and "read_error" in d.get("reason", "")]
+        assert len(read_errors) == 1
+        assert read_errors[0]["file_id"] == 99
+        assert "supporting" in read_errors[0]["reason"]
+
+
 class TestExtractSignatures:
     """R4: _extract_signatures uses parsed AST data from classified symbols."""
 

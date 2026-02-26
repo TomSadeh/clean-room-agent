@@ -123,7 +123,7 @@ class TestValidateTestCommand:
     def test_valid_command_passes(self):
         from clean_room_agent.orchestrator.validator import require_testing_config
 
-        result = require_testing_config({"testing": {"test_command": "pytest"}})
+        result = require_testing_config({"testing": {"test_command": "pytest", "timeout": 120}})
         assert result["test_command"] == "pytest"
 
 

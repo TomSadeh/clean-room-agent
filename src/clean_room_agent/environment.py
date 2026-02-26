@@ -62,6 +62,7 @@ class EnvironmentBrief:
 
         lines.append(f"Files indexed: {self.file_count}")
 
+        # Intentional fallback: environment brief is supplementary, not core logic
         style_text = CODING_STYLES.get(self.coding_style, CODING_STYLES["development"])
         lines.append(f"Coding style: {style_text}")
 

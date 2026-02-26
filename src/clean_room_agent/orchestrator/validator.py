@@ -52,6 +52,11 @@ def require_testing_config(config: dict | None) -> dict:
             "Missing or empty test_command in [testing] config. "
             "Set test_command (e.g. 'pytest tests/') in .clean_room/config.toml"
         )
+    if testing.get("timeout") is None:
+        raise RuntimeError(
+            "Missing timeout in [testing] config. "
+            "Set timeout (e.g. timeout = 120) in .clean_room/config.toml"
+        )
     return testing
 
 
@@ -67,7 +72,7 @@ def run_validation(
     are informational.
     """
     testing_config = require_testing_config(config)
-    timeout = testing_config.get("timeout", 120)
+    timeout = testing_config["timeout"]
 
     # T64: Bounds-check timeout
     if not isinstance(timeout, int) or timeout <= 0:

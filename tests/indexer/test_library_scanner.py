@@ -143,3 +143,27 @@ class TestResolveLibrarySources:
         config = {"library_paths": [str(tmp_path / "does_not_exist")]}
         result = resolve_library_sources(tmp_path, config)
         assert len(result) == 0
+
+
+class TestLibraryConfigValidation:
+    """A13: library_paths entries with missing/empty name or path raise ValueError."""
+
+    def test_missing_name_raises(self, tmp_path):
+        config = {"library_paths": [{"path": str(tmp_path)}]}
+        with pytest.raises(ValueError, match="missing or empty 'name'"):
+            resolve_library_sources(tmp_path, config)
+
+    def test_empty_name_raises(self, tmp_path):
+        config = {"library_paths": [{"name": "", "path": str(tmp_path)}]}
+        with pytest.raises(ValueError, match="missing or empty 'name'"):
+            resolve_library_sources(tmp_path, config)
+
+    def test_missing_path_raises(self, tmp_path):
+        config = {"library_paths": [{"name": "mylib"}]}
+        with pytest.raises(ValueError, match="missing or empty 'path'"):
+            resolve_library_sources(tmp_path, config)
+
+    def test_empty_path_raises(self, tmp_path):
+        config = {"library_paths": [{"name": "mylib", "path": ""}]}
+        with pytest.raises(ValueError, match="missing or empty 'path'"):
+            resolve_library_sources(tmp_path, config)

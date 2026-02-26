@@ -51,8 +51,17 @@ def resolve_library_sources(
         result = []
         for entry in explicit_paths:
             if isinstance(entry, dict):
-                name = entry.get("name", "")
-                path = Path(entry.get("path", ""))
+                name = entry.get("name")
+                if not name:
+                    raise ValueError(
+                        f"library_paths entry missing or empty 'name': {entry!r}"
+                    )
+                path_str = entry.get("path")
+                if not path_str:
+                    raise ValueError(
+                        f"library_paths entry missing or empty 'path': {entry!r}"
+                    )
+                path = Path(path_str)
             else:
                 path = Path(entry)
                 name = path.name
@@ -141,7 +150,8 @@ def scan_library(
         if root.suffix == ".py":
             try:
                 size = root.stat().st_size
-            except OSError:
+            except OSError as e:
+                logger.warning("Failed to stat library file %s: %s", root, e)
                 return result
             if size <= max_file_size:
                 result.append(LibraryFileInfo(

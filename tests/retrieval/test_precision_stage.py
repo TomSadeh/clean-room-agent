@@ -245,6 +245,34 @@ class TestClassifySymbols:
         assert init_20.detail_level == "type_context"
 
 
+class TestPrecisionFieldWarnings:
+    """A12: LLM response missing expected fields logs a warning."""
+
+    def test_missing_signature_logs_warning(self, caplog):
+        """A12: LLM response without 'signature' field triggers warning."""
+        import logging
+        # LLM response has detail_level and reason but no signature
+        mock_llm = _mock_llm_with_response(json.dumps([
+            {"name": "foo", "file_path": "a.py", "start_line": 1,
+             "detail_level": "primary", "reason": "main target"},
+        ]))
+
+        candidates = [
+            {
+                "symbol_id": 1, "file_id": 10, "file_path": "a.py",
+                "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
+                "signature": "def foo()", "connections": [],
+                "file_source": "project",
+            },
+        ]
+        task = TaskQuery(raw_task="fix foo", task_id="t1", mode="plan", repo_id=1)
+
+        with caplog.at_level(logging.WARNING, logger="clean_room_agent.retrieval.precision_stage"):
+            classify_symbols(candidates, task, mock_llm)
+
+        assert any("missing 'signature'" in msg for msg in caplog.messages)
+
+
 class TestClassifySymbolsBatching:
     def test_batch_boundary(self):
         """WU6: large symbol sets are split into batches."""

@@ -453,6 +453,10 @@ def _resume_task_from_session(
     extra_files.extend(refinement.missing_files)
     extra_symbols.extend(refinement.missing_symbols)
 
+    task_type = data.get("task_type")
+    if not task_type:
+        raise ValueError("Task analysis failed to classify task_type")
+
     return TaskQuery(
         raw_task=raw_task,
         task_id=task_id,
@@ -462,7 +466,7 @@ def _resume_task_from_session(
         mentioned_symbols=extra_symbols,
         keywords=extra_keywords,
         error_patterns=list(data.get("error_patterns", [])) + list(refinement.error_patterns),
-        task_type=data.get("task_type", "unknown"),
+        task_type=task_type,
         intent_summary=data.get("intent_summary", ""),
         seed_file_ids=data.get("seed_file_ids", []),
         seed_symbol_ids=data.get("seed_symbol_ids", []),

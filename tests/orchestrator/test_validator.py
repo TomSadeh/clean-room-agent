@@ -15,7 +15,7 @@ from clean_room_agent.orchestrator.validator import (
 
 class TestRequireTestingConfig:
     def test_valid_config(self):
-        config = {"testing": {"test_command": "pytest tests/"}}
+        config = {"testing": {"test_command": "pytest tests/", "timeout": 120}}
         result = require_testing_config(config)
         assert result["test_command"] == "pytest tests/"
 
@@ -30,6 +30,11 @@ class TestRequireTestingConfig:
     def test_missing_test_command_raises(self):
         with pytest.raises(RuntimeError, match="Missing or empty test_command"):
             require_testing_config({"testing": {"timeout": 60}})
+
+    def test_missing_timeout_raises(self):
+        """A9: missing timeout in [testing] config raises RuntimeError."""
+        with pytest.raises(RuntimeError, match="Missing timeout"):
+            require_testing_config({"testing": {"test_command": "pytest tests/"}})
 
 
 class TestExtractFailingTests:
@@ -79,7 +84,7 @@ class TestRunValidation:
         mock_result.stderr = ""
         mock_subprocess.run.return_value = mock_result
 
-        config = {"testing": {"test_command": "pytest tests/"}}
+        config = {"testing": {"test_command": "pytest tests/", "timeout": 120}}
         result = run_validation(tmp_repo, config, raw_conn, attempt_id)
 
         assert isinstance(result, ValidationResult)
@@ -103,7 +108,7 @@ class TestRunValidation:
         mock_result.stderr = ""
         mock_subprocess.run.return_value = mock_result
 
-        config = {"testing": {"test_command": "pytest tests/"}}
+        config = {"testing": {"test_command": "pytest tests/", "timeout": 120}}
         result = run_validation(tmp_repo, config, raw_conn, attempt_id)
 
         assert result.success is False
@@ -143,6 +148,7 @@ class TestRunValidation:
                 "test_command": "pytest tests/",
                 "lint_command": "ruff check src/",
                 "type_check_command": "mypy src/",
+                "timeout": 120,
             }
         }
         result = run_validation(tmp_repo, config, raw_conn, attempt_id)

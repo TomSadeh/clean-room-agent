@@ -700,6 +700,35 @@ class TestResumeTaskFromSession:
         session_conn.close()
 
 
+class TestTaskTypeFastFail:
+    """A11: missing task_type in session data raises ValueError."""
+
+    def test_missing_task_type_raises(self, tmp_repo):
+        session_conn = get_connection("session", repo_path=tmp_repo, task_id="no-type-test")
+        set_state(session_conn, "task_query", {
+            "raw_task": "fix bug",
+            "intent_summary": "Fix the auth bug",
+            # task_type deliberately omitted
+            "mentioned_files": ["auth.py"],
+            "mentioned_symbols": [],
+            "keywords": ["auth"],
+            "error_patterns": [],
+            "seed_file_ids": [],
+            "seed_symbol_ids": [],
+        })
+
+        refinement = RefinementRequest(
+            reason="more context",
+            source_task_id="no-type-test",
+        )
+
+        with pytest.raises(ValueError, match="task_type"):
+            _resume_task_from_session(
+                session_conn, refinement, "fix bug", "no-type-test", "plan", 1,
+            )
+        session_conn.close()
+
+
 class TestPipelineRouting:
     """Tests for LLM-based stage routing in the pipeline."""
 

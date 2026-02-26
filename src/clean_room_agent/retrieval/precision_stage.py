@@ -186,6 +186,10 @@ def classify_symbols(
         if detail_level not in ("primary", "supporting", "type_context", "excluded"):
             logger.warning("R2: invalid detail_level %r for %s — defaulting to excluded", detail_level, c["name"])
             detail_level = "excluded"
+        if "signature" not in cl and cl:
+            logger.warning("Precision LLM response missing 'signature' for %s — using empty", c["name"])
+        if "reason" not in cl and cl:
+            logger.warning("Precision LLM response missing 'reason' for %s — using empty", c["name"])
         reason = cl.get("reason", "")
 
         results.append(ClassifiedSymbol(

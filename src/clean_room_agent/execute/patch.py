@@ -185,6 +185,6 @@ def _atomic_write(file_path: Path, content: str) -> None:
         # Clean up the orphaned temp file before propagating
         try:
             os.unlink(tmp_path)
-        except OSError:
-            pass
+        except OSError as cleanup_err:
+            logger.warning("Failed to clean up temp file %s: %s", tmp_path, cleanup_err)
         raise
