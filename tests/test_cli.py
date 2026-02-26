@@ -6,7 +6,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from clean_room_agent.cli import _resolve_budget, _resolve_stages, cli
+from clean_room_agent.cli import cli
+from clean_room_agent.commands import resolve_budget, resolve_stages
 
 
 class TestCLI:
@@ -187,9 +188,9 @@ class TestSolveCLI:
 
 
 class TestResolveBudgetDirectly:
-    """Test _resolve_budget helper directly."""
+    """Test resolve_budget helper directly."""
 
-    def test_resolve_budget_directly(self):
+    def testresolve_budget_directly(self):
         """Valid config returns (context_window, reserved_tokens) tuple."""
         config = {
             "models": {
@@ -201,16 +202,16 @@ class TestResolveBudgetDirectly:
             },
             "budget": {"reserved_tokens": 4096},
         }
-        cw, rt = _resolve_budget(config)
+        cw, rt = resolve_budget(config)
         assert cw == 32768
         assert rt == 4096
 
-    def test_resolve_budget_none_config_raises(self):
+    def testresolve_budget_none_config_raises(self):
         """None config raises UsageError."""
         with pytest.raises(click.UsageError, match="Budget not configured"):
-            _resolve_budget(None)
+            resolve_budget(None)
 
-    def test_resolve_budget_no_reserved_tokens_raises(self):
+    def testresolve_budget_no_reserved_tokens_raises(self):
         """Missing reserved_tokens raises UsageError."""
         config = {
             "models": {
@@ -223,9 +224,9 @@ class TestResolveBudgetDirectly:
             "budget": {},
         }
         with pytest.raises(click.UsageError, match="reserved_tokens"):
-            _resolve_budget(config)
+            resolve_budget(config)
 
-    def test_resolve_budget_with_role(self):
+    def testresolve_budget_with_role(self):
         """Specifying role resolves the correct model's context_window."""
         config = {
             "models": {
@@ -237,52 +238,52 @@ class TestResolveBudgetDirectly:
             },
             "budget": {"reserved_tokens": 2048},
         }
-        cw, rt = _resolve_budget(config, role="coding")
+        cw, rt = resolve_budget(config, role="coding")
         assert cw == 32768
         assert rt == 2048
 
 
 class TestResolveStagesDirectly:
-    """Test _resolve_stages helper directly."""
+    """Test resolve_stages helper directly."""
 
-    def test_resolve_stages_directly(self):
+    def testresolve_stages_directly(self):
         """Stages resolved from config default."""
         config = {"stages": {"default": "scope,precision"}}
-        stages = _resolve_stages(config, None)
+        stages = resolve_stages(config, None)
         assert stages == ["scope", "precision"]
 
-    def test_resolve_stages_no_config_raises(self):
+    def testresolve_stages_no_config_raises(self):
         """Missing config stages raises UsageError."""
         with pytest.raises(click.UsageError, match="Stages not configured"):
-            _resolve_stages({}, None)
+            resolve_stages({}, None)
 
-    def test_resolve_stages_none_config_raises(self):
+    def testresolve_stages_none_config_raises(self):
         """None config raises UsageError."""
         with pytest.raises(click.UsageError, match="Stages not configured"):
-            _resolve_stages(None, None)
+            resolve_stages(None, None)
 
-    def test_resolve_stages_strips_whitespace(self):
+    def testresolve_stages_strips_whitespace(self):
         """Stage names are stripped of whitespace."""
         config = {"stages": {"default": " scope , precision , assembly "}}
-        stages = _resolve_stages(config, None)
+        stages = resolve_stages(config, None)
         assert stages == ["scope", "precision", "assembly"]
 
 
 class TestResolveStagesFromFlag:
-    """Test _resolve_stages with stages_flag parameter."""
+    """Test resolve_stages with stages_flag parameter."""
 
-    def test_resolve_stages_from_flag(self):
+    def testresolve_stages_from_flag(self):
         """CLI flag overrides config."""
         config = {"stages": {"default": "scope,precision"}}
-        stages = _resolve_stages(config, "custom_stage1,custom_stage2")
+        stages = resolve_stages(config, "custom_stage1,custom_stage2")
         assert stages == ["custom_stage1", "custom_stage2"]
 
-    def test_resolve_stages_flag_strips_whitespace(self):
+    def testresolve_stages_flag_strips_whitespace(self):
         """Flag value whitespace is stripped."""
-        stages = _resolve_stages({}, " s1 , s2 ")
+        stages = resolve_stages({}, " s1 , s2 ")
         assert stages == ["s1", "s2"]
 
-    def test_resolve_stages_flag_ignores_missing_config(self):
+    def testresolve_stages_flag_ignores_missing_config(self):
         """When flag is provided, missing config does not raise."""
-        stages = _resolve_stages(None, "scope,precision")
+        stages = resolve_stages(None, "scope,precision")
         assert stages == ["scope", "precision"]

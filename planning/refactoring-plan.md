@@ -172,7 +172,7 @@ Init/cleanup rewritten to use `_init_orchestrator`/`_cleanup_orchestrator`. Full
 
 ---
 
-## Batch 5: Cross-Module (R6, R22, R3, A6b, A13)
+## Batch 5: Cross-Module (R6, R22, R3, A6b, A13) — DONE
 
 ### R6 + R22 + A6b + A13: Shared batched judgment runner + similarity logging
 

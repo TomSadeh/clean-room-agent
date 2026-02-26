@@ -6,12 +6,11 @@ from typing import NamedTuple
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import (
-    calculate_judgment_batch_size,
-    validate_judgment_batch,
+    log_r2_omission,
+    run_batched_judgment,
 )
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
-from clean_room_agent.retrieval.utils import parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -204,52 +203,38 @@ def judge_scope(
         return candidates
 
     # Batch-fetch metadata for all non-seed candidates
-    metadata_map = {}
+    metadata_map: dict = {}
     if kb is not None:
         all_fids = [sf.file_id for sf in non_seeds]
         metadata_map = kb.get_file_metadata_batch(all_fids)
 
-    # Calculate batch size from available context (conservative to match LLMClient gate)
+    def _format(sf: ScopedFile) -> str:
+        line = f"- {sf.path} (tier={sf.tier}, language={sf.language}, reason={sf.reason})"
+        meta = metadata_map.get(sf.file_id)
+        if meta:
+            parts = []
+            if meta.purpose:
+                parts.append(f"purpose={meta.purpose}")
+            if meta.domain:
+                parts.append(f"domain={meta.domain}")
+            if meta.concepts:
+                parts.append(f"concepts={meta.concepts}")
+            if parts:
+                line += f" [{', '.join(parts)}]"
+        return line
+
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
-    batch_size = calculate_judgment_batch_size(
-        SCOPE_JUDGMENT_SYSTEM, task_header,
-        llm.config.context_window, llm.config.max_tokens,
-        _TOKENS_PER_SCOPE_CANDIDATE,
+
+    verdict_map = run_batched_judgment(
+        non_seeds,
+        system_prompt=SCOPE_JUDGMENT_SYSTEM,
+        task_header=task_header,
+        llm=llm,
+        tokens_per_item=_TOKENS_PER_SCOPE_CANDIDATE,
+        format_item=_format,
+        extract_key=lambda j: j.get("path"),
+        stage_name="scope",
     )
-
-    # Judge in batches
-    verdict_map: dict[str, dict] = {}
-    for i in range(0, len(non_seeds), batch_size):
-        batch = non_seeds[i:i + batch_size]
-        candidate_lines = []
-        for sf in batch:
-            line = f"- {sf.path} (tier={sf.tier}, language={sf.language}, reason={sf.reason})"
-            meta = metadata_map.get(sf.file_id)
-            if meta:
-                parts = []
-                if meta.purpose:
-                    parts.append(f"purpose={meta.purpose}")
-                if meta.domain:
-                    parts.append(f"domain={meta.domain}")
-                if meta.concepts:
-                    parts.append(f"concepts={meta.concepts}")
-                if parts:
-                    line += f" [{', '.join(parts)}]"
-            candidate_lines.append(line)
-        prompt = task_header + "\n".join(candidate_lines)
-
-        validate_judgment_batch(
-            prompt, SCOPE_JUDGMENT_SYSTEM, "scope",
-            llm.config.context_window, llm.config.max_tokens,
-        )
-
-        response = llm.complete(prompt, system=SCOPE_JUDGMENT_SYSTEM)
-        judgments = parse_json_response(response.text, "scope judgment")
-
-        if isinstance(judgments, list):
-            for j in judgments:
-                if isinstance(j, dict) and "path" in j:
-                    verdict_map[j["path"]] = j
 
     # Apply judgments to non-seeds
     valid_verdicts = ("relevant", "irrelevant")
@@ -263,7 +248,7 @@ def judge_scope(
             sf.relevance = verdict
             sf.reason = v.get("reason", sf.reason)
         else:
-            logger.warning("R2: LLM omitted %s from scope judgment — defaulting to irrelevant", sf.path)
+            log_r2_omission(sf.path, "scope", "irrelevant")
             sf.relevance = "irrelevant"
 
     return candidates

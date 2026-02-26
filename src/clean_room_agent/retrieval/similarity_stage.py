@@ -5,12 +5,11 @@ import logging
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import (
-    calculate_judgment_batch_size,
-    validate_judgment_batch,
+    log_r2_omission,
+    run_batched_judgment,
 )
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
-from clean_room_agent.retrieval.utils import parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -154,64 +153,49 @@ def judge_similarity(
     if not pairs:
         return []
 
-    # Calculate batch size from available context
+    def _format(p: dict) -> str:
+        a, b = p["sym_a"], p["sym_b"]
+        sigs = p["signals"]
+        return (
+            f"- pair_id={p['pair_id']}: {a.name} ({a.kind}, {a.end_line - a.start_line + 1} lines) "
+            f"vs {b.name} ({b.kind}, {b.end_line - b.start_line + 1} lines) "
+            f"[line_ratio={sigs['line_ratio']}, callee_jaccard={sigs['callee_jaccard']}, "
+            f"name_lcs={sigs['name_lcs']}, same_parent={sigs['same_parent']}]"
+        )
+
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbol pairs:\n"
-    batch_size = calculate_judgment_batch_size(
-        SIMILARITY_JUDGMENT_SYSTEM, task_header,
-        llm.config.context_window, llm.config.max_tokens,
-        _TOKENS_PER_PAIR,
+
+    judgment_map = run_batched_judgment(
+        pairs,
+        system_prompt=SIMILARITY_JUDGMENT_SYSTEM,
+        task_header=task_header,
+        llm=llm,
+        tokens_per_item=_TOKENS_PER_PAIR,
+        format_item=_format,
+        extract_key=lambda j: j.get("pair_id"),
+        stage_name="similarity",
     )
 
     confirmed: list[dict] = []
-    for i in range(0, len(pairs), batch_size):
-        batch = pairs[i:i + batch_size]
-        pair_lines = []
-        for p in batch:
-            a, b = p["sym_a"], p["sym_b"]
-            sigs = p["signals"]
-            pair_lines.append(
-                f"- pair_id={p['pair_id']}: {a.name} ({a.kind}, {a.end_line - a.start_line + 1} lines) "
-                f"vs {b.name} ({b.kind}, {b.end_line - b.start_line + 1} lines) "
-                f"[line_ratio={sigs['line_ratio']}, callee_jaccard={sigs['callee_jaccard']}, "
-                f"name_lcs={sigs['name_lcs']}, same_parent={sigs['same_parent']}]"
+    for p in pairs:
+        j = judgment_map.get(p["pair_id"])
+        if j is None:
+            log_r2_omission(f"pair_id={p['pair_id']}", "similarity", "denied")
+            continue
+        if j.get("keep", False):
+            confirmed.append({
+                "pair_id": p["pair_id"],
+                "sym_a": p["sym_a"],
+                "sym_b": p["sym_b"],
+                "group_label": j.get("group_label", ""),
+                "reason": j.get("reason", ""),
+            })
+        else:
+            # A6b: log explicitly denied pairs for traceability
+            logger.info(
+                "Similarity pair denied: %s vs %s — %s",
+                p["sym_a"].name, p["sym_b"].name, j.get("reason", "no reason"),
             )
-
-        prompt = task_header + "\n".join(pair_lines)
-
-        validate_judgment_batch(
-            prompt, SIMILARITY_JUDGMENT_SYSTEM, "similarity",
-            llm.config.context_window, llm.config.max_tokens,
-        )
-
-        response = llm.complete(prompt, system=SIMILARITY_JUDGMENT_SYSTEM)
-        try:
-            judgments = parse_json_response(response.text, "similarity judgment")
-        except ValueError:
-            logger.warning("R2: similarity judgment parse failed — denying all pairs in batch")
-            continue
-
-        if not isinstance(judgments, list):
-            logger.warning("R2: similarity judgment returned non-list — denying all pairs in batch")
-            continue
-
-        judgment_map: dict[int, dict] = {}
-        for j in judgments:
-            if isinstance(j, dict) and "pair_id" in j:
-                judgment_map[j["pair_id"]] = j
-
-        for p in batch:
-            j = judgment_map.get(p["pair_id"])
-            if j is None:
-                logger.warning("R2: LLM omitted pair_id=%d — defaulting to denied", p["pair_id"])
-                continue
-            if j.get("keep", False):
-                confirmed.append({
-                    "pair_id": p["pair_id"],
-                    "sym_a": p["sym_a"],
-                    "sym_b": p["sym_b"],
-                    "group_label": j.get("group_label", ""),
-                    "reason": j.get("reason", ""),
-                })
 
     return confirmed
 
@@ -264,7 +248,8 @@ def assign_groups(
     result: dict[int, str] = {}
     for root, members in groups.items():
         group_id = f"sim_group_{min(members)}"
-        # Sort for determinism, take first max_group_size
+        # R6: all group members have equal relevance (confirmed similar by LLM);
+        # sorting by symbol_id provides deterministic selection.
         for sym_id in sorted(members)[:max_group_size]:
             result[sym_id] = group_id
 

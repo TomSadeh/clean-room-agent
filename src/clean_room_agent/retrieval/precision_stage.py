@@ -5,12 +5,11 @@ import logging
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.batch_judgment import (
-    calculate_judgment_batch_size,
-    validate_judgment_batch,
+    log_r2_omission,
+    run_batched_judgment,
 )
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage
-from clean_room_agent.retrieval.utils import parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -129,57 +128,40 @@ def classify_symbols(
                         first_line = doc.content.split("\n", 1)[0].strip()
                         docstring_summaries[(fid, doc.symbol_id)] = first_line
 
-    # Calculate batch size from available context (conservative to match LLMClient gate)
-    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
-    batch_size = calculate_judgment_batch_size(
-        PRECISION_SYSTEM, task_header,
-        llm.config.context_window, llm.config.max_tokens,
-        _TOKENS_PER_SYMBOL,
-    )
-
-    # Classify in batches, merge results
-    class_map: dict[tuple[str, str, int], dict] = {}
-    for i in range(0, len(candidates), batch_size):
-        batch = candidates[i:i + batch_size]
-
-        symbol_lines = []
-        for c in batch:
-            conn_info = ", ".join(c["connections"]) if c["connections"] else "no connections"
-            line = (
-                f"- {c['name']} ({c['kind']}) in {c['file_path']}:{c['start_line']}-{c['end_line']} "
-                f"[{conn_info}]"
-                + (f" sig: {c['signature']}" if c['signature'] else "")
-            )
-            doc_key = (c["file_id"], c["symbol_id"])
-            doc_summary = docstring_summaries.get(doc_key)
-            if doc_summary:
-                line += f" doc: {doc_summary}"
-            symbol_lines.append(line)
-
-        prompt = task_header + "\n".join(symbol_lines)
-
-        validate_judgment_batch(
-            prompt, PRECISION_SYSTEM, "precision",
-            llm.config.context_window, llm.config.max_tokens,
+    def _format(c: dict) -> str:
+        conn_info = ", ".join(c["connections"]) if c["connections"] else "no connections"
+        line = (
+            f"- {c['name']} ({c['kind']}) in {c['file_path']}:{c['start_line']}-{c['end_line']} "
+            f"[{conn_info}]"
+            + (f" sig: {c['signature']}" if c['signature'] else "")
         )
+        doc_key = (c["file_id"], c["symbol_id"])
+        doc_summary = docstring_summaries.get(doc_key)
+        if doc_summary:
+            line += f" doc: {doc_summary}"
+        return line
 
-        response = llm.complete(prompt, system=PRECISION_SYSTEM)
-        classifications = parse_json_response(response.text, "precision")
+    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
 
-        if isinstance(classifications, list):
-            for cl in classifications:
-                if isinstance(cl, dict) and "name" in cl:
-                    key = (cl["name"], cl.get("file_path", ""), cl.get("start_line", 0))
-                    class_map[key] = cl
+    class_map = run_batched_judgment(
+        candidates,
+        system_prompt=PRECISION_SYSTEM,
+        task_header=task_header,
+        llm=llm,
+        tokens_per_item=_TOKENS_PER_SYMBOL,
+        format_item=_format,
+        extract_key=lambda cl: (cl["name"], cl.get("file_path", ""), cl.get("start_line", 0)) if "name" in cl else None,
+        stage_name="precision",
+    )
 
     results = []
     for c in candidates:
         key = (c["name"], c["file_path"], c["start_line"])
         cl = class_map.get(key)
         if cl is None:
-            logger.warning(
-                "R2: LLM omitted %s in %s:%d from precision classification — defaulting to excluded",
-                c["name"], c["file_path"], c["start_line"],
+            log_r2_omission(
+                f"{c['name']} in {c['file_path']}:{c['start_line']}",
+                "precision", "excluded",
             )
             cl = {}
         detail_level = cl.get("detail_level", "excluded")
