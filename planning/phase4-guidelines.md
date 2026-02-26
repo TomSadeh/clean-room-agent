@@ -1,7 +1,8 @@
 # Phase 4 Guidelines — Self-Improvement Loop
 
-**Status:** Pre-planning. Phase 3 complete, refactoring in progress (Batches 4-6).
+**Status:** Pre-planning. Phase 3 complete, refactoring complete (Batches 0-6).
 **Nature:** High-level roadmap and decision principles, not a task list.
+**Companion documents:** `repo-corpus.md` (full repo catalog), `training-strategy.md` (training details)
 
 ---
 
@@ -22,7 +23,7 @@ Phase 4 does NOT modify the retrieval pipeline or orchestrator. It reads from wh
 ## 2. Prerequisites
 
 Before Phase 4 work begins:
-- [ ] Refactoring Batches 4-6 complete (runner decomposition, cross-module cleanup)
+- [x] Refactoring Batches 0-6 complete
 - [ ] All transparency audit findings resolved (14/14 — currently 9/14 done)
 - [ ] Enough logged orchestrator runs in raw DB to validate data extraction queries (even manual test runs count)
 - [ ] Hardware: consumer GPU available for LoRA training (RTX 5060 Ti is sufficient for QLoRA)
@@ -37,19 +38,32 @@ Three parallel tracks. They share infrastructure but can be developed independen
 
 ### Stream A: Harness Infrastructure (highest priority)
 
-The plan validation harness is the single most important piece — it provides training data for every stage, enables automated DPO pair generation, and becomes the self-improvement vehicle post-migration.
+The harness is a **training data factory**, not just a plan validator. It provides training data for every stage, enables automated DPO pair generation, and becomes the self-improvement vehicle post-migration. Once the agent can be its own teacher, this runs fully offline on the air-gapped machine.
 
 **What to build:**
-- Repo package format: `repo/` (git clone) + `packages/` (pre-cached .whl files) + `manifest.json` (filtered commits, test command, Python version)
-- Auto-venv creation from pre-cached wheels (no Docker, no internet)
-- Commit filtering pipeline: PyDriller extraction → message scoring (verb-initial, descriptive) → diff size filtering → test existence check. Expect ~96% attrition from raw commits.
+- Repo package format: `repo/` (git clone) + `packages/` (pre-cached dependencies) + `manifest.json` (filtered commits, validation command, language/runtime version)
+- Auto-environment creation from pre-cached dependencies (no Docker, no internet)
+- Commit filtering pipeline: PyDriller extraction → message scoring (verb-initial, descriptive) → diff size filtering → validation existence check. Expect ~96% attrition from raw commits.
 - Harness runner: per-commit loop of index → retrieve → plan → execute → validate → record outcome
+- Multi-temperature teacher runs: same commit prompted at temps 0.3/0.6/0.9/1.2. Multiplies output 3-4x and produces natural DPO preference pairs (plan A at temp 0.6 passed, plan B at temp 1.2 failed = DPO pair with no human labeling)
 - Plan-diff structural alignment scorer: isolates plan quality from coding quality by checking file target overlap, symbol overlap, dependency ordering against the actual commit diff
 - Test supplementation: generate tests from the diff when repo's existing coverage is insufficient
 
-**Initial repo corpus:** 14 fail-fast Python repos identified in the research (attrs, cattrs, structlog, Black, Hypothesis, typeguard, beartype, LibCST, parso, svcs, strictyaml, stamina, mypy, rich). Expected yield: 1,400-4,200 qualifying commits → 4,200-12,600 training triples with multi-temperature runs.
+**Validation is broader than test suites.** Test suites are the simplest oracle, but not the only one. The harness can validate by:
+- Running tests (`pytest`, `make test`, `cargo test`, `go test`)
+- Running the actual code (spin up a server, hit endpoints, check responses)
+- Agentic debugging loops (error → hypothesis → add logging → re-run → narrow down → fix)
+- Writing integration tests and property checks against observable behavior
+- Performance profiling (before/after measurement = objective signal)
 
-**Key principle:** The harness uses the real pipeline (Phase 1 indexer + Phase 2 retrieval + Phase 3 orchestrator). Zero distribution mismatch between training and inference. This is the harness's primary advantage over synthetic data.
+A repo without tests isn't a dead end — the agent writes the verification, runs it, and the outcome is still binary signal. Every agentic verification loop is itself training data: traces of HOW the agent reasoned about the problem.
+
+**Repo corpus:** See `repo-corpus.md` for the full catalog (~170 sources across 36 categories). Not limited to Python — any repo with a deterministic validation path is harness-compatible. The corpus is finite but the data is not: same repos, infinite variations through temperature, reasoning paths, and verification strategies.
+
+**Key principles:**
+- The harness uses the real pipeline (Phase 1 indexer + Phase 2 retrieval + Phase 3 orchestrator). Zero distribution mismatch between training and inference.
+- Harness data is the PRIMARY training source. External datasets (CommitPackFT) serve as cold-start bridges only. Once harness produces volume, it dominates.
+- Domain diversity over volume within any single domain. Each new repo domain teaches new reasoning patterns that compound.
 
 ### Stream B: Training Pipeline
 
@@ -72,7 +86,7 @@ The plan validation harness is the single most important piece — it provides t
 
 **Training framework:** Unsloth + QLoRA (4-bit, all 7 linear layers). ZeRO-2 only for distributed — ZeRO-3 breaks gradient flow with LoRA on Qwen3. Explicit `eos_token='<|im_end|>'` to avoid the silent Qwen3 tokenizer bug.
 
-**Cold-start datasets:** CommitPackFT (702K pairs, Apache 2.0), OpenCodeInstruct (subsample 100-500K), SRI Tuning (search-and-replace format). These bootstrap the Execute-Code adapter before the harness produces data.
+**Cold-start datasets:** CommitPackFT (702K pairs, Apache 2.0) bootstraps the Execute-Code adapter before the harness produces data. Once harness volume is sufficient, CommitPackFT becomes 10-20% replay data to prevent distribution narrowing. OpenCodeInstruct and SRI Tuning are optional breadth insurance, not primary sources — the base Qwen models already have general coding ability from pre-training.
 
 ### Stream C: Pipeline Modes + Inference Migration
 
@@ -160,6 +174,10 @@ The plan validation harness is the single most important piece — it provides t
 
 **Chronological evaluation only.** Random train/test splits produce results 57-94% more optimistic than chronological splits. All evaluation uses temporal holdout.
 
+**Harness data over external datasets.** The distribution mismatch argument is decisive — training on data from the exact pipeline, validated by real tests, on real repos, beats any external dataset collected under different assumptions. CommitPackFT is a cold-start bridge; harness data is the primary source once available.
+
+**Teach HOW to think, not WHAT.** The diverse repo corpus exposes reasoning patterns — when to decompose, when to iterate, when to approximate. A regression in an econ model and a least-squares fit in physics are the same reasoning shape in different domains. Breadth of domains matters more than depth in any single domain.
+
 ---
 
 ## 6. Self-Improvement Guardrails
@@ -175,11 +193,11 @@ The plan validation harness is the single most important piece — it provides t
 
 ## 7. Multi-Use Repo Corpus
 
-Every repo the system ingests serves multiple purposes simultaneously. The harness is not just a plan validator — it's the universal data extraction engine. A single well-chosen repo can provide coding style training, planning data, knowledge base content, and domain-specific capability all at once.
+**Full catalog:** See `repo-corpus.md` for the complete repo listing (~170 sources across 36 categories).
 
-### Use categories
+Every repo the system ingests serves multiple purposes simultaneously. The harness is a universal data extraction engine. A single well-chosen repo provides coding style training, planning data, knowledge base content, and domain-specific reasoning patterns all at once.
 
-Each repo can serve one or more of these roles:
+### Use roles
 
 | Role | What it provides | Where it goes |
 |---|---|---|
@@ -188,141 +206,40 @@ Each repo can serve one or more of these roles:
 | **K** — Knowledge base | Indexed + enriched → curated DB → retrieved during agent tasks | Curated DB |
 | **S** — Self-referential | The repo teaches the agent a skill it needs to build/improve itself | Knowledge base + training |
 
-The **S** role is the most powerful: the agent studies code that does what it needs to do, then uses that knowledge to do it itself.
+### The data factory principle
 
-### Repo categories and concrete examples
+The corpus is finite but the data is not. Same repos, infinite variations:
+- Multi-temperature teacher runs produce different reasoning paths for the same commit
+- Each path either passes or fails validation — natural DPO pairs
+- Agentic verification loops (debugging, profiling, integration testing) generate reasoning traces
+- Every run produces training signal about HOW to approach problems, not just WHAT to produce
 
-**1. Fail-fast Python repos** — P + C
-Already identified (14 repos). Dual-purpose: code trains fail-fast style, commits feed the planning harness.
-- attrs, cattrs, structlog, svcs, stamina, strictyaml, Black, LibCST, parso, typeguard, beartype, Hypothesis, mypy, rich
+Once the agent can be its own teacher, this runs fully offline. Given enough compute time, data is unlimited.
 
-**2. LoRA / fine-tuning repos** — P + C + K + S
-The agent needs to write and improve its own training code. These repos teach it how.
-- **Unsloth** — optimized QLoRA training, Triton kernels, Qwen support. The agent's own training framework.
-- **PEFT** — LoRA adapter implementation, merging, stacking. Core to the adapter architecture.
-- **trl** — SFTTrainer, DPO training, reward modeling. The agent's alignment training tools.
-- **axolotl** — advanced fine-tuning (sample packing, fused kernels). Alternative patterns.
-- **LLaMA-Factory** — YAML-driven training, multi-method support. The agent could learn to auto-configure training.
+### Corpus categories (36 total)
 
-**3. From-scratch training repos** — P + C + K + S
-These teach the agent to build its own training infrastructure — directly enabling the C-native trainer.
-- **llm.c** (Karpathy) — GPT-2 training in pure C. The direct template for the C-native trainer.
-- **nanoGPT** (Karpathy) — minimal PyTorch GPT training. Clean reference implementation.
-- **minGPT** (Karpathy) — even more minimal. Good for understanding core patterns.
-- **tinygrad** (geohot) — tiny ML framework from scratch. Shows how to build a framework, not just use one.
-- **micrograd** (Karpathy) — autograd engine in Python. The microgpt.py Value class expanded.
+**Self-referential (Categories 1-18):** Fail-fast Python, LoRA/fine-tuning, from-scratch training, CUDA/GPU, inference servers, data pipeline, AST/parser, testing/evaluation, Git/VCS, database, CLI/TUI, quantization, C reference/systems, documentation, Rust-for-Python-tooling, diff/patch/code transformation, GPU kernel synthesis, video games/game engines.
 
-**4. CUDA / GPU programming repos** — P + C + K + S
-The agent needs these to write its own CUDA kernels for the C-native trainer.
-- **llama.cpp** — inference in C/C++ with CUDA kernels. Quantization, KV cache, attention kernels.
-- **ggml** — tensor library underlying llama.cpp. Low-level GPU compute patterns.
-- **whisper.cpp** — another C++ inference engine. Different architecture, same patterns.
-- **CUTLASS** (NVIDIA) — CUDA templates for matrix operations. The building blocks for custom kernels.
-- **flash-attention** — the actual Flash Attention CUDA implementation. Critical for efficient attention.
-- **ThunderKittens** (Stanford) — embedded DSL for CUDA kernels. Next-gen kernel writing patterns.
+**Real-world domains (Categories 19-26):** Web/HTTP/APIs, scientific computing, cryptography/security, networking/protocols, compilers/language implementation, image/audio/media, embedded/hardware-adjacent, concurrency/async patterns.
 
-**5. Inference server repos** — P + K + S
-The agent migrates from Ollama to vLLM. Understanding internals helps debug and configure.
-- **vLLM** — the target inference server. Per-request LoRA routing, PagedAttention, continuous batching.
-- **llama-server** (part of llama.cpp) — fallback inference server with LoRA support.
-- **text-generation-inference** (HuggingFace) — alternative server, good reference for batching strategies.
+**Applied mathematics (Categories 27-36):** Economics/econometrics, ML/statistical learning, physics simulation, chemistry/molecular simulation, biology/bioinformatics, applied math libraries, quantitative finance, control systems/robotics, signal processing/DSP, operations research/optimization.
 
-**6. Data pipeline repos** — P + C + K + S
-The `cra curate-data` mode needs to process, filter, and format training data efficiently.
-- **datasets** (HuggingFace) — the data loading library the agent uses. Understanding internals helps optimize.
-- **datatrove** (HuggingFace) — large-scale data processing. Filtering, dedup, quality scoring patterns.
-- **dolma** (AI2) — data curation toolkit. Pre-training data pipeline patterns at scale.
-
-**7. AST / parser repos** — P + C + K + S
-The agent's indexer is built on AST parsing. These repos improve its own parsing capabilities.
-- **tree-sitter** — the core parsing library. C repo with grammar definitions.
-- **tree-sitter-python**, **tree-sitter-c**, **tree-sitter-cuda** — language grammars. Adding C/CUDA parsing for the knowledge base expansion.
-- **LibCST** — Python CST manipulation. Already in the fail-fast corpus.
-- **parso** — Python parser. Already in the fail-fast corpus.
-
-**8. Testing / evaluation repos** — P + C + K + S
-The harness runs tests. The agent evaluates its own adapters. These teach it how.
-- **pytest** — the test framework. Understanding internals helps generate better tests.
-- **Hypothesis** — property-based testing. Already in fail-fast corpus. Test generation patterns.
-- **lm-evaluation-harness** (EleutherAI) — LLM evaluation framework. Patterns for adapter evaluation.
-- **bigcode-evaluation-harness** — code-specific evaluation. SWE-bench, HumanEval runners.
-
-**9. Git / VCS repos** — P + C + K
-The harness uses PyDriller for commit extraction. The agent does git operations.
-- **PyDriller** — commit mining library. The agent's own commit filtering pipeline uses this.
-- **gitpython** — Git operations from Python. The agent's git workflow.
-- **dulwich** — pure-Python Git implementation. Useful if gitpython is insufficient.
-
-**10. Database repos** — P + C + K
-The three-database architecture uses SQLite. Understanding internals helps optimize.
-- **sqlite** (C source) — the actual SQLite implementation. ~150K lines of battle-tested C.
-- **SQLAlchemy** — ORM patterns. Not directly used but relevant for query optimization.
-- **peewee** — lightweight ORM. Patterns for the agent's own DB query layer.
-
-**11. CLI / TUI repos** — P + C + K
-The agent's CLI uses Click. These teach UI patterns.
-- **click** — the CLI framework used by `cra`. Understanding internals helps extend it.
-- **typer** — modern CLI framework. Alternative patterns.
-- **rich** — terminal formatting. Already in fail-fast corpus.
-- **textual** — TUI framework. Potential for interactive agent interfaces.
-
-**12. Quantization / optimization repos** — K + S
-The agent deploys quantized models and may learn to quantize its own mini-models.
-- **bitsandbytes** — NF4 quantization for QLoRA. The agent's own quantization tool.
-- **GPTQ** — post-training quantization. Alternative approach for mini-model deployment.
-- **llama.cpp quantization tools** — GGUF format, various quantization methods.
-
-**13. C reference / systems repos** — P + C + K
-Mature C codebases that teach systems programming patterns for the C-native trainer.
-- **Redis** — clean C codebase, excellent patterns for data structures, event loops.
-- **SQLite** (again) — the gold standard for robust, well-tested C.
-- **jq** — C-based JSON processor. Clean, focused C codebase.
-- **zstd** (Facebook) — compression in C. High-performance numerical patterns.
-
-**14. Documentation / reference material** — K only
-Not code repos — indexed as knowledge base content for retrieval.
-- C programming books (K&R, Modern C)
-- CUDA Programming Guide (NVIDIA)
-- PyTorch internals documentation
-- Transformer architecture papers (Attention Is All You Need, Flash Attention, RoPE)
-- SQLite internals documentation
-
-### The self-referential flywheel
-
-The most valuable repos are those where studying the code teaches the agent to improve itself:
-
-```
-Agent studies Unsloth → learns to write training code
-  → writes better training pipeline → trains better adapters
-    → produces better code → writes even better training code → ...
-
-Agent studies llm.c → learns C/CUDA training patterns
-  → writes C-native trainer → trains mini-models faster
-    → mini-models replace LLM calls → pipeline runs faster
-      → more data → better models → ...
-
-Agent studies vLLM → understands inference serving
-  → optimizes its own deployment → lower latency
-    → more tasks per hour → more training data → ...
-
-Agent studies tree-sitter → improves its own parser
-  → better AST indexing → better retrieval → better context
-    → better code output → ...
-```
-
-Each self-referential repo creates a feedback loop. The more of these the system ingests, the more capabilities it has to improve itself.
+**Scientific papers (Category 37):** Methods papers converted to markdown via the paper pipeline. Optimization, numerical methods, statistical learning, finance, causal inference foundations.
 
 ### Corpus sizing
 
-Not all repos need full packaging (wheels, manifest). The tiers:
+| Tier | What | Count |
+|---|---|---|
+| **Full harness** | Repos with validation paths (tests, runnable code, observable behavior) | ~80 repos |
+| **Knowledge base only** | C/Rust repos, repos without usable validation, reference material | ~65 repos |
+| **Documentation + papers** | Books, guides, converted scientific papers | ~25 sources |
+| **Total** | | **~170 sources** |
 
-| Tier | What | Packaging | Count |
-|---|---|---|---|
-| **Full harness** | Python repos with tests, commit history usable for planning training | repo + packages + manifest | 25-40 repos |
-| **Knowledge base only** | C/CUDA repos, reference material, repos without usable test suites | repo only (indexed + enriched) | 20-30 repos |
-| **Documentation** | Books, guides, papers | chunked text (indexed + enriched) | 10-15 sources |
+All enter the air-gapped machine via USB. The harness auto-detects new full-harness repos from their `manifest.json`.
 
-Total: ~60-85 sources. All enter the air-gapped machine via USB. The harness auto-detects new full-harness repos from their `manifest.json`.
+### Corpus expansion protocol
+
+New repos are identified and evaluated periodically. See Section 10 for the search protocol.
 
 ---
 
@@ -350,3 +267,65 @@ Key clarifications this document adds:
 - Execution flow diagram with gates
 - Decision principles distilled from the research reviews
 - The long game vision connecting Phase 4 to the C-native trainer and knowledge base expansion
+
+---
+
+## 10. Corpus Expansion Protocol
+
+The repo corpus is a living document. New repos are discovered and evaluated periodically to inject fresh reasoning patterns and break training plateaus. This protocol is run manually or by the agent itself once capable.
+
+### Search strategy
+
+Run periodically (monthly or when plateau detected). Each run covers:
+
+1. **GitHub Trending + topic search** — scan trending repos in Python, C, Rust for the past month. Search by topic tags (`machine-learning`, `scientific-computing`, `game-engine`, `cryptography`, etc.) filtered to permissive licenses.
+
+2. **Dependency graph mining** — for repos already in the corpus, check their dependencies and dependents. A library used by 3+ corpus repos is a strong candidate. A project that depends on corpus libraries exercises them in real context.
+
+3. **Citation/fork tracing** — for scientific repos, check what cites them or forks them. Active forks with divergent features teach alternative approaches to the same problem.
+
+4. **Conference/paper companion repos** — check recent NeurIPS, ICML, ACL, EMNLP, SIGGRAPH proceedings for repos attached to papers. Methods papers with code are ideal: the paper goes to the knowledge base, the code goes to the harness.
+
+5. **"Awesome" list mining** — curated awesome-* lists on GitHub aggregate quality repos by domain. Cross-reference against the corpus for gaps.
+
+6. **Domain gap analysis** — compare corpus categories against common software engineering domains. If the agent is asked to work on something and the knowledge base has no relevant content, that's a gap to fill.
+
+### Evaluation criteria
+
+Score each candidate on these axes. A repo needs to pass ALL hard requirements and score well on at least 3 soft criteria.
+
+**Hard requirements (must pass):**
+- [ ] Permissive license (MIT, Apache-2.0, BSD, ISC, zlib, Public Domain). GPL only if no permissive alternative exists in that domain — flag for review.
+- [ ] Actively maintained OR feature-complete and stable (archived is fine if the code is mature)
+- [ ] No obvious security concerns (no credential harvesting, no malware)
+
+**Soft criteria (score 0-2 each):**
+- **Code quality** — clean structure, consistent style, readable without extensive domain knowledge
+- **Test coverage** — existing tests that pass, or observable behavior that enables agentic validation
+- **Math/reasoning density** — does the code exercise non-trivial reasoning patterns? (optimization, state machines, recursive structures, numerical methods)
+- **Domain novelty** — does this repo add a reasoning pattern not already represented in the corpus?
+- **Size fit** — small enough to index fully, large enough to contain meaningful patterns (~1K-100K LOC sweet spot)
+- **Commit history quality** — descriptive commit messages, atomic commits, not squash-merged. Needed for harness use.
+
+**Minimum score:** 6/12 on soft criteria to include. 8/12 for full harness tier.
+
+### Packaging decision
+
+After evaluation, assign tier:
+- **Full harness** — has tests or runnable validation + filterable commit history → package with `manifest.json`
+- **Knowledge base only** — clean code but no validation path → index and enrich only
+- **Documentation** — paper or reference material → convert via paper pipeline and index
+
+### Output
+
+Each search run produces:
+1. Updated `repo-corpus.md` with new entries (category, repo, license, tier, rationale)
+2. List of repos to package for the next USB transfer
+3. Gap analysis: domains still underrepresented
+
+### Scientific papers
+
+Run the paper pipeline (`claude-knowledge-repo`) on:
+- Methods papers accompanying newly added repos
+- Foundational papers in domains where the corpus has code but no theory
+- Recent survey papers that reference techniques used across multiple corpus repos
