@@ -323,9 +323,14 @@ Each search run produces:
 2. List of repos to package for the next USB transfer
 3. Gap analysis: domains still underrepresented
 
-### Scientific papers
+### Scientific papers and document conversion
 
-Run the paper pipeline (`claude-knowledge-repo`) on:
+**PDF conversion tool:** `opendataloader-pdf` (MPL-2.0) — rule-based PDF → markdown/JSON. Local, no GPU, deterministic (XY-Cut++ layout analysis). Table detection, heading hierarchy, AI safety filters (removes hidden text and prompt injection from PDFs entering LLM context). Replaces the previous paper pipeline for all new conversions.
+
+**Dual use:** The converter serves both knowledge base population (papers → markdown → indexed) and training data extraction (any PDF-format documentation, API references, or specifications that accompany corpus repos).
+
+Run on:
 - Methods papers accompanying newly added repos
 - Foundational papers in domains where the corpus has code but no theory
 - Recent survey papers that reference techniques used across multiple corpus repos
+- PDF documentation bundled with corpus repos (API docs, architecture guides, specifications)

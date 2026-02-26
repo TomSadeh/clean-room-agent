@@ -396,15 +396,16 @@ Actual language design and implementation beyond AST parsing.
 
 ---
 
-## Category 24: Image / Audio / Media (P + C + K)
+## Category 24: Image / Audio / Media / Document Processing (P + C + K + S)
 
-Media manipulation, codecs, processing.
+Media manipulation, codecs, document parsing, processing.
 
 | Repo | License | Notes | Tier |
 |---|---|---|---|
 | nothings/stb | PD/MIT | Single-header C media libraries. JPEG/PNG decode, font rasterization | KB only |
 | mackron/miniaudio | PD/MIT-0 | Complete audio stack in one C file. Cross-platform device abstraction | KB only |
 | python-pillow/Pillow | HPND | Standard Python image library. C extensions for performance | Full harness |
+| opendataloader-project/opendataloader-pdf | MPL-2.0 | PDF → LLM-ready markdown/JSON. Rule-based XY-Cut++, table detection, heading hierarchy, AI safety filters. Local, no GPU. **Tool dependency**: used for scientific paper conversion and training data extraction | Full harness |
 
 ---
 
@@ -447,7 +448,7 @@ Cross-cutting: the agent needs to understand concurrent code.
 
 The agent learns math by seeing it used in context, not from abstract textbooks. A regression in an economics model, differential equations in a physics simulation, optimization in portfolio allocation. The retrieval pipeline + knowledge base handle the rest — these repos are seeds.
 
-**Paper conversion pipeline:** `C:\Users\User\Documents\GitHub\claude-knowledge-repo` — PDF → markdown. Use for all scientific papers listed below.
+**Paper conversion tool:** `opendataloader-pdf` (MPL-2.0) — rule-based PDF → LLM-ready markdown/JSON. Local, no GPU, deterministic. Table detection, heading hierarchy, AI safety filters. Use for all scientific papers and PDF documentation below. Also applicable for extracting training data from any PDF-format sources.
 
 ---
 
