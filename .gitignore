@@ -8,3 +8,6 @@ __pycache__/
 .scratch_symbols/
 .scratch*/
 .claude/settings.local.json
+.clean_room/
+.ck/
+knowledge_base/
