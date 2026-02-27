@@ -91,10 +91,11 @@ class TestResolveLibrarySources:
         lib_b.mkdir()
 
         config = {
+            "library_sources": [],
             "library_paths": [
                 {"name": "alpha", "path": str(lib_a)},
                 {"name": "beta", "path": str(lib_b)},
-            ]
+            ],
         }
         result = resolve_library_sources(tmp_path, config)
 
@@ -114,7 +115,7 @@ class TestResolveLibrarySources:
 
         with patch("clean_room_agent.indexer.library_scanner.importlib.util.find_spec") as mock_find:
             mock_find.return_value = mock_spec
-            result = resolve_library_sources(tmp_path, {"library_sources": ["auto"]})
+            result = resolve_library_sources(tmp_path, {"library_sources": ["auto"], "library_paths": []})
 
         # find_spec was called for 'requests'
         request_calls = [c for c in mock_find.call_args_list if c[0][0] == "requests"]
@@ -131,7 +132,7 @@ class TestResolveLibrarySources:
         lib_dir = tmp_path / "mypackage"
         lib_dir.mkdir()
 
-        config = {"library_paths": [str(lib_dir)]}
+        config = {"library_sources": [], "library_paths": [str(lib_dir)]}
         result = resolve_library_sources(tmp_path, config)
 
         assert len(result) == 1
@@ -140,7 +141,7 @@ class TestResolveLibrarySources:
 
     def test_resolve_nonexistent_path_skipped(self, tmp_path):
         """Nonexistent library_paths are skipped with a warning."""
-        config = {"library_paths": [str(tmp_path / "does_not_exist")]}
+        config = {"library_sources": [], "library_paths": [str(tmp_path / "does_not_exist")]}
         result = resolve_library_sources(tmp_path, config)
         assert len(result) == 0
 
@@ -149,21 +150,21 @@ class TestLibraryConfigValidation:
     """A13: library_paths entries with missing/empty name or path raise ValueError."""
 
     def test_missing_name_raises(self, tmp_path):
-        config = {"library_paths": [{"path": str(tmp_path)}]}
+        config = {"library_sources": [], "library_paths": [{"path": str(tmp_path)}]}
         with pytest.raises(ValueError, match="missing or empty 'name'"):
             resolve_library_sources(tmp_path, config)
 
     def test_empty_name_raises(self, tmp_path):
-        config = {"library_paths": [{"name": "", "path": str(tmp_path)}]}
+        config = {"library_sources": [], "library_paths": [{"name": "", "path": str(tmp_path)}]}
         with pytest.raises(ValueError, match="missing or empty 'name'"):
             resolve_library_sources(tmp_path, config)
 
     def test_missing_path_raises(self, tmp_path):
-        config = {"library_paths": [{"name": "mylib"}]}
+        config = {"library_sources": [], "library_paths": [{"name": "mylib"}]}
         with pytest.raises(ValueError, match="missing or empty 'path'"):
             resolve_library_sources(tmp_path, config)
 
     def test_empty_path_raises(self, tmp_path):
-        config = {"library_paths": [{"name": "mylib", "path": ""}]}
+        config = {"library_sources": [], "library_paths": [{"name": "mylib", "path": ""}]}
         with pytest.raises(ValueError, match="missing or empty 'path'"):
             resolve_library_sources(tmp_path, config)

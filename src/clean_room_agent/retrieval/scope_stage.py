@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
+from clean_room_agent.retrieval.batch_judgment import run_batched_judgment, run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
@@ -42,6 +42,11 @@ SCOPE_JUDGMENT_SYSTEM = (
     "Respond with ONLY the JSON array, no markdown fencing or extra text."
 )
 
+SCOPE_BINARY_SYSTEM = (
+    "You are a code relevance classifier. Given a task description and one candidate file, "
+    "answer: is this file relevant to the task? Respond with ONLY \"yes\" or \"no\"."
+)
+
 
 def expand_scope(
     task: TaskQuery,
@@ -75,7 +80,7 @@ def expand_scope(
         return None
 
     # Tier 0: plan files
-    for fid in (plan_file_ids or []):
+    for fid in (plan_file_ids or ()):
         info = _file_lookup(fid)
         if info:
             _add(info["id"], info["path"], info["language"], 0, "plan artifact")
@@ -179,10 +184,14 @@ def judge_scope(
     task: TaskQuery,
     llm: LLMClient,
     kb: KnowledgeBase | None = None,
+    *,
+    binary: bool = False,
 ) -> list[ScopedFile]:
     """LLM judgment on scope candidates. Seeds (tier 0/1) always relevant.
 
-    Batches non-seed candidates to fit within the model's context window.
+    When binary=False (default), batches non-seed candidates for graded judgment.
+    When binary=True, each candidate gets an independent yes/no LLM call,
+    suitable for small classifier models (0.6B).
     """
     if not candidates:
         return candidates
@@ -220,34 +229,69 @@ def judge_scope(
                 line += f" [{', '.join(parts)}]"
         return line
 
-    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nCandidate files:\n"
+    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\n"
 
-    verdict_map, omitted = run_batched_judgment(
-        non_seeds,
-        system_prompt=SCOPE_JUDGMENT_SYSTEM,
-        task_header=task_header,
-        llm=llm,
-        tokens_per_item=_TOKENS_PER_SCOPE_CANDIDATE,
-        format_item=_format,
-        extract_key=lambda j: j.get("path"),
-        stage_name="scope",
-        item_key=lambda sf: sf.path,
-        default_action="irrelevant",
-    )
+    if binary:
+        # Binary mode: one LLM call per candidate
+        def _format_binary(sf: ScopedFile) -> str:
+            line = f"File: {sf.path} (language={sf.language}, tier={sf.tier})"
+            meta = metadata_map.get(sf.file_id)
+            if meta:
+                parts = []
+                if meta.purpose:
+                    parts.append(f"purpose={meta.purpose}")
+                if meta.domain:
+                    parts.append(f"domain={meta.domain}")
+                if meta.concepts:
+                    parts.append(f"concepts={meta.concepts}")
+                if parts:
+                    line += f"\n{', '.join(parts)}"
+            return line
 
-    # Apply judgments to non-seeds
-    valid_verdicts = ("relevant", "irrelevant")
-    for sf in non_seeds:
-        if sf.path in verdict_map:
-            v = verdict_map[sf.path]
-            verdict = v.get("verdict", "irrelevant")
-            if verdict not in valid_verdicts:
-                logger.warning("R2: invalid verdict %r for %s — defaulting to irrelevant", verdict, sf.path)
-                verdict = "irrelevant"
-            sf.relevance = verdict
-            sf.reason = v.get("reason", sf.reason)
-        else:
-            sf.relevance = "irrelevant"
+        verdict_map, omitted = run_binary_judgment(
+            non_seeds,
+            system_prompt=SCOPE_BINARY_SYSTEM,
+            task_context=task_header,
+            llm=llm,
+            format_item=_format_binary,
+            stage_name="scope",
+            item_key=lambda sf: sf.path,
+            default_action="irrelevant",
+        )
+
+        for sf in non_seeds:
+            if sf.path in verdict_map:
+                sf.relevance = "relevant" if verdict_map[sf.path] else "irrelevant"
+            else:
+                sf.relevance = "irrelevant"
+    else:
+        # Batched mode: standard graded judgment
+        verdict_map, omitted = run_batched_judgment(
+            non_seeds,
+            system_prompt=SCOPE_JUDGMENT_SYSTEM,
+            task_header=task_header + "Candidate files:\n",
+            llm=llm,
+            tokens_per_item=_TOKENS_PER_SCOPE_CANDIDATE,
+            format_item=_format,
+            extract_key=lambda j: j.get("path"),
+            stage_name="scope",
+            item_key=lambda sf: sf.path,
+            default_action="irrelevant",
+        )
+
+        # Apply judgments to non-seeds
+        valid_verdicts = ("relevant", "irrelevant")
+        for sf in non_seeds:
+            if sf.path in verdict_map:
+                v = verdict_map[sf.path]
+                verdict = v["verdict"]
+                if verdict not in valid_verdicts:
+                    logger.warning("R2: invalid verdict %r for %s — defaulting to irrelevant", verdict, sf.path)
+                    verdict = "irrelevant"
+                sf.relevance = verdict
+                sf.reason = v["reason"]
+            else:
+                sf.relevance = "irrelevant"
 
     return candidates
 
@@ -263,6 +307,10 @@ class ScopeStage:
     @property
     def name(self) -> str:
         return "scope"
+
+    @property
+    def preferred_role(self) -> str:
+        return "classifier"
 
     def run(
         self,
@@ -283,7 +331,10 @@ class ScopeStage:
             max_metadata=resolve_retrieval_param(rp, "max_metadata"),
             max_keywords=resolve_retrieval_param(rp, "max_keywords"),
         )
-        judged = judge_scope(candidates, task, llm, kb=kb)
+
+        # Binary mode when pipeline resolved this stage to the classifier role
+        binary = bool(context.retrieval_params.get("binary_judgment"))
+        judged = judge_scope(candidates, task, llm, kb=kb, binary=binary)
 
         context.scoped_files = judged
         context.included_file_ids = {

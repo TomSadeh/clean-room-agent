@@ -26,7 +26,12 @@ def _make_config():
             "classifier": "qwen3:0.6b",
             "base_url": "http://localhost:11434",
             "context_window": 32768,
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         },
+        "retrieval": {},
+        "testing": {"test_command": "pytest tests/"},
+        "environment": {"coding_style": "development"},
     }
 
 

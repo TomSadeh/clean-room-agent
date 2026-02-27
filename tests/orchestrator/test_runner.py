@@ -66,14 +66,13 @@ def _make_part_plan():
     )
 
 
-def _make_step_result(success=True):
-    if success:
-        return StepResult(
-            success=True,
-            edits=[PatchEdit(file_path="a.py", search="old", replacement="new")],
-            raw_response="<edit>...</edit>",
-        )
-    return StepResult(success=False, error_info="Parse failed", raw_response="garbage")
+def _make_step_result():
+    # execute_implement always returns success=True or raises ValueError
+    return StepResult(
+        success=True,
+        edits=[PatchEdit(file_path="a.py", search="old", replacement="new")],
+        raw_response="<edit>...</edit>",
+    )
 
 
 def _make_adjustment(revised_steps=None):
@@ -100,6 +99,8 @@ def _make_config():
             "reasoning": "qwen3:4b",
             "base_url": "http://localhost:11434",
             "context_window": 32768,
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         },
         "budget": {"reserved_tokens": 4096},
         "stages": {"default": "scope,precision"},
@@ -110,6 +111,9 @@ def _make_config():
             "max_cumulative_diff_chars": 50000,
             "git_workflow": False,
             "documentation_pass": False,
+            "scaffold_enabled": False,
+            "scaffold_compiler": "gcc",
+            "scaffold_compiler_flags": "-c -fsyntax-only -Wall",
         },
     }
 
@@ -146,8 +150,8 @@ class TestRunOrchestrator:
             _make_test_plan(),
         ]
 
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -235,8 +239,8 @@ class TestRunOrchestrator:
             _make_adjustment(),
             _make_test_plan(),
         ]
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         code_patch = PatchResult(success=True, files_modified=["a.py"])
         test_patch = PatchResult(success=True, files_modified=["tests/test_a.py"])
@@ -310,8 +314,8 @@ class TestRunOrchestrator:
             _make_test_plan(),
         ]
 
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -402,8 +406,8 @@ class TestRunOrchestrator:
             test_plan,
         ]
 
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -451,11 +455,11 @@ class TestRunOrchestrator:
             _make_test_plan(),
         ]
 
-        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
         # Test impl fails on first try (raises ValueError), succeeds on second (tests retry)
         mock_exec_test_impl.side_effect = [
             ValueError("No valid <edit> blocks found"),
-            _make_step_result(True),
+            _make_step_result(),
         ]
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
@@ -487,7 +491,7 @@ class TestRunSinglePass:
         mock_get_conn.return_value = mock_raw_conn
 
         mock_pipeline.return_value = _make_context()
-        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -523,7 +527,7 @@ class TestRunSinglePass:
         mock_get_conn.return_value = mock_raw_conn
 
         mock_pipeline.return_value = _make_context()
-        mock_exec_impl.return_value = _make_step_result(False)
+        mock_exec_impl.side_effect = ValueError("Parse failed")
 
         plan = PlanArtifact(
             task_summary="Fix bug",
@@ -554,7 +558,7 @@ class TestRunSinglePass:
         mock_get_conn.return_value = mock_raw_conn
 
         mock_pipeline.return_value = _make_context()
-        mock_exec_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         # First validation fails, second succeeds
@@ -632,6 +636,8 @@ class TestResolveBudgetMissingConfig:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {},  # reserved_tokens missing
         }
@@ -647,6 +653,8 @@ class TestResolveBudgetMissingConfig:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             # No budget section at all
         }
@@ -662,6 +670,8 @@ class TestResolveBudgetMissingConfig:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {"reserved_tokens": 4096},
         }
@@ -712,6 +722,8 @@ class TestOrchestratorMissingMaxRetries:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {"reserved_tokens": 4096},
             "stages": {"default": "scope,precision"},
@@ -741,6 +753,8 @@ class TestOrchestratorMissingMaxRetries:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {"reserved_tokens": 4096},
             "stages": {"default": "scope,precision"},
@@ -1148,8 +1162,8 @@ class TestDocumentationPass:
             _make_test_plan(),
         ]
 
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -1199,8 +1213,8 @@ class TestDocumentationPass:
             _make_adjustment(),
             _make_test_plan(),
         ]
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -1283,8 +1297,8 @@ class TestDocumentationPass:
             _make_adjustment(),
             _make_test_plan(),
         ]
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         code_patch = PatchResult(success=True, files_modified=["a.py"])
         doc_patch = PatchResult(success=True, files_modified=["a.py"])
@@ -1340,8 +1354,8 @@ class TestDocumentationPass:
             _make_adjustment(),
             _make_test_plan(),
         ]
-        mock_exec_impl.return_value = _make_step_result(True)
-        mock_exec_test_impl.return_value = _make_step_result(True)
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
         from clean_room_agent.execute.dataclasses import PatchResult
         mock_apply.return_value = PatchResult(success=True, files_modified=["a.py"])
         mock_validate.return_value = _make_validation(True)
@@ -1362,6 +1376,102 @@ class TestDocumentationPass:
         # The pass_results should contain a "documentation" entry
         pass_types = [pr.pass_type for pr in result.pass_results]
         assert "documentation" in pass_types
+
+
+class TestPatchValidationFailure:
+    """B3-B4: apply_edits returning success=False triggers retry via RuntimeError."""
+
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_code_step_patch_validation_failure_retries(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
+    ):
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
+        from clean_room_agent.execute.dataclasses import PatchResult
+        # apply_edits returns validation failure
+        mock_apply.return_value = PatchResult(success=False, error_info="bad edit")
+        mock_validate.return_value = _make_validation(True)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_config())
+
+        # Patch failure should cause the step to fail (retries exhausted)
+        assert result.status == "failed"
+
+    @patch("clean_room_agent.orchestrator.runner.execute_test_implement")
+    @patch("clean_room_agent.orchestrator.runner.run_validation")
+    @patch("clean_room_agent.orchestrator.runner.apply_edits")
+    @patch("clean_room_agent.orchestrator.runner.execute_implement")
+    @patch("clean_room_agent.orchestrator.runner.execute_plan")
+    @patch("clean_room_agent.orchestrator.runner.run_pipeline")
+    @patch("clean_room_agent.orchestrator.runner.get_connection")
+    def test_test_step_patch_validation_failure_retries(
+        self, mock_get_conn, mock_pipeline, mock_exec_plan,
+        mock_exec_impl, mock_apply, mock_validate,
+        mock_exec_test_impl, tmp_path,
+    ):
+        mock_raw_conn = MagicMock()
+        mock_raw_conn.execute.return_value.lastrowid = 1
+        mock_raw_conn.execute.return_value.fetchone.return_value = {"id": 1}
+        mock_session_conn = MagicMock()
+        mock_get_conn.side_effect = lambda role, **kw: (
+            mock_raw_conn if role == "raw" else mock_session_conn
+        )
+
+        mock_pipeline.return_value = _make_context()
+        mock_exec_plan.side_effect = [
+            _make_meta_plan(),
+            _make_part_plan(),
+            _make_adjustment(),
+            _make_test_plan(),
+        ]
+
+        mock_exec_impl.return_value = _make_step_result()
+        mock_exec_test_impl.return_value = _make_step_result()
+        from clean_room_agent.execute.dataclasses import PatchResult
+        # Code patches succeed, test patches always fail (both retry attempts)
+        mock_apply.side_effect = [
+            PatchResult(success=True, files_modified=["a.py"]),
+            PatchResult(success=False, error_info="bad test edit"),
+            PatchResult(success=False, error_info="bad test edit"),
+        ]
+        mock_validate.return_value = _make_validation(True)
+
+        (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
+
+        from clean_room_agent.orchestrator.runner import run_orchestrator
+        result = run_orchestrator("Test task", tmp_path, _make_config())
+
+        # Test patch failure exhausts retries — code succeeded but tests failed
+        assert result.status in ("partial", "failed")
+        # Verify apply_edits was called multiple times (retry happened)
+        assert mock_apply.call_count >= 2
 
 
 class TestArchiveSessionSeparation:
@@ -1433,33 +1543,29 @@ class TestGitCleanupPropagation:
         with pytest.raises(RuntimeError, match="merge conflict"):
             _git_cleanup(git, status="complete")
 
-    def test_branch_delete_failure_after_merge_logs_warning(self, caplog):
-        """A6: Branch delete failure after successful merge logs warning, doesn't raise."""
-        import logging
+    def test_branch_delete_failure_after_merge_propagates(self):
+        """A6: Branch delete failure after merge propagates (fail-fast, no swallowing)."""
         from clean_room_agent.orchestrator.runner import _git_cleanup
 
         git = MagicMock()
         git.merge_to_original.return_value = True
         git.delete_task_branch.side_effect = RuntimeError("branch in use")
 
-        with caplog.at_level(logging.WARNING, logger="clean_room_agent.orchestrator.runner"):
+        with pytest.raises(RuntimeError, match="branch in use"):
             _git_cleanup(git, status="complete")
 
-        assert any("Failed to delete task branch after merge" in r.message for r in caplog.records)
         git.merge_to_original.assert_called_once()
 
-    def test_branch_delete_failure_after_rollback_logs_warning(self, caplog):
-        """A6: Branch delete failure after rollback logs warning, doesn't raise."""
-        import logging
+    def test_branch_delete_failure_after_rollback_propagates(self):
+        """A6: Branch delete failure after rollback propagates (fail-fast, no swallowing)."""
         from clean_room_agent.orchestrator.runner import _git_cleanup
 
         git = MagicMock()
         git.delete_task_branch.side_effect = RuntimeError("branch locked")
 
-        with caplog.at_level(logging.WARNING, logger="clean_room_agent.orchestrator.runner"):
+        with pytest.raises(RuntimeError, match="branch locked"):
             _git_cleanup(git, status="failed")
 
-        assert any("Failed to delete task branch after rollback" in r.message for r in caplog.records)
         git.rollback_to_checkpoint.assert_called_once()
         git.clean_untracked.assert_called_once()
         git.return_to_original_branch.assert_called_once()

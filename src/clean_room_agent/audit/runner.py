@@ -109,7 +109,7 @@ def run_single_audit(
             config=config,
             trace_logger=trace_logger,
         )
-        stages_selected = list(package.metadata.get("stage_timings", {}).keys())
+        stages_selected = list(package.metadata["stage_timings"].keys())
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         logger.error("Pipeline failed for %s: %s", ref_task.id, error)

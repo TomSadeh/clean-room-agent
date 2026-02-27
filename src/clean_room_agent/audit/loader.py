@@ -48,24 +48,24 @@ def load_reference_task(path: Path) -> ReferenceTask:
     if not task_type:
         raise ValueError(f"{path}: missing task.task_type")
 
-    budget_range_raw = ctx.get("budget_range", [20, 80])
+    budget_range_raw = ctx["budget_range"]
     if not isinstance(budget_range_raw, list) or len(budget_range_raw) != 2:
         raise ValueError(
             f"{path}: budget_range must be a two-element array, got {budget_range_raw!r}"
         )
 
-    routing = data.get("routing_notes", {})
+    routing = data["routing_notes"]
 
     return ReferenceTask(
         id=task_id,
         description=description,
         task_type=task_type,
-        must_contain_files=ctx.get("must_contain_files", []),
-        should_contain_files=ctx.get("should_contain_files", []),
-        must_not_contain=ctx.get("must_not_contain", []),
-        must_contain_information=ctx.get("must_contain_information", []),
+        must_contain_files=ctx["must_contain_files"],
+        should_contain_files=ctx["should_contain_files"],
+        must_not_contain=ctx["must_not_contain"],
+        must_contain_information=ctx["must_contain_information"],
         budget_range=tuple(budget_range_raw),
-        routing_reasoning=routing.get("reasoning", ""),
+        routing_reasoning=routing["reasoning"],
     )
 
 

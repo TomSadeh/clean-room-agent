@@ -85,7 +85,6 @@ def index_knowledge_base(
     kb_path: Path,
     repo_path: Path,
     sources: list[str] | None = None,
-    continue_on_error: bool = False,
 ) -> KBIndexResult:
     """Index knowledge base reference sources into curated DB.
 
@@ -93,8 +92,6 @@ def index_knowledge_base(
         kb_path: Path to knowledge_base/c_references/ directory.
         repo_path: Repository root (for DB connection).
         sources: Optional list of source names to index. Defaults to all.
-        continue_on_error: If False (default), re-raise parse/insert errors with
-            context. If True, log with traceback and continue.
     """
     start = time.monotonic()
     result = KBIndexResult()
@@ -116,11 +113,7 @@ def index_knowledge_base(
         try:
             sections = _parse_source(name, config, source_dir)
         except Exception as e:
-            if not continue_on_error:
-                raise RuntimeError(f"Failed to parse source {name}: {e}") from e
-            logger.exception("Failed to parse source %s", name)
-            result.errors.append(f"Parse error for {name}: {e}")
-            continue
+            raise RuntimeError(f"Failed to parse source {name}: {e}") from e
 
         if not sections:
             logger.info("No sections parsed for source %s", name)
@@ -138,10 +131,7 @@ def index_knowledge_base(
                 name, n_sections, n_bridge,
             )
         except Exception as e:
-            if not continue_on_error:
-                raise RuntimeError(f"Failed to insert source {name}: {e}") from e
-            logger.exception("Failed to insert source %s", name)
-            result.errors.append(f"Insert error for {name}: {e}")
+            raise RuntimeError(f"Failed to insert source {name}: {e}") from e
 
     result.duration_ms = int((time.monotonic() - start) * 1000)
     return result

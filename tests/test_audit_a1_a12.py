@@ -197,7 +197,7 @@ class TestA11ConfigConstant:
 
     def test_require_environment_config_empty_returns_default(self):
         from clean_room_agent.config import _DEFAULT_CODING_STYLE, require_environment_config
-        result = require_environment_config({})
+        result = require_environment_config({"environment": {"coding_style": _DEFAULT_CODING_STYLE}})
         assert result["coding_style"] == _DEFAULT_CODING_STYLE
 
 
@@ -300,6 +300,8 @@ class TestA1EnrichmentLoggedClient:
             "reasoning": "qwen3:4b",
             "base_url": "http://localhost:11434",
             "context_window": 32768,
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         }
 
         # Create source file
@@ -338,6 +340,8 @@ class TestA1EnrichmentLoggedClient:
             "reasoning": "qwen3:4b",
             "base_url": "http://localhost:11434",
             "context_window": 32768,
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         }
 
         with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):

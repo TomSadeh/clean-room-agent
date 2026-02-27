@@ -91,6 +91,6 @@ def run_retrieve(
     click.echo(f"Retrieval complete (task_id={task_id})")
     click.echo(f"  Files:       {len(package.files)}")
     click.echo(f"  Tokens:      {package.total_token_estimate}/{budget.effective_budget}")
-    click.echo(f"  Timings:     {package.metadata.get('stage_timings', {})}")
+    click.echo(f"  Timings:     {package.metadata['stage_timings']}")
     for fc in package.files:
         click.echo(f"    {fc.path} [{fc.detail_level}] ~{fc.token_estimate} tokens")

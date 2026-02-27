@@ -16,6 +16,7 @@ class TestModelRouter:
             "overrides": {
                 "scope": "qwen3:4b-scope-v1",
             },
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         }
 
     def test_resolve_coding(self):
@@ -47,16 +48,16 @@ class TestModelRouter:
 
     def test_missing_base_url(self):
         with pytest.raises(RuntimeError, match="base_url"):
-            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "context_window": 32768})
+            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "context_window": 32768, "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0}})
 
     def test_missing_coding_model(self):
-        router = ModelRouter({"reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768})
+        router = ModelRouter({"reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768, "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0}})
         with pytest.raises(RuntimeError, match="coding"):
             router.resolve("coding")
 
     def test_resolve_reasoning_not_configured(self):
         """resolve('reasoning') when reasoning key is missing from config should raise RuntimeError."""
-        router = ModelRouter({"coding": "x", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768})
+        router = ModelRouter({"coding": "x", "provider": "ollama", "base_url": "http://localhost:11434", "context_window": 32768, "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0}})
         with pytest.raises(RuntimeError, match="reasoning"):
             router.resolve("reasoning")
 
@@ -65,6 +66,7 @@ class TestModelRouter:
         router = ModelRouter({
             "coding": "x", "reasoning": "y", "provider": "ollama",
             "base_url": "http://localhost:11434", "context_window": 32768,
+            "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         })
         assert router.resolve("coding").max_tokens == 4096
         assert router.resolve("reasoning").max_tokens == 4096
@@ -75,17 +77,18 @@ class TestModelRouter:
             "coding": "x", "reasoning": "y", "provider": "ollama",
             "base_url": "http://localhost:11434",
             "context_window": {"coding": 16384, "reasoning": 32768},
+            "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         })
         assert router.resolve("coding").max_tokens == 2048
         assert router.resolve("reasoning").max_tokens == 4096
 
     def test_missing_context_window(self):
         with pytest.raises(RuntimeError, match="context_window"):
-            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434"})
+            ModelRouter({"coding": "x", "reasoning": "y", "provider": "ollama", "base_url": "http://localhost:11434", "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0}})
 
     def test_missing_provider(self):
         with pytest.raises(RuntimeError, match="provider"):
-            ModelRouter({"coding": "x", "reasoning": "y", "base_url": "http://localhost:11434", "context_window": 32768})
+            ModelRouter({"coding": "x", "reasoning": "y", "base_url": "http://localhost:11434", "context_window": 32768, "overrides": {}, "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0}})
 
     def test_provider_passthrough(self):
         router = ModelRouter(
@@ -95,6 +98,8 @@ class TestModelRouter:
                 "base_url": "http://localhost:11434",
                 "provider": "openai_compat",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             }
         )
         mc = router.resolve("reasoning")
@@ -103,7 +108,7 @@ class TestModelRouter:
     def test_custom_temperature(self):
         config = {
             **self.config,
-            "temperature": {"coding": 0.2, "reasoning": 0.7},
+            "temperature": {"coding": 0.2, "reasoning": 0.7, "classifier": 0.0},
         }
         router = ModelRouter(config)
         mc_coding = router.resolve("coding")
@@ -119,7 +124,7 @@ class TestModelRouter:
     def test_override_inherits_role_temperature(self):
         config = {
             **self.config,
-            "temperature": {"coding": 0.0, "reasoning": 0.5},
+            "temperature": {"coding": 0.0, "reasoning": 0.5, "classifier": 0.0},
         }
         router = ModelRouter(config)
         mc = router.resolve("reasoning", stage_name="scope")
@@ -174,6 +179,8 @@ class TestContextWindowPerRole:
             "reasoning": "qwen3:4b",
             "provider": "ollama",
             "base_url": "http://localhost:11434",
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
         }
 
     def test_int_applies_to_both_roles(self):

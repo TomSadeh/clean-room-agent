@@ -102,8 +102,8 @@ def assemble_context(
             content=rf["rendered"],
             token_estimate=rf["tokens"],
             detail_level=rf["detail"],
-            included_symbols=file_symbols.get(rf["file_id"], []),
-            metadata_summary=rf.get("metadata_summary", ""),
+            included_symbols=file_symbols[rf["file_id"]],
+            metadata_summary=rf["metadata_summary"],
         ))
 
     for fc in file_contents:
@@ -142,7 +142,7 @@ def _classify_file_inclusions(
         if cs.detail_level == "excluded":
             continue
         current = file_detail.get(cs.file_id)
-        if current is None or _DETAIL_PRIORITY.get(cs.detail_level, 99) < _DETAIL_PRIORITY.get(current, 99):
+        if current is None or _DETAIL_PRIORITY[cs.detail_level] < _DETAIL_PRIORITY[current]:
             file_detail[cs.file_id] = cs.detail_level
         file_symbols.setdefault(cs.file_id, []).append(cs.name)
 
@@ -167,7 +167,7 @@ def _classify_file_inclusions(
     sorted_fids = sorted(
         file_info.keys(),
         key=lambda fid: (
-            _DETAIL_PRIORITY.get(file_detail[fid], 99),
+            _DETAIL_PRIORITY[file_detail[fid]],
             file_info[fid]["tier"],
         ),
     )
@@ -208,13 +208,6 @@ def _read_and_render_files(
 
         # Knowledge base files: read content from ref_sections table, not disk
         source = _read_file_source(fid, info, detail, repo_path, kb)
-        if source is None:
-            decisions.append({
-                "file_id": fid, "included": False,
-                "reason": f"read_error: {detail} file unreadable",
-            })
-            continue
-
         rendered = _render_at_level(source, detail, fid, context, kb=kb)
         content_tokens = estimate_tokens(rendered)
         # Build metadata summary from enrichment data (before framing estimate)
@@ -348,6 +341,15 @@ def _enforce_group_integrity(
     return filtered, drops
 
 
+def _require_logged_client(llm, caller: str) -> None:
+    """Enforce LoggedLLMClient at runtime so LLM I/O logging cannot be forgotten."""
+    if not hasattr(llm, "flush"):
+        raise TypeError(
+            f"{caller} requires a logging-capable LLM client (with flush()), "
+            f"got {type(llm).__name__}"
+        )
+
+
 def _refilter_files(
     rendered_files: list[dict],
     budget_limit: int,
@@ -358,6 +360,8 @@ def _refilter_files(
 
     Returns set of paths to keep. Files keep their original detail levels.
     """
+    _require_logged_client(llm, "_refilter_files")
+
     file_lines = []
     for rf in rendered_files:
         file_lines.append(
@@ -426,12 +430,12 @@ def _read_file_source(
     detail: str,
     repo_path: Path,
     kb: "KnowledgeBase | None",
-) -> str | None:
+) -> str:
     """Read file content from disk or knowledge base DB.
 
     Knowledge base files (file_source='knowledge_base', path starts with 'kb/')
     are read from ref_sections via the bridge. All other files are read from disk.
-    Returns None if the file cannot be read (with appropriate logging/raising).
+    Raises RuntimeError if the file cannot be read.
     """
     path = info["path"]
 
@@ -440,25 +444,20 @@ def _read_file_source(
         content = kb.get_ref_section_content(fid)
         if content is not None:
             return content
-        logger.warning("KB section not found for file_id=%d path=%s", fid, path)
-        if detail == "primary":
-            raise RuntimeError(
-                f"R1: cannot read primary KB file '{path}': section not found in ref_sections."
-            )
-        return None
+        raise RuntimeError(
+            f"R1: cannot read KB file '{path}' (detail={detail}): "
+            f"section not found in ref_sections."
+        )
 
     # Regular files: read from disk
     abs_path = repo_path / path
     try:
         return abs_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, IOError) as e:
-        if detail == "primary":
-            raise RuntimeError(
-                f"R1: cannot read primary file '{path}': {e}. "
-                f"Primary files must be readable — fix the file or re-run retrieval."
-            ) from e
-        logger.warning("Cannot read %s: %s — skipping (detail=%s)", path, e, detail)
-        return None
+        raise RuntimeError(
+            f"R1: cannot read file '{path}' (detail={detail}): {e}. "
+            f"File was classified by precision stage but cannot be read."
+        ) from e
 
 
 def _render_at_level(
@@ -551,7 +550,7 @@ def _extract_supporting(
             parts.append("...")
 
         # R4: use docstring end if available, otherwise fall back to full symbol
-        doc_lines = docstring_lines_by_symbol.get(cs.symbol_id, 0)
+        doc_lines = docstring_lines_by_symbol.get(cs.symbol_id, 0)  # 0 = no docstring found
         if doc_lines > 0:
             # signature line(s) + docstring
             sig_end = min(cs.start_line + 1 + doc_lines, cs.end_line, len(lines))

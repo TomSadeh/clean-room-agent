@@ -74,7 +74,7 @@ def extract_precision_symbols(
                 "end_line": sym.end_line,
                 "signature": sig,
                 "connections": [],
-                "file_source": file_source_cache.get(fid, "project"),
+                "file_source": file_source_cache[fid],
             }
 
             if language == "python":
@@ -136,7 +136,7 @@ def classify_symbols(
             end_line=c["end_line"],
             detail_level="type_context",
             reason="library symbol (auto-classified)",
-            signature=c.get("signature", ""),
+            signature=c["signature"],
             file_source="library",
         ))
 
@@ -179,7 +179,7 @@ def classify_symbols(
         llm=llm,
         tokens_per_item=_TOKENS_PER_SYMBOL,
         format_item=_format,
-        extract_key=lambda cl: (cl["name"], cl.get("file_path", ""), cl.get("start_line", 0)) if "name" in cl else None,
+        extract_key=lambda cl: (cl["name"], cl["file_path"], cl["start_line"]) if "name" in cl else None,
         stage_name="precision",
         item_key=lambda c: (c["name"], c["file_path"], c["start_line"]),
         default_action="excluded",
@@ -187,24 +187,26 @@ def classify_symbols(
 
     for c in project_candidates:
         key = (c["name"], c["file_path"], c["start_line"])
-        cl = class_map.get(key, {})
+        cl = class_map.get(key)
         if not cl:
             # R2: symbol omitted by LLM → default-deny → excluded
             detail_level = "excluded"
+            reason = "omitted by LLM (R2 default-deny)"
         elif "detail_level" not in cl:
             # LLM returned data but omitted required field — malformed response
             logger.warning("R2: precision LLM response missing 'detail_level' for %s — excluding (malformed)", c["name"])
             detail_level = "excluded"
+            reason = cl.get("reason", "malformed: missing detail_level")
         else:
             detail_level = cl["detail_level"]
             if detail_level not in ("primary", "supporting", "type_context", "excluded"):
                 logger.warning("R2: invalid detail_level %r for %s — excluding", detail_level, c["name"])
                 detail_level = "excluded"
-        if "signature" not in cl and cl:
-            logger.warning("Precision LLM response missing 'signature' for %s — using empty", c["name"])
-        if "reason" not in cl and cl:
-            logger.warning("Precision LLM response missing 'reason' for %s — using empty", c["name"])
-        reason = cl.get("reason", "")
+            if "signature" not in cl:
+                logger.warning("Precision LLM response missing 'signature' for %s — using empty", c["name"])
+            if "reason" not in cl:
+                logger.warning("Precision LLM response missing 'reason' for %s — using empty", c["name"])
+            reason = cl.get("reason", "")
 
         results.append(ClassifiedSymbol(
             symbol_id=c["symbol_id"],
@@ -215,7 +217,7 @@ def classify_symbols(
             end_line=c["end_line"],
             detail_level=detail_level,
             reason=reason,
-            signature=c.get("signature", ""),
+            signature=c["signature"],
             file_source=c["file_source"],
         ))
 

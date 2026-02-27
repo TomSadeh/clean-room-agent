@@ -238,7 +238,6 @@ def _index_git_history(
 
 def index_repository(
     repo_path: Path,
-    continue_on_error: bool = False,
     indexer_config: dict | None = None,
 ) -> IndexResult:
     """Index a repository into the curated and raw databases.
@@ -264,7 +263,7 @@ def index_repository(
     try:
         curated_conn = get_connection("curated", repo_path=repo_path)
         raw_conn = get_connection("raw", repo_path=repo_path)
-        return _do_index(repo_path, curated_conn, raw_conn, continue_on_error, start, indexer_config)
+        return _do_index(repo_path, curated_conn, raw_conn, start, indexer_config)
     finally:
         if raw_conn is not None:
             raw_conn.close()
@@ -276,7 +275,6 @@ def _do_index(
     repo_path: Path,
     curated_conn: sqlite3.Connection,
     raw_conn: sqlite3.Connection,
-    continue_on_error: bool,
     start: float,
     indexer_config: dict | None = None,
 ) -> IndexResult:
@@ -358,10 +356,6 @@ def _do_index(
             result = parser.parse(source, fi.path)
             all_parse_results[p] = result
         except Exception as e:
-            parse_errors += 1
-            if continue_on_error:
-                logger.exception("Parse error for %s", p)
-                continue
             raise RuntimeError(f"Failed to parse {p}: {e}") from e
 
         file_id = file_id_map[p]
@@ -394,7 +388,7 @@ def _do_index(
         files_scanned=len(scanned),
         files_changed=len(new_paths) + len(changed_paths),
         duration_ms=elapsed_ms,
-        status="partial" if parse_errors > 0 and continue_on_error else "success",
+        status="success",
     )
     raw_conn.commit()
 
@@ -484,9 +478,10 @@ def index_libraries(
                 try:
                     content = lf.absolute_path.read_bytes()
                 except (OSError, IOError) as e:
-                    logger.warning("Failed to read library file %s: %s", lf.absolute_path, e)
-                    total_read_errors += 1
-                    continue
+                    raise RuntimeError(
+                        f"Failed to read library file {lf.absolute_path}: {e}. "
+                        f"File was discovered during scan but cannot be read — check permissions."
+                    ) from e
                 content_hash = hashlib.sha256(content).hexdigest()
 
                 # Check if unchanged
@@ -517,9 +512,10 @@ def index_libraries(
                     parser = get_parser(language)
                     parsed = parser.parse(content, lf.relative_path)
                 except Exception as e:
-                    total_parse_errors += 1
-                    logger.warning("Parse error for library file %s: %s", lf.relative_path, e)
-                    continue
+                    raise RuntimeError(
+                        f"Parse error for library file {lf.relative_path}: {e}. "
+                        f"File was read successfully but parser failed."
+                    ) from e
 
                 if is_changed:
                     total_changed += 1

@@ -15,6 +15,15 @@ from clean_room_agent.token_estimation import validate_prompt_budget
 logger = logging.getLogger(__name__)
 
 
+def _require_logged_client(llm, caller: str) -> None:
+    """Enforce LoggedLLMClient at runtime so LLM I/O logging cannot be forgotten."""
+    if not hasattr(llm, "flush"):
+        raise TypeError(
+            f"{caller} requires a logging-capable LLM client (with flush()), "
+            f"got {type(llm).__name__}"
+        )
+
+
 def calculate_judgment_batch_size(
     system_prompt: str,
     task_header: str,
@@ -63,7 +72,7 @@ def run_batched_judgment(
         items: Candidates to judge.
         system_prompt: System prompt for the LLM.
         task_header: Task description header prepended to each batch prompt.
-        llm: LLM client with .config.context_window/.config.max_tokens.
+        llm: Logged LLM client with .config.context_window/.config.max_tokens.
         tokens_per_item: Estimated tokens per candidate line.
         format_item: Callback (item) -> str that formats one item as a prompt line.
         extract_key: Callback (json_dict) -> key that extracts a lookup key from
@@ -81,6 +90,8 @@ def run_batched_judgment(
     """
     if not items:
         return {}, set()
+
+    _require_logged_client(llm, "run_batched_judgment")
 
     batch_size = calculate_judgment_batch_size(
         system_prompt, task_header,
@@ -172,6 +183,8 @@ def run_binary_judgment(
     """
     if not items:
         return {}, set()
+
+    _require_logged_client(llm, "run_binary_judgment")
 
     verdict_map: dict[Hashable, bool] = {}
     omitted_keys: set[Hashable] = set()

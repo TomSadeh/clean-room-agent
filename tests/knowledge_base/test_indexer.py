@@ -243,26 +243,17 @@ class TestContinueOnError:
         with pytest.raises(RuntimeError, match="Failed to parse source knr2"):
             index_knowledge_base(kb_path, repo_path, sources=["knr2"])
 
-    def test_continue_on_error_collects_parse_errors(self, tmp_path, monkeypatch):
-        """continue_on_error=True logs and collects errors instead of raising."""
+    def test_continue_on_error_removed(self, tmp_path, monkeypatch):
+        """continue_on_error parameter no longer accepted (fail-fast only)."""
         repo_path = self._make_temp_db(tmp_path)
         kb_path = tmp_path / "kb"
         (kb_path / "knr2").mkdir(parents=True)
         (kb_path / "knr2" / "knr2_clean.txt").write_text("", encoding="utf-8")
 
-        def _bad_parse(name, config, source_dir):
-            raise ValueError("simulated parse failure")
-
-        monkeypatch.setattr(
-            "clean_room_agent.knowledge_base.indexer._parse_source", _bad_parse,
-        )
-
-        result = index_knowledge_base(
-            kb_path, repo_path, sources=["knr2"], continue_on_error=True,
-        )
-        assert result.sources_indexed == 0
-        assert len(result.errors) == 1
-        assert "Parse error for knr2" in result.errors[0]
+        with pytest.raises(TypeError):
+            index_knowledge_base(
+                kb_path, repo_path, sources=["knr2"], continue_on_error=True,
+            )
 
     def test_default_raises_on_insert_error(self, tmp_path, monkeypatch):
         """Default (continue_on_error=False) raises RuntimeError on insert failure."""
@@ -289,8 +280,8 @@ class TestContinueOnError:
         with pytest.raises(RuntimeError, match="Failed to insert source knr2"):
             index_knowledge_base(kb_path, repo_path, sources=["knr2"])
 
-    def test_continue_on_error_collects_insert_errors(self, tmp_path, monkeypatch):
-        """continue_on_error=True logs and collects insert errors."""
+    def test_insert_error_always_raises(self, tmp_path, monkeypatch):
+        """Insert errors always raise (no continue_on_error mode)."""
         repo_path = self._make_temp_db(tmp_path)
         kb_path = tmp_path / "kb"
         (kb_path / "knr2").mkdir(parents=True)
@@ -310,12 +301,8 @@ class TestContinueOnError:
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("simulated insert failure")),
         )
 
-        result = index_knowledge_base(
-            kb_path, repo_path, sources=["knr2"], continue_on_error=True,
-        )
-        assert result.sources_indexed == 0
-        assert len(result.errors) == 1
-        assert "Insert error for knr2" in result.errors[0]
+        with pytest.raises(RuntimeError, match="Failed to insert source knr2"):
+            index_knowledge_base(kb_path, repo_path, sources=["knr2"])
 
 
 @pytest.mark.skipif(

@@ -203,11 +203,11 @@ class TestAssembleContext:
                              kind="function", start_line=1, end_line=5,
                              detail_level="primary"),
         ]
-        with pytest.raises(RuntimeError, match="R1.*primary file"):
+        with pytest.raises(RuntimeError, match="R1.*cannot read file"):
             assemble_context(ctx, budget, source_files)
 
-    def test_supporting_file_read_failure_skipped(self, task, source_files):
-        """T8: supporting/type_context files that can't be read are skipped, not fatal."""
+    def test_supporting_file_read_failure_raises(self, task, source_files):
+        """T8/R1: supporting files that can't be read are also hard errors (fail-fast)."""
         budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
         ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
         ctx.scoped_files = [
@@ -225,9 +225,8 @@ class TestAssembleContext:
                              kind="function", start_line=1, end_line=5,
                              detail_level="supporting"),
         ]
-        pkg = assemble_context(ctx, budget, source_files)
-        assert len(pkg.files) == 1
-        assert pkg.files[0].path == "src/auth.py"
+        with pytest.raises(RuntimeError, match="R1.*cannot read file"):
+            assemble_context(ctx, budget, source_files)
 
 
 class TestAllSymbolsExcluded:
@@ -347,10 +346,10 @@ class TestR2DefaultDenyInRender:
 
 
 class TestReadFailureDecision:
-    """A14: unreadable supporting file produces a decision entry."""
+    """A14: unreadable files raise RuntimeError (fail-fast)."""
 
-    def test_supporting_read_failure_recorded_in_decisions(self, task, source_files):
-        """A14: unreadable supporting file produces read_error decision entry."""
+    def test_supporting_read_failure_raises(self, task, source_files):
+        """A14: unreadable supporting file raises RuntimeError (fail-fast, no silent skip)."""
         budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
         ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
         ctx.scoped_files = [
@@ -369,14 +368,8 @@ class TestReadFailureDecision:
                              detail_level="supporting"),
         ]
 
-        pkg = assemble_context(ctx, budget, source_files)
-        # File 1 included, file 99 unreadable
-        assert len(pkg.files) == 1
-        decisions = pkg.metadata["assembly_decisions"]
-        read_errors = [d for d in decisions if not d["included"] and "read_error" in d.get("reason", "")]
-        assert len(read_errors) == 1
-        assert read_errors[0]["file_id"] == 99
-        assert "supporting" in read_errors[0]["reason"]
+        with pytest.raises(RuntimeError, match="R1.*cannot read file"):
+            assemble_context(ctx, budget, source_files)
 
 
 class TestExtractSignatures:

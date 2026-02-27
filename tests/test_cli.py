@@ -64,7 +64,6 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["index", "--help"])
         assert result.exit_code == 0
-        assert "--continue-on-error" in result.output
         assert "--verbose" in result.output
 
     def test_enrich_help(self):
@@ -170,6 +169,8 @@ class TestPlanCLI:
         (clean_room / "config.toml").write_text(
             '[models]\nprovider = "ollama"\ncoding = "m"\nreasoning = "m"\n'
             'base_url = "http://x"\ncontext_window = 32768\n'
+            '[models.overrides]\n'
+            '[models.temperature]\ncoding = 0.0\nreasoning = 0.0\nclassifier = 0.0\n'
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["plan", "Add feature", "--repo", str(tmp_path)])
@@ -196,6 +197,8 @@ class TestSolveCLI:
         (clean_room / "config.toml").write_text(
             '[models]\nprovider = "ollama"\ncoding = "m"\nreasoning = "m"\nbase_url = "http://x"\n'
             'context_window = 32768\n'
+            '[models.overrides]\n'
+            '[models.temperature]\ncoding = 0.0\nreasoning = 0.0\nclassifier = 0.0\n'
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["solve", "Fix bug", "--repo", str(tmp_path)])
@@ -217,6 +220,8 @@ class TestResolveBudgetDirectly:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {"reserved_tokens": 4096},
         }
@@ -238,6 +243,8 @@ class TestResolveBudgetDirectly:
                 "reasoning": "m",
                 "base_url": "http://x",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {},
         }
@@ -253,6 +260,8 @@ class TestResolveBudgetDirectly:
                 "reasoning": "qwen3:4b",
                 "base_url": "http://localhost:11434",
                 "context_window": 32768,
+                "overrides": {},
+                "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
             },
             "budget": {"reserved_tokens": 2048},
         }

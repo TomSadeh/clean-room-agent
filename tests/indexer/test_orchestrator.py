@@ -169,14 +169,11 @@ class TestIndexRepository:
         finally:
             conn.close()
 
-    def test_continue_on_error(self, tmp_path):
-        """Verify continue_on_error logs errors and skips broken files."""
+    def test_index_no_continue_on_error(self, tmp_path):
+        """Verify index_repository no longer accepts continue_on_error (removed)."""
         _init_git(tmp_path)
-        # Create a valid file and a file with invalid syntax (but parseable by tree-sitter)
         (tmp_path / "good.py").write_text("def good(): pass\n")
-        (tmp_path / "also_good.py").write_text("x = 1\n")
         _git_commit(tmp_path, "initial")
 
-        result = index_repository(tmp_path, continue_on_error=True)
-        assert result.files_scanned == 2
-        assert result.parse_errors == 0  # tree-sitter is lenient
+        with pytest.raises(TypeError):
+            index_repository(tmp_path, continue_on_error=True)

@@ -54,11 +54,24 @@ Command definitions, argument conventions, required inputs, config file format, 
 ```toml
 [models]
 provider = "ollama"                          # Required
+# classifier = "qwen3:0.6b"                 # Optional: tier-0 binary classifier
 coding = "qwen2.5-coder:3b-instruct"        # Required
 reasoning = "qwen3:4b-instruct-2507"        # Required
 base_url = "http://localhost:11434"          # Required
-context_window = 32768                       # Required
+context_window = 32768                       # Required (int or per-role dict)
 # max_tokens = 4096  # defaults to context_window // 8 if omitted
+
+# Per-role context windows (when classifier has smaller window)
+# [models.context_window]
+# classifier = 8192
+# coding = 32768
+# reasoning = 32768
+
+# Per-role max_tokens
+# [models.max_tokens]
+# classifier = 16
+# coding = 4096
+# reasoning = 4096
 
 [models.overrides]
 # scope = "qwen3:4b-scope-v1"
@@ -71,6 +84,7 @@ context_window = 32768                       # Required
 # [models.temperature]
 # coding = 0.0
 # reasoning = 0.0
+# classifier = 0.0
 
 [budget]
 # context_window: defaults to [models].context_window if omitted
@@ -92,6 +106,9 @@ max_adjustment_rounds = 3                    # Required
 git_workflow = true                          # Required
 max_cumulative_diff_chars = 50000            # Required
 documentation_pass = true                    # Optional (default: true)
+# scaffold_enabled = false                   # Optional: C-only scaffold-then-implement
+# scaffold_compiler = "gcc"                  # Optional: compiler for scaffold validation
+# scaffold_compiler_flags = "-c -fsyntax-only -Wall"  # Optional: compiler flags
 
 # [retrieval]
 # max_deps = 30              # tier-2 dependency cap
@@ -152,12 +169,13 @@ Every config field must be classified into one of three tiers. The classificatio
 | Section | Field | Tier | Default / derivation | Notes |
 |---------|-------|------|---------------------|-------|
 | `[models]` | `provider` | Required | — | |
+| `[models]` | `classifier` | Optional | absent (binary judgment disabled) | When present, enables binary judgment in scope/similarity stages |
 | `[models]` | `coding` | Required | — | |
 | `[models]` | `reasoning` | Required | — | |
 | `[models]` | `base_url` | Required | — | |
-| `[models]` | `context_window` | Required | — | int or `{coding=N, reasoning=N}` |
-| `[models]` | `max_tokens` | Optional | `context_window // 8` | int or `{coding=N, reasoning=N}` |
-| `[models]` | `temperature` | Supplementary | `0.0` for both roles | |
+| `[models]` | `context_window` | Required | — | int or `{classifier=N, coding=N, reasoning=N}` |
+| `[models]` | `max_tokens` | Optional | `context_window // 8` | int or `{classifier=N, coding=N, reasoning=N}` |
+| `[models]` | `temperature` | Supplementary | `0.0` for all roles | |
 | `[models]` | `overrides` | Supplementary | `{}` | Per-stage model overrides |
 | `[budget]` | `reserved_tokens` | Required | — | |
 | `[stages]` | `default` | Required | — | Comma-separated stage names |
@@ -171,6 +189,9 @@ Every config field must be classified into one of three tiers. The classificatio
 | `[orchestrator]` | `max_cumulative_diff_chars` | Required | — | Positive integer |
 | `[orchestrator]` | `max_retries_per_test_step` | Optional | `max_retries_per_step` | Logged fallback |
 | `[orchestrator]` | `documentation_pass` | Optional | `true` | |
+| `[orchestrator]` | `scaffold_enabled` | Optional | `false` | C-only: scaffold-then-implement |
+| `[orchestrator]` | `scaffold_compiler` | Optional | `"gcc"` | Only read when scaffold_enabled=true; fail-fast if not on PATH |
+| `[orchestrator]` | `scaffold_compiler_flags` | Optional | `"-c -fsyntax-only -Wall"` | Compiler flags for scaffold validation |
 | `[retrieval]` | `max_deps` | Optional | `30` | Via `resolve_retrieval_param()` |
 | `[retrieval]` | `max_co_changes` | Optional | `20` | Via `resolve_retrieval_param()` |
 | `[retrieval]` | `max_metadata` | Optional | `20` | Via `resolve_retrieval_param()` |

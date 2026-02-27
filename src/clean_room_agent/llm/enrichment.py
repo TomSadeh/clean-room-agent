@@ -132,7 +132,7 @@ def enrich_repository(
                 raise
 
             # T78: validate required fields before storing
-            _REQUIRED_ENRICHMENT_FIELDS = ("purpose", "module", "domain", "concepts")
+            _REQUIRED_ENRICHMENT_FIELDS = ("purpose", "module", "domain", "concepts", "public_api_surface")
             for field in _REQUIRED_ENRICHMENT_FIELDS:
                 if field not in parsed:
                     raise ValueError(
@@ -153,7 +153,7 @@ def enrich_repository(
                 module=parsed["module"],
                 domain=parsed["domain"],
                 concepts=json.dumps(parsed["concepts"]),
-                public_api_surface=json.dumps(parsed.get("public_api_surface", [])),
+                public_api_surface=json.dumps(parsed["public_api_surface"]),
                 complexity_notes=parsed.get("complexity_notes"),
                 promoted=promote,
                 system_prompt=ENRICHMENT_SYSTEM,
@@ -176,7 +176,7 @@ def enrich_repository(
                     module=parsed["module"],
                     domain=parsed["domain"],
                     concepts=json.dumps(parsed["concepts"]),
-                    public_api_surface=json.dumps(parsed.get("public_api_surface", [])),
+                    public_api_surface=json.dumps(parsed["public_api_surface"]),
                     complexity_notes=parsed.get("complexity_notes"),
                 )
                 curated_conn.commit()

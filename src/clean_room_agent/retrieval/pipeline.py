@@ -181,7 +181,7 @@ def run_pipeline(
                     raw_task, task_id, mode, kb, repo_id, llm,
                     repo_file_tree=repo_file_tree,
                     environment_brief=brief_text,
-                    retrieval_params=config.get("retrieval", {}),
+                    retrieval_params=config["retrieval"],
                 )
                 elapsed = int((time.monotonic() - start) * 1000)
 
@@ -252,7 +252,7 @@ def run_pipeline(
         plan_file_ids = []
         if plan_artifact_path and plan_artifact_path.exists():
             plan_data = json.loads(plan_artifact_path.read_text(encoding="utf-8"))
-            affected_files = plan_data.get("affected_files", [])
+            affected_files = plan_data["affected_files"]
             for fp in affected_files:
                 fp_path = fp["path"] if isinstance(fp, dict) else fp
                 f = kb.get_file_by_path(repo_id, fp_path)
@@ -265,7 +265,7 @@ def run_pipeline(
             repo_id=repo_id,
             repo_path=str(repo_path),
         )
-        context.retrieval_params = config.get("retrieval", {})
+        context.retrieval_params = config["retrieval"]
         # Seed tier 0 files from plan
         for fid in plan_file_ids:
             f = kb.get_file_by_id(fid)
@@ -359,7 +359,7 @@ def run_pipeline(
                 )
 
         # Log assembly-stage file decisions to raw DB
-        for decision in package.metadata.get("assembly_decisions", []):
+        for decision in package.metadata["assembly_decisions"]:
             insert_retrieval_decision(
                 raw_conn, task_id, "assembly", decision["file_id"],
                 included=decision["included"],
@@ -494,9 +494,9 @@ def _resume_task_from_session(
         raise RuntimeError("No task_query in session DB for refinement re-entry.")
 
     # Merge refinement info
-    extra_files = list(data.get("mentioned_files", []))
-    extra_symbols = list(data.get("mentioned_symbols", []))
-    extra_keywords = list(data.get("keywords", []))
+    extra_files = list(data["mentioned_files"])
+    extra_symbols = list(data["mentioned_symbols"])
+    extra_keywords = list(data["keywords"])
 
     extra_files.extend(refinement.missing_files)
     extra_symbols.extend(refinement.missing_symbols)
@@ -513,9 +513,9 @@ def _resume_task_from_session(
         mentioned_files=extra_files,
         mentioned_symbols=extra_symbols,
         keywords=extra_keywords,
-        error_patterns=list(data.get("error_patterns", [])) + list(refinement.error_patterns),
+        error_patterns=list(data["error_patterns"]) + list(refinement.error_patterns),
         task_type=task_type,
-        intent_summary=data.get("intent_summary", ""),
-        seed_file_ids=data.get("seed_file_ids", []),
-        seed_symbol_ids=data.get("seed_symbol_ids", []),
+        intent_summary=data["intent_summary"],
+        seed_file_ids=data["seed_file_ids"],
+        seed_symbol_ids=data["seed_symbol_ids"],
     )

@@ -15,7 +15,10 @@ def _make_config():
             "coding": "qwen2.5-coder:3b",
             "reasoning": "qwen3:4b",
             "base_url": "http://localhost:11434",
-        }
+            "context_window": 32768,
+            "overrides": {},
+            "temperature": {"coding": 0.0, "reasoning": 0.0, "classifier": 0.0},
+        },
     }
 
 

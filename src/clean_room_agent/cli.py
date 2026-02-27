@@ -36,9 +36,8 @@ def init(repo_path):
 
 @cli.command()
 @click.argument("repo_path", default=".", type=click.Path(exists=True))
-@click.option("--continue-on-error", is_flag=True, help="Log parse errors and continue.")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
-def index(repo_path, continue_on_error, verbose):
+def index(repo_path, verbose):
     """Index a repository into the knowledge base."""
     import logging
     from pathlib import Path
@@ -55,7 +54,6 @@ def index(repo_path, continue_on_error, verbose):
     config = load_config(repo)
     result = index_repository(
         repo,
-        continue_on_error=continue_on_error,
         indexer_config=(config or {}).get("indexer"),
     )
 
@@ -133,9 +131,8 @@ def enrich(repo_path, promote):
 @click.argument("repo_path", default=".", type=click.Path(exists=True))
 @click.option("--kb-path", default=None, type=click.Path(exists=True), help="Path to knowledge_base/c_references.")
 @click.option("--sources", default=None, help="Comma-separated source names (e.g. knr2,cert_c).")
-@click.option("--continue-on-error", is_flag=True, help="Log parse/insert errors and continue.")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
-def index_kb(repo_path, kb_path, sources, continue_on_error, verbose):
+def index_kb(repo_path, kb_path, sources, verbose):
     """Index knowledge base reference material (C books, standards, API docs)."""
     import logging
     from pathlib import Path
@@ -164,7 +161,7 @@ def index_kb(repo_path, kb_path, sources, continue_on_error, verbose):
                 f"Available: {', '.join(sorted(SOURCE_REGISTRY))}"
             )
 
-    result = index_knowledge_base(kb, repo, sources=source_list, continue_on_error=continue_on_error)
+    result = index_knowledge_base(kb, repo, sources=source_list)
 
     click.echo(f"Knowledge base indexing complete")
     click.echo(f"  Sources indexed: {result.sources_indexed}")

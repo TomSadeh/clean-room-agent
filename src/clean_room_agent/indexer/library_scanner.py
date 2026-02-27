@@ -44,8 +44,8 @@ def resolve_library_sources(
     If config has explicit library_paths, uses those directly.
     """
     config = config or {}
-    sources = config.get("library_sources", ["auto"])
-    explicit_paths = config.get("library_paths", [])
+    sources = config["library_sources"]
+    explicit_paths = config["library_paths"]
 
     if explicit_paths:
         result = []
@@ -162,8 +162,10 @@ def scan_library(
             try:
                 size = root.stat().st_size
             except OSError as e:
-                logger.warning("Failed to stat library file %s: %s", root, e)
-                return result
+                raise RuntimeError(
+                    f"Failed to stat library file {root}: {e}. "
+                    f"File exists but stat failed — check permissions."
+                ) from e
             if size <= max_file_size:
                 result.append(LibraryFileInfo(
                     relative_path=f"{library.package_name}/{root.name}",
@@ -187,8 +189,10 @@ def scan_library(
         try:
             size = py_file.stat().st_size
         except OSError as e:
-            logger.warning("Failed to stat library file %s: %s", py_file, e)
-            continue
+            raise RuntimeError(
+                f"Failed to stat library file {py_file}: {e}. "
+                f"File discovered by rglob but stat failed — check permissions."
+            ) from e
         if size > max_file_size:
             continue
 

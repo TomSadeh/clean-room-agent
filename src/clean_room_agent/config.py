@@ -62,11 +62,24 @@ def create_default_config(repo_path: Path) -> Path:
     config_path.write_text(
         '[models]\n'
         'provider = "ollama"\n'
+        '# classifier = "qwen3:0.6b"  # Optional: tier-0 binary classifier (enables binary judgment)\n'
         'coding = "qwen2.5-coder:3b-instruct"\n'
         'reasoning = "qwen3:4b-instruct-2507"\n'
         'base_url = "http://localhost:11434"\n'
         'context_window = 32768\n'
         '# max_tokens = 4096  # defaults to context_window // 8 if omitted\n'
+        '\n'
+        '# Per-role context windows (useful when classifier has smaller window)\n'
+        '# [models.context_window]\n'
+        '# classifier = 8192\n'
+        '# coding = 32768\n'
+        '# reasoning = 32768\n'
+        '\n'
+        '# Per-role max_tokens\n'
+        '# [models.max_tokens]\n'
+        '# classifier = 16\n'
+        '# coding = 4096\n'
+        '# reasoning = 4096\n'
         '\n'
         '[models.overrides]\n'
         '# scope = "qwen3:4b-scope-v1"\n'
@@ -75,6 +88,7 @@ def create_default_config(repo_path: Path) -> Path:
         '# [models.temperature]\n'
         '# coding = 0.0\n'
         '# reasoning = 0.0\n'
+        '# classifier = 0.0\n'
         '\n'
         '[budget]\n'
         '# context_window: defaults to [models].context_window if omitted\n'
@@ -96,6 +110,9 @@ def create_default_config(repo_path: Path) -> Path:
         'git_workflow = true\n'
         'max_cumulative_diff_chars = 50000\n'
         'documentation_pass = true\n'
+        '# scaffold_enabled = false  # C-only: generate compilable scaffolds before implementing\n'
+        '# scaffold_compiler = "gcc"  # compiler for scaffold validation\n'
+        '# scaffold_compiler_flags = "-c -fsyntax-only -Wall"  # compiler flags for scaffold validation\n'
         '\n'
         '# [retrieval]\n'
         '# max_deps = 30\n'
@@ -131,8 +148,8 @@ def require_environment_config(config: dict | None) -> dict:
 
     if config is None:
         return {"coding_style": _DEFAULT_CODING_STYLE}
-    section = config.get("environment", {})
-    coding_style = section.get("coding_style", _DEFAULT_CODING_STYLE)
+    section = config["environment"]
+    coding_style = section["coding_style"]
     if coding_style not in CODING_STYLES:
         raise ValueError(
             f"Unknown coding_style {coding_style!r} in [environment] config. "

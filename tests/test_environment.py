@@ -100,7 +100,7 @@ class TestBuildEnvironmentBrief:
 
     def test_basic_build(self):
         kb = self._make_mock_kb({"python": 30, "javascript": 5}, file_count=35)
-        config = {"testing": {"test_command": "pytest tests/"}}
+        config = {"testing": {"test_command": "pytest tests/"}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
 
         assert brief.languages == {"python": 30, "javascript": 5}
@@ -112,31 +112,31 @@ class TestBuildEnvironmentBrief:
 
     def test_custom_coding_style(self):
         kb = self._make_mock_kb()
-        config = {"environment": {"coding_style": "maintenance"}}
+        config = {"testing": {"test_command": ""}, "environment": {"coding_style": "maintenance"}}
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.coding_style == "maintenance"
 
     def test_invalid_coding_style_raises(self):
         kb = self._make_mock_kb()
-        config = {"environment": {"coding_style": "yolo"}}
+        config = {"testing": {"test_command": ""}, "environment": {"coding_style": "yolo"}}
         with pytest.raises(ValueError, match="Unknown coding_style"):
             build_environment_brief(config, kb, repo_id=1)
 
     def test_no_environment_section_defaults(self):
         kb = self._make_mock_kb()
-        config = {}
+        config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.coding_style == "development"
 
     def test_no_testing_section_empty_framework(self):
         kb = self._make_mock_kb()
-        config = {}
+        config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.test_framework == ""
 
     def test_no_python_no_runtime(self):
         kb = self._make_mock_kb({"typescript": 20}, file_count=20)
-        config = {}
+        config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.runtime_version is None
 

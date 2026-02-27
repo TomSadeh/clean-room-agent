@@ -80,13 +80,13 @@ def build_environment_brief(
     overview = kb.get_repo_overview(repo_id)
 
     # Test framework from config — [testing] is Optional (repos may not have tests)
-    testing_config = config.get("testing", {})
-    test_command = testing_config.get("test_command", "")
+    testing_config = config["testing"]
+    test_command = testing_config["test_command"]
     test_framework = test_command.split()[0] if test_command.strip() else ""
 
     # Coding style from config — [environment] is Optional, _DEFAULT_CODING_STYLE if absent
-    env_config = config.get("environment", {})
-    coding_style = env_config.get("coding_style", _DEFAULT_CODING_STYLE)
+    env_config = config["environment"]
+    coding_style = env_config["coding_style"]
     if coding_style not in CODING_STYLES:
         raise ValueError(
             f"Unknown coding_style {coding_style!r}. "

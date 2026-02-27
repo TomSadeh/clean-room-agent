@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -259,20 +259,12 @@ def _git_cleanup(git, status: str) -> None:
         git.rollback_to_checkpoint()
         git.clean_untracked()
         git.return_to_original_branch()
-        # Branch delete is best-effort
-        try:
-            git.delete_task_branch()
-        except Exception as e:
-            logger.warning("Failed to delete task branch after rollback: %s", e)
+        git.delete_task_branch()
     else:
         # Success path: merge is critical, let propagate
         merged = git.merge_to_original()
         if merged:
-            # Branch delete is best-effort
-            try:
-                git.delete_task_branch()
-            except Exception as e:
-                logger.warning("Failed to delete task branch after merge: %s", e)
+            git.delete_task_branch()
 
 
 def _rollback_part(
@@ -459,12 +451,12 @@ def _init_orchestrator(
         )
 
     # documentation_pass: intentional default True — cosmetic feature, not behavioral
-    doc_pass_enabled = orch_config.get("documentation_pass", True)
+    doc_pass_enabled = orch_config["documentation_pass"]
 
     # scaffold: Optional, default false. When true and target is C, scaffold pass runs.
-    scaffold_enabled = orch_config.get("scaffold_enabled", False)
-    scaffold_compiler = orch_config.get("scaffold_compiler", "gcc")
-    scaffold_compiler_flags = orch_config.get("scaffold_compiler_flags", "-c -fsyntax-only -Wall")
+    scaffold_enabled = orch_config["scaffold_enabled"]
+    scaffold_compiler = orch_config["scaffold_compiler"]
+    scaffold_compiler_flags = orch_config["scaffold_compiler_flags"]
 
     # Fail-fast: if scaffold enabled but compiler not found, error at init time
     if scaffold_enabled:
@@ -615,7 +607,7 @@ def run_orchestrator(
     pass_results = ctx.pass_results
 
     step_final_outcomes: dict[str, bool] = {}  # step_key -> final success
-    adjustment_counts: dict[str, int] = {}  # part_id -> adjustment count
+    adjustment_counts: dict[str, int] = defaultdict(int)  # part_id -> adjustment count
     cumulative_diff = ""
     parts_completed = 0
     steps_completed = 0
@@ -874,7 +866,7 @@ def run_orchestrator(
                     pass_results.append(PassResult(
                         pass_type="function_implement",
                         task_run_id=None,
-                        success=step_final_outcomes.get(step_key, False),
+                        success=step_final_outcomes[step_key],
                         artifact=func_result,
                     ))
 
@@ -947,8 +939,10 @@ def run_orchestrator(
                             raw_conn.commit()
                             sequence_order += 1
 
-                            # APPLY EDITS (raises on failure — no success flag check needed)
+                            # APPLY EDITS — validation failures return success=False
                             patch_result = apply_edits(step_result.edits, repo_path)
+                            if not patch_result.success:
+                                raise RuntimeError(f"Patch validation failed: {patch_result.error_info}")
 
                             # Patch actually applied — update the DB record (T27)
                             update_run_attempt_patch(raw_conn, attempt_id, True)
@@ -994,7 +988,7 @@ def run_orchestrator(
                         all_code_steps_ok = False
 
                     # ADJUSTMENT PASS (after every code step)
-                    adj_count = adjustment_counts.get(part.id, 0)
+                    adj_count = adjustment_counts[part.id]
                     if adj_count >= max_adj_rounds:
                         logger.info(
                             "Adjustment limit reached for part %s (%d/%d)",
@@ -1245,8 +1239,10 @@ def run_orchestrator(
                             raw_conn.commit()
                             sequence_order += 1
 
-                            # Both raise on failure — no success flag checks.
+                            # Validation failures return success=False
                             test_patch_result = apply_edits(test_step_result.edits, repo_path)
+                            if not test_patch_result.success:
+                                raise RuntimeError(f"Test patch validation failed: {test_patch_result.error_info}")
 
                             update_run_attempt_patch(raw_conn, attempt_id, True)
                             raw_conn.commit()
@@ -1445,12 +1441,8 @@ def run_single_pass(
             raw_conn.commit()
             sequence_order += 1
 
-            if not step_result.success:
-                pass_results.append(PassResult(
-                    pass_type="step_implement", task_run_id=impl_task_run_id,
-                    success=False, artifact=step_result,
-                ))
-                continue
+            # execute_implement always returns success=True or raises ValueError
+            assert step_result.success, "execute_implement must return success=True or raise"
 
             patch_result = apply_edits(step_result.edits, repo_path)
             if not patch_result.success:

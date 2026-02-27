@@ -114,7 +114,7 @@ def resolve_seeds(
     Returns (file_ids, symbol_ids). Logs unresolved at DEBUG.
     """
     file_ids = []
-    for path in signals.get("files", []):
+    for path in signals["files"]:
         f = kb.get_file_by_path(repo_id, path)
         if f:
             file_ids.append(f.id)
@@ -122,7 +122,7 @@ def resolve_seeds(
             logger.debug("Unresolved file path: %s", path)
 
     symbol_ids = []
-    for name in signals.get("symbols", []):
+    for name in signals["symbols"]:
         matches = kb.search_symbols_by_name(repo_id, name)
         if matches:
             # R6: prefer exact matches; for LIKE results, order by name length
@@ -140,6 +140,15 @@ def resolve_seeds(
     return file_ids, symbol_ids
 
 
+def _require_logged_client(llm, caller: str) -> None:
+    """Enforce LoggedLLMClient at runtime so LLM I/O logging cannot be forgotten."""
+    if not hasattr(llm, "flush"):
+        raise TypeError(
+            f"{caller} requires a logging-capable LLM client (with flush()), "
+            f"got {type(llm).__name__}"
+        )
+
+
 def enrich_task_intent(
     raw_task: str,
     signals: dict,
@@ -153,6 +162,8 @@ def enrich_task_intent(
     bird's-eye-view prompt: the model sees the whole repo layout alongside the
     task, enabling strategic decisions about where to look.
     """
+    _require_logged_client(llm, "enrich_task_intent")
+
     signal_text = (
         f"Extracted files: {signals['files']}\n"
         f"Extracted symbols: {signals['symbols']}\n"

@@ -44,7 +44,13 @@ task_type = "feature"
 
 [context_requirements]
 must_contain_files = ["src/feature.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
 budget_range = [20, 80]
+
+[routing_notes]
+reasoning = ""
 """
 
 MINIMAL_TASK = """\
@@ -55,6 +61,13 @@ task_type = "refactor"
 
 [context_requirements]
 must_contain_files = ["src/a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
+budget_range = [20, 80]
+
+[routing_notes]
+reasoning = ""
 """
 
 
@@ -76,7 +89,7 @@ class TestLoadReferenceTask:
         _write_task(tasks_dir, "rt_003.toml", MINIMAL_TASK)
         rt = load_reference_task(tasks_dir / "rt_003.toml")
         assert rt.id == "RT-003"
-        assert rt.budget_range == (20, 80)  # default
+        assert rt.budget_range == (20, 80)
         assert rt.should_contain_files == []
         assert rt.must_not_contain == []
 

@@ -40,14 +40,14 @@ class TraceLogger:
                 "stage_name": stage_name,
                 "call_type": call_type,
                 "model": model,
-                "system": call.get("system") or "",
-                "prompt": call.get("prompt") or "",
-                "response": call.get("response") or "",
-                "thinking": call.get("thinking") or "",
-                "prompt_tokens": call.get("prompt_tokens"),
-                "completion_tokens": call.get("completion_tokens"),
-                "elapsed_ms": call.get("elapsed_ms"),
-                "error": call.get("error") or "",
+                "system": call["system"],
+                "prompt": call["prompt"],
+                "response": call["response"],
+                "thinking": call["thinking"],
+                "prompt_tokens": call["prompt_tokens"],
+                "completion_tokens": call["completion_tokens"],
+                "elapsed_ms": call["elapsed_ms"],
+                "error": call["error"],
             })
 
     def finalize(self) -> Path:
@@ -115,7 +115,7 @@ class TraceLogger:
         """Render one call as a markdown section."""
         stage = call["stage_name"]
         call_type = call["call_type"]
-        model = call.get("model", "")
+        model = call["model"]
         pt = call.get("prompt_tokens")
         ct = call.get("completion_tokens")
         latency = call.get("elapsed_ms")
@@ -131,7 +131,7 @@ class TraceLogger:
         ]
 
         # System prompt (collapsible)
-        system = call.get("system", "")
+        system = call["system"]
         if system:
             fence = _safe_fence(system)
             parts.append(
@@ -142,7 +142,7 @@ class TraceLogger:
             )
 
         # User prompt (collapsible)
-        prompt = call.get("prompt", "")
+        prompt = call["prompt"]
         if prompt:
             fence = _safe_fence(prompt)
             parts.append(
@@ -153,7 +153,7 @@ class TraceLogger:
             )
 
         # Thinking (collapsible, if present)
-        thinking = call.get("thinking", "")
+        thinking = call["thinking"]
         if thinking:
             fence = _safe_fence(thinking)
             parts.append(
@@ -164,7 +164,7 @@ class TraceLogger:
             )
 
         # Response (inline — primary audit target)
-        response = call.get("response", "")
+        response = call["response"]
         fence = _safe_fence(response)
         parts.append(
             f"### Response\n"
@@ -172,7 +172,7 @@ class TraceLogger:
         )
 
         # Error (if present)
-        error = call.get("error", "")
+        error = call["error"]
         if error:
             fence = _safe_fence(error)
             parts.append(f"### Error\n{fence}\n{error}\n{fence}\n")

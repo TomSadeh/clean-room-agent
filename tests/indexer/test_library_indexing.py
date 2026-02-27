@@ -83,6 +83,7 @@ class TestLibraryIndexing:
 
         # Then index libraries via explicit path config
         config = {
+            "library_sources": [],
             "library_paths": [
                 {"name": "fake_lib", "path": str(lib_dir)},
             ],
@@ -110,6 +111,7 @@ class TestLibraryIndexing:
         index_repository(repo_path)
 
         config = {
+            "library_sources": [],
             "library_paths": [
                 {"name": "fake_lib", "path": str(lib_dir)},
             ],
@@ -140,6 +142,7 @@ class TestLibraryIndexing:
         index_repository(repo_path)
 
         config = {
+            "library_sources": [],
             "library_paths": [
                 {"name": "fake_lib", "path": str(lib_dir)},
             ],
@@ -181,6 +184,7 @@ class TestLibraryIndexing:
         index_repository(repo_path)
 
         config = {
+            "library_sources": [],
             "library_paths": [
                 {"name": "fake_lib", "path": str(lib_dir)},
             ],
