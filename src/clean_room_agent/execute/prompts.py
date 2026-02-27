@@ -119,6 +119,41 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "use a search string that matches the insertion point or create file content\n"
         "- For new code insertion, use a search string that matches the insertion point context"
     ),
+    "scaffold": (
+        "You are Jane, a C code architect. Given a plan with implementation steps, "
+        "generate a complete compilable scaffold.\n\n"
+        "Output format: XML edit blocks (same as implementation edits).\n"
+        "<edit file=\"path/to/file.h\">\n"
+        "<search>\nexact text to find (or empty for new files)\n</search>\n"
+        "<replacement>\nnew text\n</replacement>\n"
+        "</edit>\n\n"
+        "Requirements:\n"
+        "- .h files: #include guards, all struct/enum/typedef definitions, all function "
+        "declarations with parameter names, docstring comments describing behavior/return "
+        "values/error conditions/preconditions\n"
+        "- .c files: #include directives, function stubs with signature + docstring + "
+        "minimal valid return (return 0; or return NULL;)\n"
+        "- The scaffold MUST compile with gcc -c -fsyntax-only (no linking)\n"
+        "- Every function that will be implemented must have a stub\n"
+        "- Docstrings are the implementation contract — be precise about behavior, "
+        "edge cases, ownership semantics\n\n"
+        "Do not implement any function bodies. Stubs only."
+    ),
+    "function_implement": (
+        "You are Jane, a C function implementer. Given a function stub with its docstring "
+        "contract and the surrounding scaffold context (headers and file), implement the "
+        "function body.\n\n"
+        "Output exactly one edit block:\n"
+        "<edit file=\"path/to/file.c\">\n"
+        "<search>\nthe stub body to replace\n</search>\n"
+        "<replacement>\nthe real implementation\n</replacement>\n"
+        "</edit>\n\n"
+        "Rules:\n"
+        "- Replace ONLY the stub body (the minimal return statement), not the signature or docstring\n"
+        "- Follow the behavioral contract in the docstring exactly\n"
+        "- Handle edge cases and error conditions specified in the docstring\n"
+        "- The result must compile with the existing headers"
+    ),
     "documentation": (
         "You are Jane, a documentation specialist. Given a source file and its task context, "
         "improve docstrings and inline comments without changing any code logic.\n\n"
@@ -330,5 +365,92 @@ def build_documentation_prompt(
 
     # R3: Budget validation
     validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, "documentation")
+
+    return system, user
+
+
+def build_scaffold_prompt(
+    context: ContextPackage,
+    part_plan: PartPlan,
+    model_config: ModelConfig,
+    *,
+    cumulative_diff: str | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for scaffold generation.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If prompt exceeds budget.
+    """
+    system = SYSTEM_PROMPTS["scaffold"]
+
+    parts = [context.to_prompt_text()]
+    parts.append(f"\n# Scaffold Plan\nPart: {part_plan.part_id}\nGoal: {part_plan.task_summary}\n")
+    parts.append("Steps to scaffold:\n")
+    for step in part_plan.steps:
+        parts.append(f"  - {step.id}: {step.description}\n")
+        if step.target_files:
+            parts.append(f"    Target files: {', '.join(step.target_files)}\n")
+        if step.target_symbols:
+            parts.append(f"    Target symbols: {', '.join(step.target_symbols)}\n")
+
+    if cumulative_diff:
+        parts.append(f"\n<prior_changes>\n{cumulative_diff}\n</prior_changes>\n")
+
+    user = "".join(parts)
+
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, "scaffold")
+
+    return system, user
+
+
+def build_function_implement_prompt(
+    stub: "FunctionStub",
+    scaffold_content: dict[str, str],
+    model_config: ModelConfig,
+) -> tuple[str, str]:
+    """Build system and user prompts for per-function implementation.
+
+    Args:
+        stub: The function stub to implement.
+        scaffold_content: dict mapping file_path -> full scaffold source.
+        model_config: Model config for budget validation.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If prompt exceeds budget.
+    """
+    from clean_room_agent.execute.dataclasses import FunctionStub  # noqa: F811
+
+    system = SYSTEM_PROMPTS["function_implement"]
+
+    parts = []
+    # Include the header file if available
+    if stub.header_file and stub.header_file in scaffold_content:
+        parts.append(f"# Header: {stub.header_file}\n")
+        parts.append(f'<code lang="c">\n{scaffold_content[stub.header_file]}\n</code>\n')
+
+    # Include the source file containing the stub
+    if stub.file_path in scaffold_content:
+        parts.append(f"\n# Source: {stub.file_path}\n")
+        parts.append(f'<code lang="c">\n{scaffold_content[stub.file_path]}\n</code>\n')
+
+    # Function contract
+    parts.append(f"\n# Function to Implement\n")
+    parts.append(f"Name: {stub.name}\n")
+    parts.append(f"Signature: {stub.signature}\n")
+    parts.append(f"File: {stub.file_path} (lines {stub.start_line}-{stub.end_line})\n")
+    if stub.docstring:
+        parts.append(f"Contract:\n{stub.docstring}\n")
+    if stub.dependencies:
+        parts.append(f"May call: {', '.join(stub.dependencies)}\n")
+
+    user = "".join(parts)
+
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, "function_implement")
 
     return system, user

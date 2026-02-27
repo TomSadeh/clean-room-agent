@@ -63,21 +63,6 @@ GETATTR_ALLOWLIST: list[tuple[str, int, str]] = [
     # No entries — all getattr-with-default violations have been fixed.
 ]
 
-# Pattern A: .get() in core logic without classification comment.
-# Only entries where .get() is intentional and classified are allowed.
-DICT_GET_ALLOWLIST: list[tuple[str, str, str]] = [
-    # (file_suffix, key_string, justification)
-    ("llm/router.py", "temperature", "Optional: temperature defaults to 0.0 (deterministic)"),
-    ("llm/router.py", "max_tokens", "Optional: derived from context_window // 8"),
-    ("llm/router.py", "overrides", "Optional: stage overrides default to empty dict"),
-    ("llm/router.py", "base_url", "Required: validated on next line"),
-    ("llm/router.py", "context_window", "Boundary: override sub-field falls back to role default"),
-    ("retrieval/stage.py", "_RETRIEVAL_DEFAULTS", "Optional: documented tuning knobs with named constants"),
-    ("retrieval/batch_judgment.py", "path", "Boundary: extracting key from LLM JSON response"),
-    ("retrieval/batch_judgment.py", "pair_id", "Boundary: extracting key from LLM JSON response"),
-    ("execute/prompts.py", "retrieval", "Boundary: config section access at prompt build time"),
-]
-
 # Pattern B: except blocks that catch and continue/return without re-raise.
 # Use line=-1 to allowlist ALL except blocks in a file (for files with many
 # orchestrator-boundary handlers). Prefer specific line numbers when possible.

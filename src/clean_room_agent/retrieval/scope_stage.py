@@ -289,7 +289,7 @@ def judge_scope(
                     logger.warning("R2: invalid verdict %r for %s — defaulting to irrelevant", verdict, sf.path)
                     verdict = "irrelevant"
                 sf.relevance = verdict
-                sf.reason = v["reason"]
+                sf.reason = v.get("reason", "")
             else:
                 sf.relevance = "irrelevant"
 

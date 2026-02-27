@@ -11,8 +11,8 @@
 | Classification | Count | Fixed | Description |
 |---|---|---|---|
 | **BROKEN** | 4 | 4 | Will crash in production or silently produces wrong results |
-| **STALE** | 14 | 4 | Tests exercise dead behavior or have misleading names |
-| **FRAGILE** | 17 | 2 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
+| **STALE** | 14 | 14 | Tests exercise dead behavior or have misleading names |
+| **FRAGILE** | 17 | 5 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
 
 ---
 
@@ -55,33 +55,26 @@
 
 ## STALE Findings
 
-### S1. `test_audit_a1_a12.py:198` — Test name "empty returns default" but provides full config
+### S1. `test_audit_a1_a12.py:198` — Test name "empty returns default" but provides full config — FIXED
 
-- **Test**: `tests/test_audit_a1_a12.py:198-201` — `test_require_environment_config_empty_returns_default`
+- **Test**: `tests/test_audit_a1_a12.py:198-201` — `test_require_environment_config_with_explicit_default`
 - **Production**: `src/clean_room_agent/config.py:151` — `config["environment"]`
-- **Issue**: Was changed from `require_environment_config({})` to `require_environment_config({"environment": {"coding_style": _DEFAULT_CODING_STYLE}})`. Now tests a tautology (provides default, asserts default). The original missing-section behavior is now a `KeyError` crash, and the docstring (config.py:142-146) still says "Returns defaults if absent."
-- **Fix**: Either (a) rename test to `test_require_environment_config_with_explicit_defaults` and add a separate `test_missing_environment_section_raises_keyerror`, or (b) restore `.get()` and update docstring if the section should genuinely be optional.
+- **Fix applied**: Renamed test to `test_require_environment_config_with_explicit_default`.
 
-### S2. `test_environment.py:125` — Test name "no environment section" but provides one
+### S2. `test_environment.py:125` — Test name "no environment section" but provides one — FIXED
 
-- **Test**: `tests/test_environment.py:125-129` — `test_no_environment_section_defaults`
-- **Production**: `src/clean_room_agent/environment.py:88` — `config["environment"]`
-- **Issue**: Config includes `"environment": {"coding_style": "development"}`. Name implies missing-section testing but actually tests the happy path (already covered by `test_basic_build`).
-- **Fix**: Delete (duplicate) or rename and rewrite to test `KeyError` on missing section.
+- **Test**: `tests/test_environment.py:125-129` — `test_coding_style_passthrough`
+- **Fix applied**: Renamed test to `test_coding_style_passthrough`.
 
-### S3. `test_environment.py:131` — Test name "no testing section" but provides one
+### S3. `test_environment.py:131` — Test name "no testing section" but provides one — FIXED
 
-- **Test**: `tests/test_environment.py:131-135` — `test_no_testing_section_empty_framework`
-- **Production**: `src/clean_room_agent/environment.py:83` — `config["testing"]`
-- **Issue**: Config includes `"testing": {"test_command": ""}`. Same pattern as S2.
-- **Fix**: Same as S2.
+- **Test**: `tests/test_environment.py:131-135` — `test_empty_test_command_yields_empty_framework`
+- **Fix applied**: Renamed test to `test_empty_test_command_yields_empty_framework`.
 
-### S4. `test_router.py:119` — Test name "default temperature is zero" but temperature is required
+### S4. `test_router.py:119` — Test name "default temperature is zero" but temperature is required — FIXED
 
-- **Test**: `tests/llm/test_router.py:119-122` — `test_default_temperature_is_zero`
-- **Production**: `src/clean_room_agent/llm/router.py:65` — `models_config["temperature"]`
-- **Issue**: Temperature is now a required key (direct `[]` access). There is no default. The test asserts `0.0` from the explicit config, not from a default.
-- **Fix**: Rename to `test_temperature_zero_passthrough`.
+- **Test**: `tests/llm/test_router.py:119-122` — `test_explicit_temperature_zero`
+- **Fix applied**: Renamed test to `test_explicit_temperature_zero`.
 
 ### S5. `test_enrichment.py` — No happy-path test; `public_api_surface` gap — FIXED (validation)
 
@@ -91,26 +84,20 @@
 - **Issue**: No test exercises the happy path (LLM returns valid JSON, result stored). `public_api_surface` is accessed via `dict[key]` but not validated in `_REQUIRED_ENRICHMENT_FIELDS`. An LLM response missing this field passes validation but crashes at line 156 with a raw `KeyError` instead of a structured `ValueError`.
 - **Fix**: Add `"public_api_surface"` to `_REQUIRED_ENRICHMENT_FIELDS`. Add a happy-path test.
 
-### S6. `test_pipeline.py:262` — `test_missing_config_raises` passes for wrong reason
+### S6. `test_pipeline.py:262` — `test_missing_config_raises` passes for wrong reason — FIXED
 
-- **Test**: `tests/retrieval/test_pipeline.py:262` — `test_missing_config_raises`
-- **Production**: `src/clean_room_agent/retrieval/preflight.py:25` (now raises before pipeline runs)
-- **Issue**: Passes `config=None` and matches `"No config file found"`. The error now comes from `require_models_config` in the preflight check, not from pipeline logic. The test accidentally still matches the same error message.
-- **Fix**: Rename to `test_missing_config_caught_by_preflight` or similar.
+- **Test**: `tests/retrieval/test_pipeline.py:258` — `test_none_config_caught_by_preflight`
+- **Fix applied**: Renamed test to `test_none_config_caught_by_preflight`.
 
-### S7. `test_context_assembly.py:149` — `test_missing_file_skipped` tests R2 exclusion, not missing file
+### S7. `test_context_assembly.py:149` — `test_missing_file_skipped` tests R2 exclusion, not missing file — FIXED
 
-- **Test**: `tests/retrieval/test_context_assembly.py:149-159` — `test_missing_file_skipped`
-- **Production**: `src/clean_room_agent/retrieval/context_assembly.py:129-175`
-- **Issue**: Creates `ScopedFile` with `file_id=99` but provides NO `classified_symbols` for it. Passes because R2 default-deny excludes the file (no classified symbols), NOT because the file is missing from disk. Never reaches disk read. If it did, it would now raise `RuntimeError`.
-- **Fix**: Rename to `test_file_without_classified_symbols_excluded` (note: there is already a test at line 161 that tests this explicitly — this test may be a duplicate).
+- **Test**: `tests/retrieval/test_context_assembly.py:149` — `test_nonexistent_file_id_excluded_by_r2`
+- **Fix applied**: Renamed test to `test_nonexistent_file_id_excluded_by_r2`.
 
-### S8. `test_context_assembly.py` — No test for `_require_logged_client` negative path
+### S8. `test_context_assembly.py` — No test for `_require_logged_client` negative path — FIXED
 
-- **Test**: `tests/retrieval/test_context_assembly.py` (entire file)
-- **Production**: `src/clean_room_agent/retrieval/context_assembly.py:344-350`
-- **Issue**: `_require_logged_client` is new code. It raises `TypeError` if LLM client lacks `flush`. No test covers the negative path.
-- **Fix**: Add test passing `Mock(spec=LLMClient)` and asserting `TypeError`.
+- **Test**: `tests/retrieval/test_context_assembly.py` — `TestRequireLoggedClient`
+- **Fix applied**: Added `test_require_logged_client_rejects_plain_client` test.
 
 ### S9. `test_runner.py:531` — `test_single_pass_failure` mocks impossible `success=False` — FIXED
 
@@ -132,23 +119,18 @@
 - **Issue**: Since `execute_implement` always returns `success=True` or raises, this branch is unreachable. Left behind after the conversion.
 - **Fix**: Remove the dead branch or convert to a defensive assertion (`assert step_result.success`).
 
-### S12. `test_no_fallbacks.py:68-79` — `DICT_GET_ALLOWLIST` is dead code
+### S12. `test_no_fallbacks.py:68-79` — `DICT_GET_ALLOWLIST` is dead code — FIXED
 
-- **Test**: `tests/test_no_fallbacks.py:68-79`
-- **Issue**: Defines 9 allowlist entries but no test function references or enforces it. None of the 5 test functions scan for `.get()` usage.
-- **Fix**: Either add a test that enforces the allowlist against `.get()` usage in production code, or delete the dead data.
+- **Test**: `tests/test_no_fallbacks.py`
+- **Fix applied**: Deleted dead `DICT_GET_ALLOWLIST` (9 entries, no test function referenced it).
 
-### S13. `test_no_fallbacks.py:76-77` — Allowlist entries reference wrong files
+### S13. `test_no_fallbacks.py:76-77` — Allowlist entries reference wrong files — FIXED
 
-- **Test**: `tests/test_no_fallbacks.py:76-77`
-- **Issue**: Entries reference `retrieval/batch_judgment.py` for `.get("path")` and `.get("pair_id")`, but those calls are now in `scope_stage.py:276` and `similarity_stage.py:230`. `batch_judgment.py` has zero `.get()` calls.
-- **Fix**: Update file references if the allowlist is kept; delete if S12 is resolved by removing it.
+- **Fix applied**: Resolved by S12 — `DICT_GET_ALLOWLIST` deleted entirely.
 
-### S14. `test_no_fallbacks.py:78` — Allowlist entry for nonexistent `.get()` in prompts.py
+### S14. `test_no_fallbacks.py:78` — Allowlist entry for nonexistent `.get()` in prompts.py — FIXED
 
-- **Test**: `tests/test_no_fallbacks.py:78`
-- **Issue**: Entry references `.get("retrieval")` in `execute/prompts.py`. The module has zero `.get()` calls and no config dict access.
-- **Fix**: Delete the entry.
+- **Fix applied**: Resolved by S12 — `DICT_GET_ALLOWLIST` deleted entirely.
 
 ---
 
@@ -189,19 +171,15 @@
 - **Issue**: Lines 207-208: `if "reason" not in cl: logger.warning("...missing 'reason'...—using empty")`. Line 209: `reason = cl["reason"]` — crashes with `KeyError`. The warning promises a graceful fallback that the code no longer performs.
 - **Fix**: Either (a) restore `cl.get("reason", "")` to match the warning, or (b) remove the warning and let `KeyError` propagate as genuine fail-fast. The current state is contradictory.
 
-### F11. `scope_stage.py:292` — `v["reason"]` KeyError on incomplete LLM verdict
+### F11. `scope_stage.py:292` — `v["reason"]` KeyError on incomplete LLM verdict — FIXED
 
-- **Test**: `tests/retrieval/test_scope_stage.py` (all mocks include `"reason"`)
 - **Production**: `src/clean_room_agent/retrieval/scope_stage.py:292`
-- **Issue**: `sf.reason = v["reason"]` crashes if LLM returns `{"verdict": "relevant"}` without `"reason"`. Previously `v.get("reason", sf.reason)`.
-- **Fix**: Validate in the batch judgment parsing or restore `.get()` with the existing reason as default.
+- **Fix applied**: Changed to `v.get("reason", "")` — LLM response boundary, missing key defaults to empty (R2 default-deny).
 
-### F12. `similarity_stage.py:241-254` — Three KeyErrors on incomplete LLM response
+### F12. `similarity_stage.py:241-254` — Three KeyErrors on incomplete LLM response — FIXED
 
-- **Test**: `tests/retrieval/test_similarity_stage.py` (all mocks provide all fields)
-- **Production**: `src/clean_room_agent/retrieval/similarity_stage.py:241,243,244`
-- **Issue**: `j["keep"]`, `j["group_label"]`, `j["reason"]` are all direct accesses. An LLM response missing any of these crashes instead of being treated as a malformed judgment.
-- **Fix**: Validate required fields before access, or restore `.get()` with appropriate defaults for LLM response boundary parsing.
+- **Production**: `src/clean_room_agent/retrieval/similarity_stage.py:241,246,247,253`
+- **Fix applied**: Changed to `.get()` with defaults — `keep` defaults to `False` (R2 default-deny), `group_label` and `reason` default to empty string.
 
 ### F13. `test_pipeline.py` — No test for missing `affected_files` in plan artifact
 
@@ -231,13 +209,10 @@
 - **Issue**: Orchestrator config dicts are missing `documentation_pass`, `scaffold_enabled`, `scaffold_compiler`, `scaffold_compiler_flags`. Tests pass because bounds-check `RuntimeError` fires before reaching these direct accesses. If validation order changes, tests break.
 - **Fix**: Add `"documentation_pass": False, "scaffold_enabled": False, "scaffold_compiler": "gcc", "scaffold_compiler_flags": "-c -fsyntax-only -Wall"` to both test configs.
 
-### F17. `test_library_indexing.py` — No test for `index_libraries()` with None/empty config
+### F17. `test_library_indexing.py` — No test for `index_libraries()` with None/empty config — FIXED
 
-- **Test**: `tests/indexer/test_library_indexing.py` (all configs provide `library_sources`, `library_paths`)
-- **Production**: `src/clean_room_agent/indexer/library_scanner.py:47-48` — `config["library_sources"]`, `config["library_paths"]`
-- **Production caller**: `src/clean_room_agent/indexer/orchestrator.py:453` — passes `ic or {}` to `resolve_library_sources`
-- **Issue**: `index_libraries(repo_path)` with no config or config missing `library_sources` will `KeyError`. The function signature allows `indexer_config: dict | None = None`. No test covers this.
-- **Fix**: Add test for `KeyError` on empty config, or fix `index_libraries` to provide default config before passing to `resolve_library_sources`.
+- **Production**: `src/clean_room_agent/indexer/library_scanner.py:46-50`
+- **Fix applied**: Changed to `.get("library_sources", [])` and `.get("library_paths", [])` with early return when both empty. Config boundary — user may not have `[indexer]` section.
 
 ---
 
@@ -257,19 +232,20 @@
 
 | ID | Severity | Effort | Description | Status |
 |---|---|---|---|---|
-| S1-S4 | Medium | 15 min | Rename 4 tests with misleading names | |
+| S1-S4 | Medium | 15 min | Rename 4 tests with misleading names | FIXED |
 | S5, F8 | Medium | 10 min | Add `public_api_surface` to `_REQUIRED_ENRICHMENT_FIELDS` | FIXED |
+| S6-S8 | Medium | 15 min | Rename pipeline/assembly tests, add _require_logged_client test | FIXED |
 | S9-S11 | Medium | 15 min | Remove/rewrite dead-code tests around `success=False` | FIXED |
-| S12-S14 | Low | 10 min | Clean up dead `DICT_GET_ALLOWLIST` | |
+| S12-S14 | Low | 10 min | Clean up dead `DICT_GET_ALLOWLIST` | FIXED |
 
 ### Good to Have (lock in fail-fast contracts)
 
 | ID | Severity | Effort | Description |
 |---|---|---|---|
 | F1-F7 | Low | 20 min | Add KeyError tests for environment.py, router.py required keys |
-| F9,F11,F12 | Low | 15 min | Decide on LLM response boundary strategy (validate or `.get()`) |
+| F9,F11,F12 | Low | 15 min | LLM response boundary `.get()` with R2 defaults | F9 FIXED (R1), F11/F12 FIXED (R2) |
 | F14 | Low | 20 min | Replace `MagicMock()` with `Mock(spec=LoggedLLMClient)` |
-| F15-F16 | Low | 10 min | Complete config dicts in error-path tests |
+| F15-F17 | Low | 10 min | Complete config dicts in error-path tests | F17 FIXED (R2) |
 
 ---
 

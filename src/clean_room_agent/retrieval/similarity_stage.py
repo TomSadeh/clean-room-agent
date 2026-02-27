@@ -238,19 +238,19 @@ def judge_similarity(
         j = judgment_map.get(p["pair_id"])
         if j is None:
             continue
-        if j["keep"]:
+        if j.get("keep", False):
             confirmed.append({
                 "pair_id": p["pair_id"],
                 "sym_a": p["sym_a"],
                 "sym_b": p["sym_b"],
-                "group_label": j["group_label"],
-                "reason": j["reason"],
+                "group_label": j.get("group_label", ""),
+                "reason": j.get("reason", ""),
             })
         else:
             # A6b: log explicitly denied pairs for traceability
             logger.warning(
                 "R2: Similarity pair denied: %s vs %s — %s",
-                p["sym_a"].name, p["sym_b"].name, j["reason"],
+                p["sym_a"].name, p["sym_b"].name, j.get("reason", "no reason"),
             )
 
     return confirmed

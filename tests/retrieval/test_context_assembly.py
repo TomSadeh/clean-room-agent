@@ -146,7 +146,7 @@ class TestAssembleContext:
         # total_token_estimate includes R5 task/intent header overhead
         assert pkg.total_token_estimate >= 0
 
-    def test_missing_file_skipped(self, task, source_files):
+    def test_nonexistent_file_id_excluded_by_r2(self, task, source_files):
         budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
         ctx = StageContext(task=task, repo_id=1, repo_path=str(source_files))
         ctx.scoped_files = [
@@ -227,6 +227,18 @@ class TestAssembleContext:
         ]
         with pytest.raises(RuntimeError, match="R1.*cannot read file"):
             assemble_context(ctx, budget, source_files)
+
+
+class TestRequireLoggedClient:
+    """S8: _require_logged_client negative-path coverage."""
+
+    def test_require_logged_client_rejects_plain_client(self):
+        """S8: _require_logged_client raises TypeError for non-logging client."""
+        from unittest.mock import Mock
+        from clean_room_agent.retrieval.context_assembly import _require_logged_client
+        plain = Mock(spec=[])  # No flush attribute
+        with pytest.raises(TypeError, match="logging-capable"):
+            _require_logged_client(plain, "test_caller")
 
 
 class TestAllSymbolsExcluded:

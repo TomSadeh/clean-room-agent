@@ -116,7 +116,7 @@ class TestModelRouter:
         assert mc_coding.temperature == 0.2
         assert mc_reasoning.temperature == 0.7
 
-    def test_default_temperature_is_zero(self):
+    def test_explicit_temperature_zero(self):
         router = ModelRouter(self.config)
         mc = router.resolve("coding")
         assert mc.temperature == 0.0

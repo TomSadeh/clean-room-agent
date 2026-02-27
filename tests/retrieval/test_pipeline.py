@@ -255,7 +255,7 @@ class TestRunPipeline:
                 config=_make_config(),
             )
 
-    def test_missing_config_raises(self, pipeline_repo):
+    def test_none_config_caught_by_preflight(self, pipeline_repo):
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
         budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
 

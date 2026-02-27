@@ -195,7 +195,7 @@ class TestA11ConfigConstant:
         result = require_environment_config(None)
         assert result["coding_style"] == _DEFAULT_CODING_STYLE
 
-    def test_require_environment_config_empty_returns_default(self):
+    def test_require_environment_config_with_explicit_default(self):
         from clean_room_agent.config import _DEFAULT_CODING_STYLE, require_environment_config
         result = require_environment_config({"environment": {"coding_style": _DEFAULT_CODING_STYLE}})
         assert result["coding_style"] == _DEFAULT_CODING_STYLE

@@ -216,6 +216,40 @@ class PatchResult(_SerializableMixin):
     _EXCLUDE = frozenset({"original_contents"})
 
 
+# -- Scaffold data structures --
+
+@dataclass
+class FunctionStub(_SerializableMixin):
+    """A function stub from the scaffold, to be implemented independently."""
+    name: str
+    file_path: str
+    signature: str
+    docstring: str
+    start_line: int
+    end_line: int
+    dependencies: list[str] = field(default_factory=list)
+    header_file: str | None = None
+
+    _REQUIRED = ("name", "file_path", "signature", "start_line", "end_line")
+    _NON_EMPTY = ("name", "file_path", "signature")
+
+
+@dataclass
+class ScaffoldResult(_SerializableMixin):
+    """Result of scaffold generation."""
+    success: bool
+    edits: list[PatchEdit] = field(default_factory=list)
+    header_files: list[str] = field(default_factory=list)
+    source_files: list[str] = field(default_factory=list)
+    function_stubs: list[FunctionStub] = field(default_factory=list)
+    error_info: str | None = None
+    raw_response: str = ""
+    compilation_output: str | None = None
+
+    _REQUIRED = ("success",)
+    _NESTED = {"edits": PatchEdit, "function_stubs": FunctionStub}
+
+
 # -- Validation data structures --
 
 @dataclass

@@ -60,6 +60,7 @@ reasoning = "qwen3:4b-instruct-2507"        # Required
 base_url = "http://localhost:11434"          # Required
 context_window = 32768                       # Required (int or per-role dict)
 # max_tokens = 4096  # defaults to context_window // 8 if omitted
+thinking = false                             # OFF: pipeline curates context, thinking is redundant
 
 # Per-role context windows (when classifier has smaller window)
 # [models.context_window]
@@ -177,6 +178,7 @@ Every config field must be classified into one of three tiers. The classificatio
 | `[models]` | `max_tokens` | Optional | `context_window // 8` | int or `{classifier=N, coding=N, reasoning=N}` |
 | `[models]` | `temperature` | Supplementary | `0.0` for all roles | |
 | `[models]` | `overrides` | Supplementary | `{}` | Per-stage model overrides |
+| `[models]` | `thinking` | Supplementary | `false` | OFF by default — pipeline curates context, thinking tokens are redundant retrieval. Enable for A/B testing only. |
 | `[budget]` | `reserved_tokens` | Required | — | |
 | `[stages]` | `default` | Required | — | Comma-separated stage names |
 | `[testing]` | `test_command` | Required | — | |

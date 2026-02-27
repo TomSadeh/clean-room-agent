@@ -44,8 +44,10 @@ def resolve_library_sources(
     If config has explicit library_paths, uses those directly.
     """
     config = config or {}
-    sources = config["library_sources"]
-    explicit_paths = config["library_paths"]
+    sources = config.get("library_sources", [])
+    explicit_paths = config.get("library_paths", [])
+    if not sources and not explicit_paths:
+        return []
 
     if explicit_paths:
         result = []

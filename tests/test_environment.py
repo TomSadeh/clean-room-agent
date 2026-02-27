@@ -122,13 +122,13 @@ class TestBuildEnvironmentBrief:
         with pytest.raises(ValueError, match="Unknown coding_style"):
             build_environment_brief(config, kb, repo_id=1)
 
-    def test_no_environment_section_defaults(self):
+    def test_coding_style_passthrough(self):
         kb = self._make_mock_kb()
         config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.coding_style == "development"
 
-    def test_no_testing_section_empty_framework(self):
+    def test_empty_test_command_yields_empty_framework(self):
         kb = self._make_mock_kb()
         config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}
         brief = build_environment_brief(config, kb, repo_id=1)
