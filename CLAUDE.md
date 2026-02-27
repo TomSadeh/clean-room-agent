@@ -66,8 +66,18 @@ planning/
   pipeline-and-modes.md          - Retrieval stages, LLM client, budget, pipeline modes, orchestrator
   training-strategy.md           - LoRA training targets, bootstrapping, distillation, guardrails
   phase1-implementation.md       - Phase 1 work items (completed)
-research_reviews/
-  (research reviews and analysis documents)
+research/
+  (literature reviews, technical reports, feasibility studies)
+references/
+  (curated catalogs: benchmarks, bibliographies, repo corpuses)
+infrastructure/
+  (hardware specs, environment setup, air-gap design)
+protocols/
+  design_records/                - Architectural decision records
+  audits/                        - Transparency and design audits
+  enforcement/                   - Enforcement protocols
+  governance/                    - Design philosophy and theoretical frameworks
+  retrieval_audit/               - Retrieval audit protocol and reference tasks
 archive/
   planning-v1/                   - Superseded v1 planning documents
   (archived notes and superseded research/context documents)

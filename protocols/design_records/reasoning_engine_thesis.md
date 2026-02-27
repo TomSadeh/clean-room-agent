@@ -3,7 +3,7 @@
 **Date:** 2026-02-27
 **Status:** Proposed
 **Depends on:** `single_generalist_model.md`, `population_evolution.md`, `infrastructure_self_improvement.md`
-**Evidence:** `research_reviews/knowledge_vs_reason_research.md`, `research_reviews/c_training_infrastructure.md`
+**Evidence:** `research/knowledge_vs_reason_research.md`, `research/c_training_infrastructure.md`
 
 ## Problem Statement
 

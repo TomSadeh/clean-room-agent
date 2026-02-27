@@ -46,7 +46,7 @@ Before LoRA adapters are trained, each base model undergoes a full fine-tune. Th
 
 ### 2.1 Why Context Window Reduction Matters
 
-**Shorter context windows produce better output.** This is not an efficiency claim — it is a quality claim backed by converging empirical evidence (see `research_reviews/context_window_size_research.md` for the full literature review):
+**Shorter context windows produce better output.** This is not an efficiency claim — it is a quality claim backed by converging empirical evidence (see `research/context_window_size_research.md` for the full literature review):
 
 - Context length alone degrades performance **13.9–85%** even when retrieval is perfect and irrelevant tokens are completely masked (Du et al., 2025). The model isn't distracted by noise — the sheer computational burden of longer sequences interferes with reasoning.
 - Most LLMs effectively utilize only **10–20%** of their context on reasoning tasks (BABILong, NeurIPS 2024). Open-source models demonstrate effective context of **less than 50%** of training length (RULER, COLM 2024).
@@ -207,7 +207,7 @@ Clone mature, well-tested repos from GitHub. Ideal repos have:
 
 **Anti-patterns**: Web frameworks (Django, Flask, FastAPI), HTTP clients (requests, httpx), task queues (Celery), and message brokers look like good candidates — they have clean architecture and sophisticated exception hierarchies — but embed deeply defensive patterns (top-level catch-all handlers, silent fallbacks, `.get()` with defaults everywhere). Any project whose primary job is keeping a long-running process alive will be defensive at its boundaries. Exclude these from the training corpus.
 
-A curated fail-fast repository corpus with specific repo recommendations and an AST-based heuristic scorer for programmatic identification is documented in `research_reviews/fail_fast_research.md`. See also [Section 6.7](#67-fail-fast-training-corpus).
+A curated fail-fast repository corpus with specific repo recommendations and an AST-based heuristic scorer for programmatic identification is documented in `references/fail_fast_research.md`. See also [Section 6.7](#67-fail-fast-training-corpus).
 
 ### 6.2 Commit Filtering Criteria
 
@@ -288,7 +288,7 @@ Both open datasets and commit-history mining complement each other and both depe
 
 Style-targeted training data is a distinct concern from functional-capability training. The code generation LoRA should be biased toward fail-fast error handling (custom exception hierarchies, rich contextual error messages, narrow `except` clauses, no silent failure) to align with the project's coding style principles.
 
-A curated 25-repo corpus spanning 6 domains (parsers/compilers, validation/type checking, structured data, developer tooling, small focused libraries, frameworks with good error design) is documented in `research_reviews/fail_fast_research.md`. Top-tier repos include strictyaml, attrs, cattrs, LibCST, structlog, Black, typeguard, and Zod (TS). The corpus targets 5,000-10,000 high-quality commit pairs filtered for error-handling improvements.
+A curated 25-repo corpus spanning 6 domains (parsers/compilers, validation/type checking, structured data, developer tooling, small focused libraries, frameworks with good error design) is documented in `references/fail_fast_research.md`. Top-tier repos include strictyaml, attrs, cattrs, LibCST, structlog, Black, typeguard, and Zod (TS). The corpus targets 5,000-10,000 high-quality commit pairs filtered for error-handling improvements.
 
 **Programmatic identification**: An AST-based heuristic scorer using 8 weighted metrics (bare-except ratio, blind-except ratio, try-except-pass count, specific exception ratio, dict["key"] vs .get() ratio, assert density, raise density, exception chaining ratio) can rank candidate repos before manual review. Repos scoring 75-100 are strong candidates. This scorer can be built as part of the Phase 4 bootstrapping tooling to expand the corpus beyond the manually curated list.
 
@@ -433,7 +433,7 @@ The ~500 quality trajectory threshold for measurable gains (SWE-Gym finding) is 
 
 **Harness repo corpus:**
 
-The harness does not require a separate repo curation effort. The repos already curated for fail-fast style training ([Section 6.7](#67-fail-fast-training-corpus), detailed in `research_reviews/fail_fast_research.md`) and LoRA training data (`research_reviews/lora_training_git_data.md`) serve double duty: their *code* trains the fail-fast coding style, their *commit histories* feed the plan validation harness. These repos were selected for maturity, clean commits, and strong test suites — exactly the harness criteria. A documentation quality assessment across all 48 repos (`research_reviews/repo_documentation_quality.md`) provides additional signal on commit hygiene, test coverage, and maintainer culture.
+The harness does not require a separate repo curation effort. The repos already curated for fail-fast style training ([Section 6.7](#67-fail-fast-training-corpus), detailed in `references/fail_fast_research.md`) and LoRA training data (`research/lora_training_git_data.md`) serve double duty: their *code* trains the fail-fast coding style, their *commit histories* feed the plan validation harness. These repos were selected for maturity, clean commits, and strong test suites — exactly the harness criteria. A documentation quality assessment across all 48 repos (`references/repo_documentation_quality.md`) provides additional signal on commit hygiene, test coverage, and maintainer culture.
 
 **Primary harness candidates** (Python, MIT/Apache/BSD, pytest, mature commit history, right size):
 
@@ -458,7 +458,7 @@ The harness does not require a separate repo curation effort. The repos already 
 
 **Commit density estimate:** the Tier 1 fail-fast repos (11 Python + 4 TypeScript) collectively have thousands of qualifying feature/enhancement commits. Even conservatively — 100-300 harness-qualifying commits per repo, 14 repos — that's 1,400-4,200 commits available for the harness before adding any new repos. With 3 temperature runs per commit, that's 4,200-12,600 `(context, plan, outcome)` triples from the existing corpus alone.
 
-**Expansion path:** post-migration, new repos enter via the data ingestion protocol ([Section 12.6](#126-new-data-ingestion-protocol)). Each new repo simultaneously expands both the harness corpus (more commits for planning training) and the style corpus (more code for fail-fast training). The AST-based heuristic scorer from `research_reviews/fail_fast_research.md` can be used to pre-screen candidate repos on the connected side before packaging for USB transfer.
+**Expansion path:** post-migration, new repos enter via the data ingestion protocol ([Section 12.6](#126-new-data-ingestion-protocol)). Each new repo simultaneously expands both the harness corpus (more commits for planning training) and the style corpus (more code for fail-fast training). The AST-based heuristic scorer from `references/fail_fast_research.md` can be used to pre-screen candidate repos on the connected side before packaging for USB transfer.
 
 ---
 

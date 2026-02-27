@@ -58,6 +58,9 @@ Validated in [Auto-GM](https://github.com/TomSadeh/Auto-GM)'s knowledge system, 
 ## Repository Contents
 
 - `planning/meta-plan.md` - Single source of truth: phases, schemas, contracts, conventions
-- `research_reviews/` - Research reviews and analysis documents
+- `research/` - Literature reviews, technical reports, feasibility studies
+- `references/` - Curated catalogs: benchmarks, bibliographies, repo corpuses
+- `infrastructure/` - Hardware specs, environment setup, air-gap design
+- `protocols/` - Decision records, audits, enforcement, governance
 - `archive/planning-v1/` - Superseded v1 planning documents
 - `archive/` - Archived notes and superseded research/context documents

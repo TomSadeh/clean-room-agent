@@ -42,7 +42,7 @@ They don't decompose downward: a multi-class classification in a batch is a blac
 
 ### Performance parity at half the parameters
 
-Qwen3-1.7B matches Qwen2.5-3B across most benchmarks (see `research_reviews/qwen3_small_models.md`). EvalPlus 52.7, MBPP 55.4. The 2x efficiency gain from Qwen3's training (36T tokens, three-stage pipeline) means the 1.7B has absorbed more knowledge per parameter than the 2.5-era 3B.
+Qwen3-1.7B matches Qwen2.5-3B across most benchmarks (see `research/qwen3_small_models.md`). EvalPlus 52.7, MBPP 55.4. The 2x efficiency gain from Qwen3's training (36T tokens, three-stage pipeline) means the 1.7B has absorbed more knowledge per parameter than the 2.5-era 3B.
 
 ### No negative transfer
 

@@ -3,7 +3,7 @@
 **Date:** 2026-02-27
 **Status:** Proposed
 **Depends on:** `infrastructure_self_improvement.md`, `c_language_choice.md`, `single_generalist_model.md`
-**Framework:** `research_reviews/evolutionary_economics_of_self_improvement.md`
+**Framework:** `protocols/governance/evolutionary_economics_of_self_improvement.md`
 
 ## Problem Statement
 

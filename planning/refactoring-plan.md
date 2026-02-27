@@ -2,7 +2,7 @@
 
 ## Context
 
-The repo review identified 22 refactoring opportunities. R19-R21 (LLM enhancements) are deferred to a separate feature pass. A subsequent transparency doctrine audit (`research_reviews/transparency_audit.md`, 2026-02-26) identified 14 findings (1 P0, 4 P1, 8 P2, 1 supplementary P2) that must be addressed.
+The repo review identified 22 refactoring opportunities. R19-R21 (LLM enhancements) are deferred to a separate feature pass. A subsequent transparency doctrine audit (`protocols/audits/transparency_audit.md`, 2026-02-26) identified 14 findings (1 P0, 4 P1, 8 P2, 1 supplementary P2) that must be addressed.
 
 P0/P1 audit fixes run first (Batch 0) because they are correctness/schema bugs — decomposing runner.py (Batch 4) while it has schema violations would bake bugs into new helpers. P2 audit fixes are integrated into the batches that already touch the same files.
 
@@ -256,7 +256,7 @@ After all batches:
 
 ## Audit Finding Cross-Reference
 
-All 14 findings from `research_reviews/transparency_audit.md` mapped to batches:
+All 14 findings from `protocols/audits/transparency_audit.md` mapped to batches:
 
 | Finding | Sev | Batch | Item |
 |---|---|---|---|
