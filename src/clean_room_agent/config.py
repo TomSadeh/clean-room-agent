@@ -15,6 +15,28 @@ def load_config(repo_path: Path) -> dict | None:
         return tomllib.load(f)
 
 
+def require_config_section(config: dict | None, section: str) -> dict:
+    """Extract a Required config section or raise a hard error.
+
+    Use this for sections classified as Required per cli-and-config.md Section 4.4.
+    """
+    if config is None:
+        raise RuntimeError(
+            f"No config file found. Run 'cra init' to create .clean_room/config.toml"
+        )
+    value = config.get(section)
+    if value is None:
+        raise RuntimeError(
+            f"Missing [{section}] section in .clean_room/config.toml. "
+            f"Run 'cra init' to create a default config."
+        )
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f"[{section}] in config.toml must be a table, got {type(value).__name__}"
+        )
+    return value
+
+
 def require_models_config(config: dict | None) -> dict:
     """Extract [models] section or raise a hard error."""
     if config is None:

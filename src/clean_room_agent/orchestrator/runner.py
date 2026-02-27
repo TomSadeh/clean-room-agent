@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from clean_room_agent.config import require_models_config
+from clean_room_agent.config import require_config_section, require_models_config
 
 if TYPE_CHECKING:
     from clean_room_agent.llm.client import ModelConfig
@@ -70,7 +70,7 @@ def _resolve_budget(config: dict, role: str) -> BudgetConfig:
     models_config = require_models_config(config)
     router = ModelRouter(models_config)
     model_config = router.resolve(role)
-    budget_config = config.get("budget", {})
+    budget_config = require_config_section(config, "budget")
     rt = budget_config.get("reserved_tokens")
     if rt is None:
         raise RuntimeError(
@@ -81,7 +81,7 @@ def _resolve_budget(config: dict, role: str) -> BudgetConfig:
 
 def _resolve_stages(config: dict) -> list[str]:
     """Resolve stage names from config. Hard error if missing."""
-    stages_config = config.get("stages", {})
+    stages_config = require_config_section(config, "stages")
     default_stages = stages_config.get("default")
     if not default_stages:
         raise RuntimeError(
@@ -186,25 +186,31 @@ def _accumulate_optional_tokens(values: list[int | None]) -> int | None:
 
 
 def _archive_session(raw_conn, repo_path: Path, task_id: str) -> None:
-    """Archive session DB to raw DB and delete the file. Separated error handling."""
+    """Archive session DB to raw DB and delete the file.
+
+    Steps 1-2 (read + insert) are critical — failure propagates.
+    Step 3 (delete) is best-effort — archive already succeeded.
+    """
     session_file = _db_path(repo_path, "session", task_id)
     if not session_file.exists():
         return
 
-    # Step 1: Read file — OSError means we can't archive at all
+    # Step 1: Read file — failure means broken archival
     try:
         session_blob = session_file.read_bytes()
     except OSError as e:
-        logger.warning("Failed to read session DB for archival: %s", e)
-        return
+        raise RuntimeError(
+            f"Failed to read session DB for archival: {session_file}"
+        ) from e
 
-    # Step 2: Insert into raw DB — sqlite3 error means preserve the file
+    # Step 2: Insert into raw DB — failure means audit trail loss
     try:
         insert_session_archive(raw_conn, task_id, session_blob)
         raw_conn.commit()
     except sqlite3.Error as e:
-        logger.warning("Failed to insert session archive into raw DB: %s (preserving file)", e)
-        return
+        raise RuntimeError(
+            f"Failed to insert session archive into raw DB for task {task_id}"
+        ) from e
 
     # Step 3: Delete file — best-effort, archive already succeeded
     try:
@@ -218,7 +224,7 @@ def _finalize_orchestrator_run(
     raw_conn, orch_run_id: int, status: str,
     error_message: str | None = None, **kwargs,
 ) -> None:
-    """Update orchestrator run record with final status. Logs warning on failure."""
+    """Update orchestrator run record with final status. Failure propagates."""
     now = datetime.now(timezone.utc).isoformat()
     try:
         update_orchestrator_run(
@@ -230,7 +236,9 @@ def _finalize_orchestrator_run(
         )
         raw_conn.commit()
     except Exception as e:
-        logger.warning("Failed to update orchestrator run: %s", e)
+        raise RuntimeError(
+            f"Failed to update orchestrator run {orch_run_id} to status={status!r}"
+        ) from e
 
 
 def _git_cleanup(git, status: str) -> None:
@@ -407,7 +415,7 @@ def _init_orchestrator(
     reasoning_config = router.resolve("reasoning") if needs_reasoning else None
     stage_names = _resolve_stages(config)
 
-    orch_config = config.get("orchestrator", {})
+    orch_config = require_config_section(config, "orchestrator")
     max_retries = orch_config.get("max_retries_per_step")
     if max_retries is None:
         raise RuntimeError(

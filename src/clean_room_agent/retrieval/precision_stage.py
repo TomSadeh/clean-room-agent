@@ -188,10 +188,18 @@ def classify_symbols(
     for c in project_candidates:
         key = (c["name"], c["file_path"], c["start_line"])
         cl = class_map.get(key, {})
-        detail_level = cl.get("detail_level", "excluded")
-        if detail_level not in ("primary", "supporting", "type_context", "excluded"):
-            logger.warning("R2: invalid detail_level %r for %s — defaulting to excluded", detail_level, c["name"])
+        if not cl:
+            # R2: symbol omitted by LLM → default-deny → excluded
             detail_level = "excluded"
+        elif "detail_level" not in cl:
+            # LLM returned data but omitted required field — malformed response
+            logger.warning("R2: precision LLM response missing 'detail_level' for %s — excluding (malformed)", c["name"])
+            detail_level = "excluded"
+        else:
+            detail_level = cl["detail_level"]
+            if detail_level not in ("primary", "supporting", "type_context", "excluded"):
+                logger.warning("R2: invalid detail_level %r for %s — excluding", detail_level, c["name"])
+                detail_level = "excluded"
         if "signature" not in cl and cl:
             logger.warning("Precision LLM response missing 'signature' for %s — using empty", c["name"])
         if "reason" not in cl and cl:

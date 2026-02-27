@@ -194,8 +194,10 @@ def parse_crafting_interpreters(html_dir: Path) -> list[RefSection]:
     for html_file in html_files:
         try:
             text = html_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to read KB source file {html_file}: {e}"
+            ) from e
 
         parser = _CraftingInterpretersParser()
         parser.feed(text)
@@ -396,8 +398,10 @@ def parse_cppreference(ref_dir: Path) -> list[RefSection]:
     for html_file in html_files:
         try:
             text = html_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to read KB source file {html_file}: {e}"
+            ) from e
 
         parser = _CpprefParser()
         parser.feed(text)

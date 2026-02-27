@@ -650,7 +650,7 @@ class TestResolveBudgetMissingConfig:
             },
             # No budget section at all
         }
-        with pytest.raises(RuntimeError, match="Missing reserved_tokens"):
+        with pytest.raises(RuntimeError, match=r"Missing \[budget\] section"):
             _resolve_budget(config, "coding")
 
     def test_valid_budget_succeeds(self):
@@ -682,7 +682,7 @@ class TestResolveStagesMissingConfig:
     def test_missing_stages_section_raises(self):
         from clean_room_agent.orchestrator.runner import _resolve_stages
         config = {}  # no stages section at all
-        with pytest.raises(RuntimeError, match="Missing default"):
+        with pytest.raises(RuntimeError, match=r"Missing \[stages\] section"):
             _resolve_stages(config)
 
     def test_empty_default_stages_raises(self):
@@ -1364,10 +1364,10 @@ class TestDocumentationPass:
 
 
 class TestArchiveSessionSeparation:
-    """A5: _archive_session separated catches — DB insert failure preserves file."""
+    """A5: _archive_session — critical failures (read/insert) propagate as RuntimeError."""
 
-    def test_db_insert_failure_preserves_file(self, tmp_path):
-        """A5: If insert_session_archive raises sqlite3.Error, session file is NOT deleted."""
+    def test_db_insert_failure_raises(self, tmp_path):
+        """A5: If insert_session_archive raises sqlite3.Error, RuntimeError propagates."""
         import sqlite3
         from clean_room_agent.orchestrator.runner import _archive_session
 
@@ -1382,13 +1382,14 @@ class TestArchiveSessionSeparation:
         with patch("clean_room_agent.orchestrator.runner._db_path", return_value=session_file):
             with patch("clean_room_agent.orchestrator.runner.insert_session_archive",
                        side_effect=sqlite3.OperationalError("disk full")):
-                _archive_session(mock_conn, tmp_path, "test-preserve")
+                with pytest.raises(RuntimeError, match="Failed to insert session archive"):
+                    _archive_session(mock_conn, tmp_path, "test-preserve")
 
-        # File must still exist because DB insert failed
+        # File must still exist because we raised before deletion
         assert session_file.exists(), "Session file should be preserved when DB insert fails"
 
-    def test_read_failure_returns_early(self, tmp_path):
-        """A5: If file read raises OSError, no DB call is made."""
+    def test_read_failure_raises(self, tmp_path):
+        """A5: If file read raises OSError, RuntimeError propagates."""
         from clean_room_agent.orchestrator.runner import _archive_session
 
         # Create a path that will be considered "existing" but fail on read
@@ -1401,7 +1402,8 @@ class TestArchiveSessionSeparation:
 
         with patch("clean_room_agent.orchestrator.runner._db_path", return_value=session_file):
             with patch.object(Path, "read_bytes", side_effect=OSError("permission denied")):
-                _archive_session(mock_conn, tmp_path, "test-read-fail")
+                with pytest.raises(RuntimeError, match="Failed to read session DB"):
+                    _archive_session(mock_conn, tmp_path, "test-read-fail")
 
         # insert_session_archive should NOT have been called
         mock_conn.commit.assert_not_called()

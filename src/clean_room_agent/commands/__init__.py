@@ -3,6 +3,29 @@
 import click
 
 
+def _require_cli_section(config: dict | None, section: str) -> dict:
+    """Extract a Required config section or raise click.UsageError.
+
+    Same validation as config.require_config_section but raises UsageError
+    for CLI-facing code.
+    """
+    if config is None:
+        raise click.UsageError(
+            f"No config file found. Run 'cra init' to create .clean_room/config.toml"
+        )
+    value = config.get(section)
+    if value is None:
+        raise click.UsageError(
+            f"Missing [{section}] section in .clean_room/config.toml. "
+            f"Run 'cra init' to create a default config."
+        )
+    if not isinstance(value, dict):
+        raise click.UsageError(
+            f"[{section}] in config.toml must be a table, got {type(value).__name__}"
+        )
+    return value
+
+
 def resolve_budget(config: dict | None, role: str = "reasoning") -> tuple[int, int]:
     """Resolve (context_window, reserved_tokens) from config. Raises on missing.
 
@@ -21,7 +44,7 @@ def resolve_budget(config: dict | None, role: str = "reasoning") -> tuple[int, i
     model_config = router.resolve(role)
     cw = model_config.context_window
 
-    budget_config = config.get("budget", {})
+    budget_config = _require_cli_section(config, "budget")
     rt = budget_config.get("reserved_tokens")
     if rt is None:
         raise click.UsageError(
@@ -34,7 +57,7 @@ def resolve_stages(config: dict | None, stages_flag: str | None) -> list[str]:
     """Resolve stage names from CLI flag or config."""
     if stages_flag:
         return [s.strip() for s in stages_flag.split(",")]
-    stages_config = (config or {}).get("stages", {})
+    stages_config = _require_cli_section(config, "stages")
     default_stages = stages_config.get("default")
     if not default_stages:
         raise click.UsageError(

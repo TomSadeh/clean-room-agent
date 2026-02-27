@@ -71,10 +71,11 @@ class TestEnvironmentBrief:
         text = brief.to_prompt_text()
         assert "Prototyping mode" in text
 
-    def test_unknown_style_falls_back_to_development(self):
+    def test_unknown_style_raises(self):
+        """Invalid coding_style is a bug — no silent fallback to development."""
         brief = EnvironmentBrief(os_name="Linux", coding_style="nonexistent")
-        text = brief.to_prompt_text()
-        assert "Development mode" in text
+        with pytest.raises(KeyError, match="nonexistent"):
+            brief.to_prompt_text()
 
     def test_languages_sorted_by_count_descending(self):
         brief = EnvironmentBrief(

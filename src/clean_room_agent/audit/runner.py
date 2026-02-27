@@ -26,14 +26,15 @@ def _get_pipeline_version() -> str:
     """Get current git commit hash as pipeline version identifier."""
     import subprocess
 
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git rev-parse failed (rc={result.returncode}): {result.stderr.strip()}"
         )
-        return result.stdout.strip() if result.returncode == 0 else "unknown"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return "unknown"
+    return result.stdout.strip()
 
 
 def _get_parse_success_rate(raw_conn, task_id: str) -> float:
@@ -120,14 +121,12 @@ def run_single_audit(
 
     # Compute scores
     if package is not None:
-        # Get parse success rate from raw DB
-        parse_rate = 1.0
+        # Get parse success rate from raw DB — failure here is a broken audit, not ignorable
+        raw_conn = get_connection("raw", repo_path=repo_path)
         try:
-            raw_conn = get_connection("raw", repo_path=repo_path)
             parse_rate = _get_parse_success_rate(raw_conn, task_id)
+        finally:
             raw_conn.close()
-        except Exception as e:
-            logger.warning("Failed to compute parse_success_rate: %s", e)
 
         scores = score_retrieval(ref_task, package, parse_success_rate=parse_rate)
     else:

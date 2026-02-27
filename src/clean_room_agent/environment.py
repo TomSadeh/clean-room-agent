@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
+from clean_room_agent.config import _DEFAULT_CODING_STYLE
 from clean_room_agent.query.api import KnowledgeBase
 
 # Coding style enum -> predefined text.  We control the text, not the user.
@@ -62,8 +63,8 @@ class EnvironmentBrief:
 
         lines.append(f"Files indexed: {self.file_count}")
 
-        # Intentional fallback: environment brief is supplementary, not core logic
-        style_text = CODING_STYLES.get(self.coding_style, CODING_STYLES["development"])
+        # coding_style is validated at construction; KeyError here means a bug
+        style_text = CODING_STYLES[self.coding_style]
         lines.append(f"Coding style: {style_text}")
 
         lines.append("</environment>")
@@ -78,13 +79,14 @@ def build_environment_brief(
     """Build environment brief from config + knowledge base. Deterministic, no LLM."""
     overview = kb.get_repo_overview(repo_id)
 
-    # Test framework from config
-    test_command = config.get("testing", {}).get("test_command", "")
+    # Test framework from config — [testing] is Optional (repos may not have tests)
+    testing_config = config.get("testing", {})
+    test_command = testing_config.get("test_command", "")
     test_framework = test_command.split()[0] if test_command.strip() else ""
 
-    # Coding style from config (validated enum)
+    # Coding style from config — [environment] is Optional, _DEFAULT_CODING_STYLE if absent
     env_config = config.get("environment", {})
-    coding_style = env_config.get("coding_style", "development")
+    coding_style = env_config.get("coding_style", _DEFAULT_CODING_STYLE)
     if coding_style not in CODING_STYLES:
         raise ValueError(
             f"Unknown coding_style {coding_style!r}. "

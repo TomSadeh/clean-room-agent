@@ -112,7 +112,7 @@ class TestRetrieveCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["retrieve", "fix bug", "--repo", str(tmp_path)])
         assert result.exit_code != 0
-        assert "Stages not configured" in result.output
+        assert "Missing [stages] section" in result.output
 
     def test_retrieve_budget_from_config(self, tmp_path):
         """Test that budget values are read from config.toml."""
@@ -146,7 +146,7 @@ class TestRetrieveModelsOnlyFallback:
         runner = CliRunner()
         result = runner.invoke(cli, ["retrieve", "fix bug", "--repo", str(tmp_path)])
         assert result.exit_code != 0
-        assert "Budget not configured" in result.output
+        assert "Missing [budget] section" in result.output
 
 
 class TestPlanCLI:
@@ -166,7 +166,7 @@ class TestPlanCLI:
     def test_plan_no_budget(self, tmp_path):
         clean_room = tmp_path / ".clean_room"
         clean_room.mkdir()
-        # Provide context_window in models but no reserved_tokens in budget
+        # Provide context_window in models but no [budget] section
         (clean_room / "config.toml").write_text(
             '[models]\nprovider = "ollama"\ncoding = "m"\nreasoning = "m"\n'
             'base_url = "http://x"\ncontext_window = 32768\n'
@@ -174,7 +174,7 @@ class TestPlanCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["plan", "Add feature", "--repo", str(tmp_path)])
         assert result.exit_code != 0
-        assert "Budget not configured" in result.output
+        assert "Missing [budget] section" in result.output
 
 
 class TestSolveCLI:
@@ -271,13 +271,13 @@ class TestResolveStagesDirectly:
         assert stages == ["scope", "precision"]
 
     def testresolve_stages_no_config_raises(self):
-        """Missing config stages raises UsageError."""
-        with pytest.raises(click.UsageError, match="Stages not configured"):
+        """Missing config stages section raises UsageError."""
+        with pytest.raises(click.UsageError, match=r"Missing \[stages\] section"):
             resolve_stages({}, None)
 
     def testresolve_stages_none_config_raises(self):
         """None config raises UsageError."""
-        with pytest.raises(click.UsageError, match="Stages not configured"):
+        with pytest.raises(click.UsageError, match="No config file found"):
             resolve_stages(None, None)
 
     def testresolve_stages_strips_whitespace(self):

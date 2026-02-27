@@ -126,10 +126,11 @@ def resolve_seeds(
         matches = kb.search_symbols_by_name(repo_id, name)
         if matches:
             # R6: prefer exact matches; for LIKE results, order by name length
-            # (shorter = more specific match) before capping
+            # (shorter = more specific match) before capping.
+            # Within exact matches, order by (file_id, start_line) for determinism.
             exact = [s for s in matches if s.name == name]
             if exact:
-                selected = exact
+                selected = sorted(exact, key=lambda s: (s.file_id, s.start_line))
             else:
                 selected = sorted(matches, key=lambda s: len(s.name))
             symbol_ids.extend(s.id for s in selected[:max_symbol_matches])
@@ -153,10 +154,10 @@ def enrich_task_intent(
     task, enabling strategic decisions about where to look.
     """
     signal_text = (
-        f"Extracted files: {signals.get('files', [])}\n"
-        f"Extracted symbols: {signals.get('symbols', [])}\n"
-        f"Task type: {signals.get('task_type', 'unknown')}\n"
-        f"Keywords: {signals.get('keywords', [])}"
+        f"Extracted files: {signals['files']}\n"
+        f"Extracted symbols: {signals['symbols']}\n"
+        f"Task type: {signals['task_type']}\n"
+        f"Keywords: {signals['keywords']}"
     )
 
     parts = []

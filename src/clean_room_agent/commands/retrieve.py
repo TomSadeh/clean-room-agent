@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from clean_room_agent.commands import make_trace_logger
+from clean_room_agent.commands import _require_cli_section, make_trace_logger
 from clean_room_agent.config import load_config
 from clean_room_agent.retrieval.dataclasses import BudgetConfig
 
@@ -42,7 +42,7 @@ def run_retrieve(
     cw = context_window
     rt = reserved_tokens
     if cw is None or rt is None:
-        budget_config = config.get("budget", {})
+        budget_config = _require_cli_section(config, "budget")
         if cw is None:
             cw = budget_config.get("context_window")
         if rt is None:
@@ -58,7 +58,7 @@ def run_retrieve(
     if stages:
         stage_names = [s.strip() for s in stages.split(",")]
     else:
-        stages_config = config.get("stages", {})
+        stages_config = _require_cli_section(config, "stages")
         default_stages = stages_config.get("default")
         if not default_stages:
             raise click.UsageError(
