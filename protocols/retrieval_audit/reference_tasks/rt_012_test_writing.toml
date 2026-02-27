@@ -1,0 +1,37 @@
+[task]
+id = "RT-012"
+description = "Write tests for the orchestrator runner's rollback behavior: when a pipeline pass fails, verify that LIFO rollback correctly undoes applied patches, session DB is properly archived, and the orchestrator reports the failure in OrchestratorResult"
+task_type = "test"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/orchestrator/runner.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/execute/patch.py",
+  "src/clean_room_agent/execute/dataclasses.py",
+  "src/clean_room_agent/orchestrator/validator.py",
+  "tests/execute/test_patch.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "Full source of orchestrator runner's main execution flow",
+  "How LIFO rollback is implemented (rollback_edits call pattern)",
+  "PatchResult dataclass (what rollback needs)",
+  "OrchestratorResult dataclass (what the runner returns on failure)",
+  "How validate_edits and apply_edits interact",
+  "Existing test patterns from tests/execute/ for fixture setup",
+]
+
+budget_range = [40, 80]
+
+[routing_notes]
+reasoning = "Test writing for orchestrator: needs the runner at full detail + patch module for rollback mechanics + existing test patterns. Broad scope for cross-module dependencies."

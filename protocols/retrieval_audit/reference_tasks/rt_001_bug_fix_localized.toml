@@ -1,0 +1,33 @@
+[task]
+id = "RT-001"
+description = "Fix the scope stage to not crash when the seed list is empty"
+task_type = "bug_fix"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/scope_stage.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/stage.py",
+  "src/clean_room_agent/retrieval/batch_judgment.py",
+  "src/clean_room_agent/retrieval/dataclasses.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+]
+
+must_contain_information = [
+  "Full source of the ScopeStage class including run() and expand_scope()",
+  "StageContext dataclass definition",
+  "ScopedFile dataclass definition",
+  "How run_batched_judgment is called from scope stage",
+]
+
+budget_range = [20, 60]
+
+[routing_notes]
+reasoning = "Localized bug fix: needs scope (to find related stage infrastructure) + precision (specific symbols in scope_stage.py). Similarity unnecessary."

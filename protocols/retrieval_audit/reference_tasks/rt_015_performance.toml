@@ -1,0 +1,36 @@
+[task]
+id = "RT-015"
+description = "Optimize scope expansion for large repositories: the current expand_scope function loads all dependencies and co-changes into memory before filtering, which is slow for repos with >1000 files. Add pagination to DB queries and early termination when the scope cap is reached"
+task_type = "performance"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/scope_stage.py",
+  "src/clean_room_agent/query/api.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/stage.py",
+  "src/clean_room_agent/db/queries.py",
+  "src/clean_room_agent/retrieval/batch_judgment.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+]
+
+must_contain_information = [
+  "Full source of expand_scope / ScopeStage.run (the hot path)",
+  "KnowledgeBase dependency query methods (what SQL they run)",
+  "KnowledgeBase co-change query methods",
+  "resolve_retrieval_param for max_deps, max_co_changes caps",
+  "How batched judgment processes candidates (batch sizes)",
+  "DB query patterns in queries.py for deps and co_changes",
+]
+
+budget_range = [35, 75]
+
+[routing_notes]
+reasoning = "Performance: needs hot path code at full detail + DB query layer to understand data flow and N+1 patterns. Scope for dependency chain + precision for specific query methods."

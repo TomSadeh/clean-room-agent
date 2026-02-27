@@ -1,0 +1,38 @@
+[task]
+id = "RT-013"
+description = "Document the budget tracking system: how token estimation works, what the safety margin does, how framing overhead is accounted for, and how budget flows from config through pipeline to context assembly"
+task_type = "docs"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/budget.py",
+  "src/clean_room_agent/token_estimation.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/context_assembly.py",
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/retrieval/pipeline.py",
+  "src/clean_room_agent/config.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "BudgetTracker class with safety margin calculation",
+  "estimate_tokens and estimate_framing_tokens functions",
+  "check_prompt_budget function (R3 validation)",
+  "BudgetConfig dataclass (context_window, reserved_tokens, effective_budget)",
+  "How pipeline.py passes budget to assemble_context",
+  "How config.toml budget section is parsed",
+]
+
+budget_range = [30, 75]
+
+[routing_notes]
+reasoning = "Documentation: needs module boundaries and API surfaces across budget-related code. Moderate scope (budget chain from config to assembly), supporting-level precision for most files."

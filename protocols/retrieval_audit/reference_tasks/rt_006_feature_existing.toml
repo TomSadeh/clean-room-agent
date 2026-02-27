@@ -1,0 +1,35 @@
+[task]
+id = "RT-006"
+description = "Add enrichment data display to the context assembly metadata summary — when a file has LLM-enriched metadata (purpose, domain, key_concepts), include it in the FileContent.metadata_summary field so the execute model knows the file's role"
+task_type = "feature"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/context_assembly.py",
+  "src/clean_room_agent/query/api.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/db/queries.py",
+  "src/clean_room_agent/llm/enrichment.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "Full source of _read_and_render_files (where metadata_summary is built)",
+  "FileContent dataclass definition (metadata_summary field)",
+  "KnowledgeBase.get_file_metadata_batch method",
+  "FileMetadata model (what fields enrichment provides)",
+  "How enrichment data flows from enrich command to curated DB",
+]
+
+budget_range = [30, 70]
+
+[routing_notes]
+reasoning = "Feature modifying existing module: needs scope (assembly + query API) + precision (specific rendering functions and metadata model)."

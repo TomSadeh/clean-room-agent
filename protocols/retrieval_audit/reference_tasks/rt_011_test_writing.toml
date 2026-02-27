@@ -1,0 +1,36 @@
+[task]
+id = "RT-011"
+description = "Write comprehensive tests for the precision stage's symbol classification, covering: primary vs supporting vs type_context classification, edge cases with decorators and multi-line signatures, group_id assignment for dedup patterns"
+task_type = "test"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/precision_stage.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/retrieval/stage.py",
+  "src/clean_room_agent/retrieval/batch_judgment.py",
+  "tests/retrieval/test_precision_stage.py",
+  "tests/retrieval/test_scope_stage.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+]
+
+must_contain_information = [
+  "Full source of PrecisionStage class (the code under test)",
+  "ClassifiedSymbol dataclass (what precision stage produces)",
+  "How symbol classification LLM call works in precision stage",
+  "Existing test patterns from tests/retrieval/ (how tests are structured in this project)",
+  "StageContext structure (how to set up test fixtures)",
+]
+
+budget_range = [35, 75]
+
+[routing_notes]
+reasoning = "Test writing: needs code-under-test (precision_stage.py) at full detail + existing test patterns for structure. Scope to find test examples + precision for deep symbol extraction."

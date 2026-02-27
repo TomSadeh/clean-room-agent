@@ -1,0 +1,38 @@
+[task]
+id = "RT-014"
+description = "Document the three-database architecture: how curated, raw, and session DBs interact, what each stores, connection lifecycle, and the cold-start path from cra index"
+task_type = "docs"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/db/connection.py",
+  "src/clean_room_agent/db/schema.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/db/queries.py",
+  "src/clean_room_agent/db/raw_queries.py",
+  "src/clean_room_agent/db/session_helpers.py",
+  "src/clean_room_agent/db/helpers.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "get_connection factory function (role dispatch, path resolution)",
+  "Full DDL for curated DB tables",
+  "Full DDL for raw DB tables",
+  "Session DB schema (key-value store)",
+  "How _db_path resolves file locations",
+  "Read-only enforcement for curated DB in Phase 2/3",
+]
+
+budget_range = [40, 85]
+
+[routing_notes]
+reasoning = "Documentation across DB module: needs broad scope to cover all db/ files, primary detail for schema, supporting for query functions."

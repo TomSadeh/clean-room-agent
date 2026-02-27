@@ -1,0 +1,32 @@
+[task]
+id = "RT-002"
+description = "Fix parse_json_response in retrieval utils to handle responses where the JSON is wrapped in markdown code fences with a language tag like ```json"
+task_type = "bug_fix"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/utils.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/batch_judgment.py",
+  "src/clean_room_agent/retrieval/routing.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/orchestrator/*",
+]
+
+must_contain_information = [
+  "Full source of parse_json_response function",
+  "How parse_json_response is called from batch_judgment (call site context)",
+  "How parse_json_response is called from routing (call site context)",
+]
+
+budget_range = [15, 50]
+
+[routing_notes]
+reasoning = "Narrow scope: seed is utils.py, need callers to understand contract. Deps + precision to find call sites."

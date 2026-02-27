@@ -1,0 +1,35 @@
+[task]
+id = "RT-003"
+description = "Fix budget tracking inconsistency: BudgetTracker applies a 0.9 safety margin but context_assembly also has its own overflow checks, causing some files to be dropped even when they would fit within the actual budget"
+task_type = "bug_fix"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/budget.py",
+  "src/clean_room_agent/retrieval/context_assembly.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/retrieval/pipeline.py",
+  "src/clean_room_agent/token_estimation.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+]
+
+must_contain_information = [
+  "Full source of BudgetTracker class (safety margin logic)",
+  "Full source of assemble_context function",
+  "How _trim_to_budget interacts with BudgetTracker",
+  "BudgetConfig dataclass definition (effective_budget property)",
+  "estimate_tokens and estimate_framing_tokens functions",
+]
+
+budget_range = [30, 70]
+
+[routing_notes]
+reasoning = "Cross-cutting bug spanning budget.py and context_assembly.py. Needs scope (to find all budget-related code) + precision (deep symbol extraction in both files)."

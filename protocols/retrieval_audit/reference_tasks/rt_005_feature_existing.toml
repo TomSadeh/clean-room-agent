@@ -1,0 +1,38 @@
+[task]
+id = "RT-005"
+description = "Add a new retrieval stage for co-change analysis that identifies files that historically change together based on git commit history, using the co_changes table in the curated DB"
+task_type = "feature"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/stage.py",
+  "src/clean_room_agent/retrieval/scope_stage.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/retrieval/batch_judgment.py",
+  "src/clean_room_agent/query/api.py",
+  "src/clean_room_agent/db/schema.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+]
+
+must_contain_information = [
+  "RetrievalStage protocol definition",
+  "register_stage decorator usage",
+  "StageContext dataclass (how stages receive and mutate context)",
+  "An existing stage implementation as a pattern (scope_stage.py run method)",
+  "ScopedFile dataclass (what stages add to context)",
+  "run_batched_judgment function (how stages call LLM for judgment)",
+  "co_changes table schema from curated DB",
+  "KnowledgeBase query methods for commits and co-changes",
+]
+
+budget_range = [40, 80]
+
+[routing_notes]
+reasoning = "Feature in existing module: needs scope (understand stage infrastructure) + precision (deep dive into stage protocol, existing stage patterns, and DB schema for co-changes)."

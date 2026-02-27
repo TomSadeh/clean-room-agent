@@ -1,0 +1,34 @@
+[task]
+id = "RT-007"
+description = "Add a new CLI command 'cra trace-view' that reads a trace file produced by --trace and renders a human-readable summary of retrieval decisions: which stages ran, what files were scoped, what was included/excluded and why"
+task_type = "feature"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/cli.py",
+  "src/clean_room_agent/trace.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/commands/__init__.py",
+  "src/clean_room_agent/commands/retrieve.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "CLI group registration pattern (how existing commands are registered with Click)",
+  "TraceLogger class (what data it captures, file format)",
+  "Existing command implementation pattern (e.g. retrieve or plan command)",
+  "How make_trace_logger creates trace output",
+]
+
+budget_range = [25, 65]
+
+[routing_notes]
+reasoning = "New module feature: needs broad scope to understand CLI patterns and trace format, minimal precision since mostly new code."

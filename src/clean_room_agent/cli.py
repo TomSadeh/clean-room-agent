@@ -129,6 +129,53 @@ def enrich(repo_path, promote):
         click.echo(f"Promoted {result.files_promoted} to curated DB")
 
 
+@cli.command("index-kb")
+@click.argument("repo_path", default=".", type=click.Path(exists=True))
+@click.option("--kb-path", default=None, type=click.Path(exists=True), help="Path to knowledge_base/c_references.")
+@click.option("--sources", default=None, help="Comma-separated source names (e.g. knr2,cert_c).")
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
+def index_kb(repo_path, kb_path, sources, verbose):
+    """Index knowledge base reference material (C books, standards, API docs)."""
+    import logging
+    from pathlib import Path
+
+    from clean_room_agent.knowledge_base.indexer import (
+        SOURCE_REGISTRY,
+        index_knowledge_base,
+    )
+
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    repo = Path(repo_path).resolve()
+    kb = Path(kb_path).resolve() if kb_path else repo / "knowledge_base" / "c_references"
+    if not kb.is_dir():
+        raise click.UsageError(f"Knowledge base directory not found: {kb}")
+
+    source_list = sources.split(",") if sources else None
+    if source_list:
+        unknown = [s for s in source_list if s not in SOURCE_REGISTRY]
+        if unknown:
+            raise click.UsageError(
+                f"Unknown source(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(sorted(SOURCE_REGISTRY))}"
+            )
+
+    result = index_knowledge_base(kb, repo, sources=source_list)
+
+    click.echo(f"Knowledge base indexing complete")
+    click.echo(f"  Sources indexed: {result.sources_indexed}")
+    click.echo(f"  Sections total:  {result.sections_total}")
+    click.echo(f"  Bridge files:    {result.bridge_files_created}")
+    click.echo(f"  Duration:        {result.duration_ms}ms")
+    if result.errors:
+        click.echo(f"  Errors:          {len(result.errors)}")
+        for err in result.errors:
+            click.echo(f"    - {err}")
+
+
 @cli.command()
 @click.argument("task")
 @click.option("--repo", "repo_path", default=".", type=click.Path(exists=True), help="Repository path.")
@@ -174,3 +221,17 @@ def solve(task, repo_path, plan_path, trace_flag, trace_output, verbose):
     from clean_room_agent.commands.solve import run_solve
 
     run_solve(task, repo_path, plan_path, trace_flag, trace_output, verbose)
+
+
+@cli.command()
+@click.option("--repo", "repo_path", default=".", type=click.Path(exists=True), help="Repository path.")
+@click.option("--task", "task_filter", default=None, help="Run only tasks matching this ID (e.g. RT-001).")
+@click.option("--stages", default=None, help="Comma-separated stage names.")
+@click.option("--trace", "trace_flag", is_flag=True, help="Enable pipeline trace log per task.")
+@click.option("--no-save", is_flag=True, help="Skip saving findings to TOML files.")
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
+def audit(repo_path, task_filter, stages, trace_flag, no_save, verbose):
+    """Run the retrieval audit protocol on reference tasks."""
+    from clean_room_agent.commands.audit import run_audit
+
+    run_audit(repo_path, task_filter, stages, trace_flag, verbose, save_findings=not no_save)

@@ -1,0 +1,37 @@
+[task]
+id = "RT-009"
+description = "Refactor _insert_row helper in db/helpers.py to support a RETURNING clause, and update all call sites across the codebase that currently do a separate SELECT after INSERT to get the auto-generated ID"
+task_type = "refactor"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/db/helpers.py",
+  "src/clean_room_agent/db/queries.py",
+  "src/clean_room_agent/db/raw_queries.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/db/schema.py",
+  "src/clean_room_agent/db/connection.py",
+  "src/clean_room_agent/llm/enrichment.py",
+  "src/clean_room_agent/indexer/orchestrator.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+]
+
+must_contain_information = [
+  "Full source of _insert_row helper function",
+  "All call sites of _insert_row (to update them)",
+  "How raw_queries uses _insert_row for insert_task_run etc",
+  "How queries.py uses _insert_row for upsert_file etc",
+  "Database schema showing which tables have auto-increment IDs",
+]
+
+budget_range = [40, 85]
+
+[routing_notes]
+reasoning = "Refactoring: very broad scope to find all call sites. Needs deps (who imports _insert_row) + precision (full source of every call site)."

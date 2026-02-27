@@ -1,0 +1,37 @@
+[task]
+id = "RT-016"
+description = "Optimize context assembly rendering: _render_at_level and _extract_supporting iterate over all classified_symbols for each file, resulting in O(files * symbols) complexity. Pre-index symbols by file_id to achieve O(files + symbols)"
+task_type = "performance"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/retrieval/context_assembly.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/retrieval/dataclasses.py",
+  "src/clean_room_agent/retrieval/budget.py",
+  "src/clean_room_agent/retrieval/stage.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/indexer/*",
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/knowledge_base/*",
+  "src/clean_room_agent/parsers/*",
+  "src/clean_room_agent/extractors/*",
+]
+
+must_contain_information = [
+  "Full source of _render_at_level function",
+  "Full source of _extract_supporting function",
+  "Full source of _extract_signatures function",
+  "ClassifiedSymbol dataclass (fields used during rendering)",
+  "How classified_symbols are stored in StageContext (list structure)",
+  "How _read_and_render_files iterates over files and calls rendering",
+]
+
+budget_range = [25, 65]
+
+[routing_notes]
+reasoning = "Performance in single module: narrow scope on context_assembly.py at primary detail + dataclasses for type information. Precision on rendering functions."

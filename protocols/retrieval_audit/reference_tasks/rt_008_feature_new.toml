@@ -1,0 +1,36 @@
+[task]
+id = "RT-008"
+description = "Add a new parser for C language files in the parsers module, supporting function definitions, struct declarations, typedef, enum, and macro definitions, following the existing parser pattern used by Python and TypeScript parsers"
+task_type = "feature"
+
+[context_requirements]
+must_contain_files = [
+  "src/clean_room_agent/parsers/base.py",
+  "src/clean_room_agent/parsers/registry.py",
+]
+
+should_contain_files = [
+  "src/clean_room_agent/parsers/python_parser.py",
+  "src/clean_room_agent/parsers/ts_js_parser.py",
+  "src/clean_room_agent/constants.py",
+]
+
+must_not_contain = [
+  "src/clean_room_agent/retrieval/*",
+  "src/clean_room_agent/execute/*",
+  "src/clean_room_agent/orchestrator/*",
+  "src/clean_room_agent/knowledge_base/*",
+]
+
+must_contain_information = [
+  "BaseParser class/protocol definition (what interface a parser must implement)",
+  "Parser registry pattern (how parsers are registered and looked up by language)",
+  "An existing parser implementation as reference (Python or TS/JS parser)",
+  "LANGUAGE_MAP constant (mapping file extensions to language names)",
+  "How tree-sitter grammars are loaded and used by existing parsers",
+]
+
+budget_range = [30, 70]
+
+[routing_notes]
+reasoning = "New module following existing pattern: needs scope to find parser infrastructure + precision to extract the parser protocol and registration pattern."
