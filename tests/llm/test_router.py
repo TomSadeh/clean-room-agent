@@ -262,6 +262,45 @@ class TestContextWindowPerRole:
         mc = router.resolve("reasoning", stage_name="scope")
         assert mc.context_window == 32768
 
+    def test_override_dict_with_max_tokens(self):
+        """Override dict can specify max_tokens (e.g. 16 for binary classifiers)."""
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {
+                "scope": {"model": "qwen3:0.6b", "context_window": 8192, "max_tokens": 16},
+            },
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.model == "qwen3:0.6b"
+        assert mc.context_window == 8192
+        assert mc.max_tokens == 16
+
+    def test_override_dict_without_max_tokens_inherits(self):
+        """Override dict without max_tokens falls back to role's max_tokens."""
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {
+                "scope": {"model": "qwen3:0.6b"},
+            },
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.max_tokens == 32768 // 8  # derived from role's context_window
+
+    def test_override_string_inherits_max_tokens(self):
+        """String override inherits max_tokens from role."""
+        config = {
+            **self.base,
+            "context_window": 32768,
+            "overrides": {"scope": "qwen3:4b-scope-v1"},
+        }
+        router = ModelRouter(config)
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.max_tokens == 32768 // 8
+
     def test_override_dict_missing_model_raises(self):
         config = {
             **self.base,

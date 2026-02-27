@@ -1,10 +1,20 @@
-"""Precision stage: symbol extraction + LLM classification."""
+"""Precision stage: symbol extraction + 3-pass binary classification cascade.
+
+Binary decomposition: the 4-way classification (primary/supporting/type_context/excluded)
+decomposes into 3 sequential binary passes, each filtering the input for the next:
+  Pass 1: "Is this symbol relevant?" → yes=proceed, no=excluded
+  Pass 2: "Is this symbol directly involved in the change?" → yes=primary, no=proceed
+  Pass 3: "Does this symbol need full source or just signatures?" → yes=supporting, no=type_context
+
+Each pass is a trivially parseable yes/no. The cascade is volume-reducing: pass 1
+eliminates most symbols, passes 2-3 run on progressively smaller sets.
+"""
 
 import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import run_batched_judgment
+from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
@@ -13,17 +23,25 @@ logger = logging.getLogger(__name__)
 MAX_CALLEES = 5
 MAX_CALLERS = 5
 
-PRECISION_SYSTEM = (
-    "You are Jane, a code precision analyst. Given a task description and a list of symbols, "
-    "classify each symbol's relevance to the task. "
-    "Detail levels:\n"
-    "- primary: directly involved in the change\n"
-    "- supporting: provides context needed to understand primary symbols\n"
-    "- type_context: type definitions, interfaces, or constants referenced by primary/supporting\n"
-    "- excluded: not relevant to this task\n\n"
-    "Respond with a JSON array: [{\"name\": \"...\", \"file_path\": \"...\", \"start_line\": N, \"detail_level\": \"...\", \"reason\": \"...\"}]. "
-    "Include start_line to disambiguate symbols with the same name in the same file. "
-    "Respond with ONLY the JSON array, no markdown fencing or extra text."
+PRECISION_PASS1_SYSTEM = (
+    "You are a code relevance judge. Given a task and one code symbol, "
+    "determine if this symbol is relevant to the task. "
+    "Respond with ONLY \"yes\" or \"no\"."
+)
+
+PRECISION_PASS2_SYSTEM = (
+    "You are a code relevance judge. Given a task and one code symbol "
+    "that is relevant to the task, determine if this symbol is directly "
+    "involved in the change (will be modified or is central to the logic). "
+    "Respond with ONLY \"yes\" or \"no\"."
+)
+
+PRECISION_PASS3_SYSTEM = (
+    "You are a code relevance judge. Given a task and one code symbol "
+    "that provides context for the change, determine if the full source "
+    "code is needed (yes) or if just the signature/type definition is "
+    "sufficient (no). "
+    "Respond with ONLY \"yes\" or \"no\"."
 )
 
 
@@ -101,20 +119,21 @@ def extract_precision_symbols(
     return candidates
 
 
-_TOKENS_PER_SYMBOL = 70  # ~70 tokens per symbol line (name + path + sig + connections + docstring)
-
-
 def classify_symbols(
     candidates: list[dict],
     task: TaskQuery,
     llm: LLMClient,
     kb: "KnowledgeBase | None" = None,
 ) -> list[ClassifiedSymbol]:
-    """LLM classification of symbol detail levels.
+    """3-pass binary cascade for symbol classification.
 
     Library symbols are pre-classified as type_context (R17: they cannot be
     primary, and sending them to the LLM wastes tokens). Only project symbols
-    enter LLM judgment.
+    enter the binary cascade.
+
+    Pass 1: relevant or excluded? (all project symbols)
+    Pass 2: primary or not? (relevant subset only)
+    Pass 3: supporting or type_context? (non-primary relevant subset only)
     """
     if not candidates:
         return []
@@ -160,68 +179,97 @@ def classify_symbols(
     def _format(c: dict) -> str:
         conn_info = ", ".join(c["connections"]) if c["connections"] else "no connections"
         line = (
-            f"- {c['name']} ({c['kind']}) in {c['file_path']}:{c['start_line']}-{c['end_line']} "
+            f"Symbol: {c['name']} ({c['kind']}) in {c['file_path']}:{c['start_line']}-{c['end_line']}\n"
             f"[{conn_info}]"
-            + (f" sig: {c['signature']}" if c['signature'] else "")
+            + (f"\nsig: {c['signature']}" if c['signature'] else "")
         )
         doc_key = (c["file_id"], c["symbol_id"])
         doc_summary = docstring_summaries.get(doc_key)
         if doc_summary:
-            line += f" doc: {doc_summary}"
+            line += f"\ndoc: {doc_summary}"
         return line
 
-    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\nSymbols:\n"
+    def _symbol_key(c: dict) -> tuple:
+        return (c["name"], c["file_path"], c["start_line"])
 
-    class_map, omitted = run_batched_judgment(
+    task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\n"
+
+    # === Pass 1: relevant or excluded? ===
+    pass1_map, _ = run_binary_judgment(
         project_candidates,
-        system_prompt=PRECISION_SYSTEM,
-        task_header=task_header,
+        system_prompt=PRECISION_PASS1_SYSTEM,
+        task_context=task_header,
         llm=llm,
-        tokens_per_item=_TOKENS_PER_SYMBOL,
         format_item=_format,
-        extract_key=lambda cl: (cl["name"], cl["file_path"], cl["start_line"]) if "name" in cl else None,
-        stage_name="precision",
-        item_key=lambda c: (c["name"], c["file_path"], c["start_line"]),
+        stage_name="precision_pass1",
+        item_key=_symbol_key,
         default_action="excluded",
     )
 
+    relevant = [c for c in project_candidates if pass1_map.get(_symbol_key(c), False)]
     for c in project_candidates:
-        key = (c["name"], c["file_path"], c["start_line"])
-        cl = class_map.get(key)
-        if not cl:
-            # R2: symbol omitted by LLM → default-deny → excluded
-            detail_level = "excluded"
-            reason = "omitted by LLM (R2 default-deny)"
-        elif "detail_level" not in cl:
-            # LLM returned data but omitted required field — malformed response
-            logger.warning("R2: precision LLM response missing 'detail_level' for %s — excluding (malformed)", c["name"])
-            detail_level = "excluded"
-            reason = cl.get("reason", "malformed: missing detail_level")
-        else:
-            detail_level = cl["detail_level"]
-            if detail_level not in ("primary", "supporting", "type_context", "excluded"):
-                logger.warning("R2: invalid detail_level %r for %s — excluding", detail_level, c["name"])
-                detail_level = "excluded"
-            if "signature" not in cl:
-                logger.warning("Precision LLM response missing 'signature' for %s — using empty", c["name"])
-            if "reason" not in cl:
-                logger.warning("Precision LLM response missing 'reason' for %s — using empty", c["name"])
-            reason = cl.get("reason", "")
+        if not pass1_map.get(_symbol_key(c), False):
+            results.append(_make_classified(c, "excluded", "pass1: not relevant"))
 
-        results.append(ClassifiedSymbol(
-            symbol_id=c["symbol_id"],
-            file_id=c["file_id"],
-            name=c["name"],
-            kind=c["kind"],
-            start_line=c["start_line"],
-            end_line=c["end_line"],
-            detail_level=detail_level,
-            reason=reason,
-            signature=c["signature"],
-            file_source=c["file_source"],
-        ))
+    if not relevant:
+        return results
+
+    # === Pass 2: primary or not? (only relevant symbols) ===
+    pass2_map, _ = run_binary_judgment(
+        relevant,
+        system_prompt=PRECISION_PASS2_SYSTEM,
+        task_context=task_header,
+        llm=llm,
+        format_item=_format,
+        stage_name="precision_pass2",
+        item_key=_symbol_key,
+        default_action="non-primary",
+    )
+
+    primary = [c for c in relevant if pass2_map.get(_symbol_key(c), False)]
+    non_primary = [c for c in relevant if not pass2_map.get(_symbol_key(c), False)]
+
+    for c in primary:
+        results.append(_make_classified(c, "primary", "pass2: directly involved"))
+
+    if not non_primary:
+        return results
+
+    # === Pass 3: supporting or type_context? (only non-primary relevant symbols) ===
+    pass3_map, _ = run_binary_judgment(
+        non_primary,
+        system_prompt=PRECISION_PASS3_SYSTEM,
+        task_context=task_header,
+        llm=llm,
+        format_item=_format,
+        stage_name="precision_pass3",
+        item_key=_symbol_key,
+        default_action="type_context",
+    )
+
+    for c in non_primary:
+        if pass3_map.get(_symbol_key(c), False):
+            results.append(_make_classified(c, "supporting", "pass3: full source needed"))
+        else:
+            results.append(_make_classified(c, "type_context", "pass3: signature sufficient"))
 
     return results
+
+
+def _make_classified(c: dict, detail_level: str, reason: str) -> ClassifiedSymbol:
+    """Build a ClassifiedSymbol from a candidate dict and cascade result."""
+    return ClassifiedSymbol(
+        symbol_id=c["symbol_id"],
+        file_id=c["file_id"],
+        name=c["name"],
+        kind=c["kind"],
+        start_line=c["start_line"],
+        end_line=c["end_line"],
+        detail_level=detail_level,
+        reason=reason,
+        signature=c["signature"],
+        file_source=c["file_source"],
+    )
 
 
 @register_stage("precision", description=(

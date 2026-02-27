@@ -1,6 +1,5 @@
 """Tests for library guard in precision stage."""
 
-import json
 from unittest.mock import MagicMock
 
 from clean_room_agent.retrieval.dataclasses import TaskQuery
@@ -21,16 +20,8 @@ def _mock_llm_with_response(text):
 class TestLibrarySymbolPreFilter:
     def test_library_symbol_auto_classified_as_type_context(self):
         """R17: Library symbols are auto-classified as type_context without LLM."""
-        # LLM only classifies the project symbol
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {
-                "name": "handle_request",
-                "file_path": "src/app.py",
-                "start_line": 1,
-                "detail_level": "primary",
-                "reason": "changed function",
-            },
-        ]))
+        # Return "yes" for all binary calls → handle_request: pass1 yes, pass2 yes → primary
+        mock_llm = _mock_llm_with_response("yes")
 
         candidates = [
             {
@@ -73,11 +64,11 @@ class TestLibrarySymbolPreFilter:
         assert handler_cs.detail_level == "primary"
         assert handler_cs.file_source == "project"
 
-        # LLM prompt should only contain project symbol, not library
-        call_args = mock_llm.complete.call_args
-        prompt = call_args[0][0]
-        assert "handle_request" in prompt
-        assert "Widget" not in prompt
+        # LLM prompts should only contain project symbol, not library
+        for c in mock_llm.complete.call_args_list:
+            prompt = c.args[0]
+            assert "handle_request" in prompt
+            assert "Widget" not in prompt
 
     def test_library_only_candidates_skip_llm(self):
         """R17: When all candidates are library, LLM is not called."""

@@ -1,61 +1,19 @@
-"""Stage routing: LLM-based selection of which retrieval stages to run."""
+"""Stage routing: per-stage binary LLM selection of which retrieval stages to run.
 
-from clean_room_agent.llm.client import LLMClient, LoggedLLMClient
+Binary decomposition: with N registered stages, the decision space is 2^N
+possibilities. Each stage gets an independent binary call: "Should this stage
+run?" The reasoning field (logged but never consumed downstream) is dropped.
+"""
+
+from clean_room_agent.llm.client import LLMClient
+from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import TaskQuery
-from clean_room_agent.retrieval.utils import parse_json_response
-from clean_room_agent.token_estimation import validate_prompt_budget
 
-ROUTING_SYSTEM = (
-    "You are Jane, a retrieval stage router. Given a task summary and "
-    "available retrieval stages, select which stages to run.\n"
-    "Respond with ONLY a JSON object:\n"
-    '{"stages": ["stage_name", ...], "reasoning": "one sentence justification"}\n'
-    "Select only stages that would contribute useful context for this task. "
-    "If none are needed, use an empty list."
+ROUTING_BINARY_SYSTEM = (
+    "You are a retrieval stage router. Given a task summary and one retrieval stage, "
+    "determine if this stage should run to gather useful context for the task. "
+    "Respond with ONLY \"yes\" or \"no\"."
 )
-
-
-def build_routing_prompt(
-    task_query: TaskQuery,
-    available_stages: dict[str, str],
-) -> str:
-    """Build the user prompt for stage routing.
-
-    Deliberately minimal — only the distilled summary from task analysis,
-    not the full task text, file tree, or environment brief.
-    """
-    lines = [
-        f"Task: {task_query.intent_summary}",
-        f"Type: {task_query.task_type}",
-        f"Seed files: {len(task_query.seed_file_ids)}",
-        f"Seed symbols: {len(task_query.seed_symbol_ids)}",
-        f"Explicit file paths: {len(task_query.mentioned_files)}",
-        "",
-        "Available stages:",
-    ]
-    for name, description in available_stages.items():
-        lines.append(f"- {name}: {description}")
-    return "\n".join(lines)
-
-
-def parse_routing_response(text: str) -> tuple[list[str], str]:
-    """Parse routing LLM response into (selected_stages, reasoning).
-
-    Raises ValueError on any parse failure (default-deny, R2).
-    """
-    data = parse_json_response(text, "routing")
-    if not isinstance(data, dict):
-        raise ValueError(f"Routing response must be a JSON object, got {type(data).__name__}")
-    if "stages" not in data:
-        raise ValueError("Routing response missing 'stages' key")
-    stages = data["stages"]
-    if not isinstance(stages, list):
-        raise ValueError(f"'stages' must be a list, got {type(stages).__name__}")
-    for item in stages:
-        if not isinstance(item, str):
-            raise ValueError(f"Each stage must be a string, got {type(item).__name__}: {item!r}")
-    reasoning = data.get("reasoning", "")
-    return stages, reasoning
 
 
 def route_stages(
@@ -63,39 +21,41 @@ def route_stages(
     available_stages: dict[str, str],
     llm: LLMClient,
 ) -> tuple[list[str], str]:
-    """Select which retrieval stages to run via LLM.
+    """Select which retrieval stages to run via per-stage binary LLM calls.
+
+    Each available stage gets an independent yes/no call. This replaces the
+    previous single-call JSON set-selection pattern.
 
     Args:
-        llm: Must be a LoggedLLMClient (or wrapper around one) so that the
+        llm: Must be a LoggedLLMClient (or wrapper around one) so that each
              routing decision is recorded in the raw DB audit trail.
 
-    Returns (selected_stage_names, reasoning). Empty list is valid (0 stages).
-    Raises ValueError if LLM returns unparseable response or unknown stage names.
+    Returns (selected_stage_names, reasoning). reasoning is always "" (dropped).
+    Empty list is valid (0 stages).
     """
-    # T79: Enforce that the LLM client supports audit logging.
-    # The caller must pass a client with flush() capability (LoggedLLMClient or
-    # a wrapper like EnvironmentLLMClient that delegates to one).
-    if not hasattr(llm, "flush"):
-        raise TypeError(
-            f"route_stages() requires a logging-capable LLM client (with flush()), "
-            f"got {type(llm).__name__}"
-        )
-    prompt = build_routing_prompt(task_query, available_stages)
+    if not available_stages:
+        return [], ""
 
-    validate_prompt_budget(
-        prompt, ROUTING_SYSTEM,
-        llm.config.context_window, llm.config.max_tokens, "routing",
+    task_context = (
+        f"Task: {task_query.intent_summary}\n"
+        f"Type: {task_query.task_type}\n"
+        f"Seed files: {len(task_query.seed_file_ids)}\n"
+        f"Seed symbols: {len(task_query.seed_symbol_ids)}\n"
+        f"Explicit file paths: {len(task_query.mentioned_files)}\n\n"
     )
 
-    response = llm.complete(prompt, system=ROUTING_SYSTEM)
-    selected, reasoning = parse_routing_response(response.text)
+    stage_items = list(available_stages.items())  # [(name, description), ...]
 
-    # Validate all selected stages exist
-    unknown = [s for s in selected if s not in available_stages]
-    if unknown:
-        raise ValueError(
-            f"Routing selected unknown stages: {unknown}. "
-            f"Available: {sorted(available_stages)}"
-        )
+    verdict_map, _ = run_binary_judgment(
+        stage_items,
+        system_prompt=ROUTING_BINARY_SYSTEM,
+        task_context=task_context,
+        llm=llm,
+        format_item=lambda item: f"Stage: {item[0]}\nDescription: {item[1]}",
+        stage_name="routing",
+        item_key=lambda item: item[0],
+        default_action="skipped",
+    )
 
-    return selected, reasoning
+    selected = [name for name, _ in stage_items if verdict_map.get(name, False)]
+    return selected, ""

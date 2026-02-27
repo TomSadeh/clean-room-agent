@@ -92,36 +92,37 @@ class TestT57RoutingBudgetGate:
         task = _task(intent_summary="x" * 500)
         stages = {"scope": "Finds files", "precision": "Classifies symbols"}
 
-        with pytest.raises(ValueError, match="R3.*routing prompt too large"):
+        with pytest.raises(ValueError, match="R3.*routing.*prompt too large"):
             route_stages(task, stages, llm)
 
         llm.complete.assert_not_called()
 
 
 class TestT57ScopeBudgetGate:
-    """T57c: judge_scope raises ValueError when actual batch prompt exceeds budget."""
+    """T57c: judge_scope raises ValueError when binary prompt exceeds budget."""
 
-    def test_oversized_batch_raises(self):
+    def test_oversized_prompt_raises(self):
         from clean_room_agent.retrieval.scope_stage import judge_scope
 
-        # Tiny window forces the actual-prompt validation to fire
-        llm = _mock_llm(context_window=200, max_tokens=50)
+        # Binary: each candidate gets its own prompt. Small window ensures
+        # even a single candidate's prompt exceeds budget.
+        llm = _mock_llm(context_window=150, max_tokens=50)
         candidates = [
             ScopedFile(file_id=i, path=f"very/long/path/to/dep_{i}.py", language="python", tier=2)
             for i in range(50)
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*scope prompt too large"):
+        with pytest.raises(ValueError, match="R3.*scope.*prompt too large"):
             judge_scope(candidates, task, llm)
 
         llm.complete.assert_not_called()
 
 
 class TestT57PrecisionBudgetGate:
-    """T57d: classify_symbols raises ValueError when actual batch prompt exceeds budget."""
+    """T57d: classify_symbols raises ValueError when binary prompt exceeds budget."""
 
-    def test_oversized_batch_raises(self):
+    def test_oversized_prompt_raises(self):
         from clean_room_agent.retrieval.precision_stage import classify_symbols
 
         llm = _mock_llm(context_window=200, max_tokens=50)
@@ -137,16 +138,16 @@ class TestT57PrecisionBudgetGate:
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*precision prompt too large"):
+        with pytest.raises(ValueError, match="R3.*precision.*prompt too large"):
             classify_symbols(candidates, task, llm)
 
         llm.complete.assert_not_called()
 
 
 class TestT57SimilarityBudgetGate:
-    """T57e: judge_similarity raises ValueError when actual batch prompt exceeds budget."""
+    """T57e: judge_similarity raises ValueError when binary prompt exceeds budget."""
 
-    def test_oversized_batch_raises(self):
+    def test_oversized_prompt_raises(self):
         from clean_room_agent.retrieval.similarity_stage import judge_similarity
 
         llm = _mock_llm(context_window=200, max_tokens=50)
@@ -169,7 +170,7 @@ class TestT57SimilarityBudgetGate:
         ]
         task = _task(raw_task="x" * 200)
 
-        with pytest.raises(ValueError, match="R3.*similarity prompt too large"):
+        with pytest.raises(ValueError, match="R3.*similarity.*prompt too large"):
             judge_similarity(pairs, task, llm)
 
         llm.complete.assert_not_called()

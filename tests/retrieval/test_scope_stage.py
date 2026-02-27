@@ -1,4 +1,4 @@
-"""Tests for scope stage."""
+"""Tests for scope stage — binary LLM judgment."""
 
 import json
 from unittest.mock import MagicMock
@@ -17,6 +17,7 @@ from clean_room_agent.db.queries import (
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.dataclasses import ScopedFile, TaskQuery
 from clean_room_agent.retrieval.scope_stage import (
+    SCOPE_BINARY_SYSTEM,
     expand_scope,
     judge_scope,
 )
@@ -180,38 +181,45 @@ class TestExpandScope:
         assert len(tier4) >= 1
 
 
-def _mock_llm_with_response(text):
-    """Create a mock LLM with standard config and a fixed response."""
-    mock_llm = MagicMock()
-    mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
-    mock_llm.config.context_window = 32768
-    mock_llm.config.max_tokens = 4096
-    mock_response = MagicMock()
-    mock_response.text = text
-    mock_llm.complete.return_value = mock_response
-    return mock_llm
+def _binary_scope_llm(path_verdicts):
+    """Create mock LLM returning yes/no per file path.
+
+    path_verdicts: dict mapping path -> "yes"/"no".
+    """
+    llm = MagicMock()
+    llm.flush = MagicMock()
+    llm.config.context_window = 32768
+    llm.config.max_tokens = 4096
+
+    def _complete(prompt, system=None):
+        resp = MagicMock()
+        for path, answer in path_verdicts.items():
+            if path in prompt:
+                resp.text = answer
+                return resp
+        resp.text = "no"  # default
+        return resp
+
+    llm.complete.side_effect = _complete
+    return llm
 
 
 class TestJudgeScope:
     def test_seeds_always_relevant(self):
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"path": "seed.py", "verdict": "irrelevant", "reason": "not needed"},
-        ]))
+        llm = _binary_scope_llm({})
 
         candidates = [
             ScopedFile(file_id=1, path="seed.py", language="python", tier=1),
         ]
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
 
-        result = judge_scope(candidates, task, mock_llm)
+        result = judge_scope(candidates, task, llm)
         # Seed (tier <= 1) is always relevant regardless of LLM
         assert result[0].relevance == "relevant"
+        llm.complete.assert_not_called()  # seeds skip LLM
 
-    def test_llm_verdict_applied(self):
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"path": "dep.py", "verdict": "irrelevant", "reason": "unrelated"},
-            {"path": "util.py", "verdict": "relevant", "reason": "needed"},
-        ]))
+    def test_binary_verdict_applied(self):
+        llm = _binary_scope_llm({"dep.py": "no", "util.py": "yes"})
 
         candidates = [
             ScopedFile(file_id=2, path="dep.py", language="python", tier=2),
@@ -219,92 +227,51 @@ class TestJudgeScope:
         ]
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
 
-        result = judge_scope(candidates, task, mock_llm)
+        result = judge_scope(candidates, task, llm)
         dep = next(sf for sf in result if sf.path == "dep.py")
         util = next(sf for sf in result if sf.path == "util.py")
         assert dep.relevance == "irrelevant"
         assert util.relevance == "relevant"
+        # One call per non-seed candidate
+        assert llm.complete.call_count == 2
 
     def test_empty_candidates(self):
         mock_llm = MagicMock()
-        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
+        mock_llm.flush = MagicMock()
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
         result = judge_scope([], task, mock_llm)
         assert result == []
         mock_llm.complete.assert_not_called()
 
-    def test_missing_from_llm_defaults_irrelevant(self):
-        """R2a: LLM omission defaults to irrelevant (default-deny)."""
-        mock_llm = _mock_llm_with_response(json.dumps([]))
+    def test_r2_default_deny_unparseable(self):
+        """R2: unparseable binary response defaults to irrelevant."""
+        llm = MagicMock()
+        llm.flush = MagicMock()
+        llm.config.context_window = 32768
+        llm.config.max_tokens = 4096
+        resp = MagicMock()
+        resp.text = "maybe"  # not yes/no
+        llm.complete.return_value = resp
 
         candidates = [
             ScopedFile(file_id=2, path="dep.py", language="python", tier=2),
         ]
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
 
-        result = judge_scope(candidates, task, mock_llm)
-        assert result[0].relevance == "irrelevant"
+        result = judge_scope(candidates, task, llm)
+        assert result[0].relevance == "irrelevant"  # R2: default-deny
 
-    def test_invalid_verdict_defaults_irrelevant(self):
-        """R2: LLM returning an invalid verdict string defaults to irrelevant."""
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"path": "dep.py", "verdict": "maybe_useful", "reason": "unsure"},
-        ]))
+    def test_uses_binary_system_prompt(self):
+        llm = _binary_scope_llm({"dep.py": "yes"})
 
         candidates = [
             ScopedFile(file_id=2, path="dep.py", language="python", tier=2),
         ]
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
 
-        result = judge_scope(candidates, task, mock_llm)
-        assert result[0].relevance == "irrelevant"
-
-
-class TestJudgeScopeBatching:
-    def test_batch_boundary(self):
-        """WU6: large candidate sets are split into batches, all get judged."""
-        mock_llm = MagicMock()
-        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
-        # Configure a tiny context window to force batching
-        mock_llm.config = MagicMock()
-        mock_llm.config.context_window = 512
-        mock_llm.config.max_tokens = 128
-
-        # Create enough non-seed candidates to require multiple batches
-        candidates = [
-            ScopedFile(file_id=1, path="seed.py", language="python", tier=1),
-        ]
-        for i in range(20):
-            candidates.append(
-                ScopedFile(file_id=100 + i, path=f"dep_{i}.py", language="python", tier=2),
-            )
-
-        # Mock LLM to return all as relevant
-        def _complete(prompt, system=None):
-            resp = MagicMock()
-            # Parse out which files are in this batch and return relevant for all
-            import re
-            paths = re.findall(r"- (dep_\d+\.py)", prompt)
-            resp.text = json.dumps([
-                {"path": p, "verdict": "relevant", "reason": "needed"}
-                for p in paths
-            ])
-            return resp
-
-        mock_llm.complete.side_effect = _complete
-
-        task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
-        result = judge_scope(candidates, task, mock_llm)
-
-        # Seed should be relevant
-        seed = next(sf for sf in result if sf.path == "seed.py")
-        assert seed.relevance == "relevant"
-
-        # All non-seeds should be judged (multiple batches)
-        non_seeds = [sf for sf in result if sf.tier > 1]
-        assert all(sf.relevance == "relevant" for sf in non_seeds)
-        # LLM should have been called multiple times (batching)
-        assert mock_llm.complete.call_count >= 2
+        judge_scope(candidates, task, llm)
+        _, kwargs = llm.complete.call_args
+        assert kwargs["system"] == SCOPE_BINARY_SYSTEM
 
 
 class TestR6OrderedCaps:

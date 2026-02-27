@@ -129,6 +129,7 @@ class ModelRouter:
             if isinstance(override, str):
                 model_tag = override
                 cw = self._context_window[role]
+                mt = self._max_tokens[role]
             elif isinstance(override, dict):
                 if "model" not in override:
                     raise RuntimeError(
@@ -136,6 +137,7 @@ class ModelRouter:
                     )
                 model_tag = override["model"]
                 cw = override.get("context_window", self._context_window[role])
+                mt = override.get("max_tokens", self._max_tokens[role])
             else:
                 raise RuntimeError(
                     f"Override for stage '{stage_name}' must be a string or dict, "
@@ -146,7 +148,7 @@ class ModelRouter:
                 base_url=self._base_url,
                 provider=self._provider,
                 temperature=self._temperature[role],
-                max_tokens=self._max_tokens[role],
+                max_tokens=mt,
                 context_window=cw,
             )
 

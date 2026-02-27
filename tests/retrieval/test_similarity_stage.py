@@ -1,4 +1,4 @@
-"""Tests for similarity stage."""
+"""Tests for similarity stage — binary LLM judgment."""
 
 import json
 from unittest.mock import MagicMock
@@ -18,6 +18,7 @@ from clean_room_agent.retrieval.similarity_stage import (
     MAX_CANDIDATE_PAIRS,
     MAX_GROUP_SIZE,
     MIN_COMPOSITE_SCORE,
+    SIMILARITY_BINARY_SYSTEM,
     _longest_common_subsequence_ratio,
     assign_groups,
     find_similar_pairs,
@@ -176,14 +177,12 @@ class TestJudgeSimilarity:
             "signals": {"line_ratio": 0.9, "callee_jaccard": 0.5, "name_lcs": 0.7, "same_parent": False},
         }]
         task = TaskQuery(raw_task="dedup handlers", task_id="t1", mode="plan", repo_id=1)
-        llm = _mock_llm_with_response(json.dumps([
-            {"pair_id": 0, "keep": True, "group_label": "process_handlers", "reason": "similar pattern"},
-        ]))
+        llm = _mock_llm_with_response("yes")
         confirmed = judge_similarity(pairs, task, llm)
         assert len(confirmed) == 1
-        assert confirmed[0]["group_label"] == "process_handlers"
+        assert confirmed[0]["reason"] == "binary classifier confirmed"
 
-    def test_omitted_pairs_denied(self):
+    def test_denied_pairs_excluded(self):
         sym_a = _make_symbol(1, 10, "process_users")
         sym_b = _make_symbol(2, 10, "process_items")
         pairs = [{
@@ -191,12 +190,12 @@ class TestJudgeSimilarity:
             "signals": {"line_ratio": 0.9, "callee_jaccard": 0.5, "name_lcs": 0.7, "same_parent": False},
         }]
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
-        # LLM returns empty array (omits the pair)
-        llm = _mock_llm_with_response("[]")
+        llm = _mock_llm_with_response("no")
         confirmed = judge_similarity(pairs, task, llm)
         assert len(confirmed) == 0
 
-    def test_keep_false_denied(self):
+    def test_r2_default_deny_unparseable(self):
+        """R2: unparseable binary response → pair denied (default-deny)."""
         sym_a = _make_symbol(1, 10, "a")
         sym_b = _make_symbol(2, 10, "b")
         pairs = [{
@@ -204,31 +203,17 @@ class TestJudgeSimilarity:
             "signals": {"line_ratio": 0.5, "callee_jaccard": 0.0, "name_lcs": 0.1, "same_parent": False},
         }]
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
-        llm = _mock_llm_with_response(json.dumps([
-            {"pair_id": 0, "keep": False, "group_label": "", "reason": "not similar"},
-        ]))
+        llm = _mock_llm_with_response("maybe")  # not yes/no
         confirmed = judge_similarity(pairs, task, llm)
-        assert len(confirmed) == 0
-
-    def test_invalid_response_raises(self):
-        sym_a = _make_symbol(1, 10, "a")
-        sym_b = _make_symbol(2, 10, "b")
-        pairs = [{
-            "pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "score": 0.5,
-            "signals": {"line_ratio": 0.5, "callee_jaccard": 0.0, "name_lcs": 0.1, "same_parent": False},
-        }]
-        task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
-        llm = _mock_llm_with_response("not json at all")
-        with pytest.raises(ValueError, match="unparseable JSON"):
-            judge_similarity(pairs, task, llm)
+        assert len(confirmed) == 0  # R2: default-deny
 
     def test_empty_pairs_returns_empty(self):
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
-        llm = _mock_llm_with_response("[]")
+        llm = _mock_llm_with_response("yes")
         assert judge_similarity([], task, llm) == []
 
-    def test_batching(self):
-        """When many pairs exceed batch size, multiple LLM calls are made."""
+    def test_one_call_per_pair(self):
+        """Binary mode: each pair gets an independent LLM call."""
         sym_a = _make_symbol(1, 10, "a")
         sym_b = _make_symbol(2, 10, "b")
         pairs = [
@@ -236,22 +221,26 @@ class TestJudgeSimilarity:
                 "pair_id": i, "sym_a": sym_a, "sym_b": sym_b, "score": 0.5,
                 "signals": {"line_ratio": 0.5, "callee_jaccard": 0.0, "name_lcs": 0.1, "same_parent": False},
             }
-            for i in range(5)
+            for i in range(3)
         ]
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
-        # LLM with very small context to force batching
-        llm = MagicMock()
-        llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
-        llm.config.context_window = 500
-        llm.config.max_tokens = 200
-        # Return empty but valid response each time
-        response = MagicMock()
-        response.text = "[]"
-        llm.complete.return_value = response
+        llm = _mock_llm_with_response("yes")
+        confirmed = judge_similarity(pairs, task, llm)
+        assert len(confirmed) == 3
+        assert llm.complete.call_count == 3
 
+    def test_uses_binary_system_prompt(self):
+        sym_a = _make_symbol(1, 10, "a")
+        sym_b = _make_symbol(2, 10, "b")
+        pairs = [{
+            "pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "score": 0.5,
+            "signals": {"line_ratio": 0.5, "callee_jaccard": 0.0, "name_lcs": 0.1, "same_parent": False},
+        }]
+        task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
+        llm = _mock_llm_with_response("yes")
         judge_similarity(pairs, task, llm)
-        # Should have called complete at least once
-        assert llm.complete.call_count >= 1
+        _, kwargs = llm.complete.call_args
+        assert kwargs["system"] == SIMILARITY_BINARY_SYSTEM
 
 
 # ---------- assign_groups ----------
@@ -263,7 +252,7 @@ class TestAssignGroups:
     def test_single_pair_forms_group(self):
         sym_a = _make_symbol(5, 10, "a")
         sym_b = _make_symbol(3, 10, "b")
-        confirmed = [{"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "g", "reason": "r"}]
+        confirmed = [{"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "", "reason": "r"}]
         groups = assign_groups(confirmed)
         assert groups[5] == "sim_group_3"
         assert groups[3] == "sim_group_3"
@@ -273,8 +262,8 @@ class TestAssignGroups:
         sym_b = _make_symbol(2, 10, "b")
         sym_c = _make_symbol(3, 10, "c")
         confirmed = [
-            {"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "g", "reason": "r"},
-            {"pair_id": 1, "sym_a": sym_b, "sym_b": sym_c, "group_label": "g", "reason": "r"},
+            {"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "", "reason": "r"},
+            {"pair_id": 1, "sym_a": sym_b, "sym_b": sym_c, "group_label": "", "reason": "r"},
         ]
         groups = assign_groups(confirmed)
         # All three should be in the same group
@@ -287,8 +276,8 @@ class TestAssignGroups:
         sym_c = _make_symbol(10, 20, "c")
         sym_d = _make_symbol(11, 20, "d")
         confirmed = [
-            {"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "g1", "reason": "r"},
-            {"pair_id": 1, "sym_a": sym_c, "sym_b": sym_d, "group_label": "g2", "reason": "r"},
+            {"pair_id": 0, "sym_a": sym_a, "sym_b": sym_b, "group_label": "", "reason": "r"},
+            {"pair_id": 1, "sym_a": sym_c, "sym_b": sym_d, "group_label": "", "reason": "r"},
         ]
         groups = assign_groups(confirmed)
         assert groups[1] == groups[2]
@@ -299,7 +288,7 @@ class TestAssignGroups:
         # Build a chain of 5 pairs creating a group of 6 symbols
         syms = [_make_symbol(i, 10, f"s{i}") for i in range(6)]
         confirmed = [
-            {"pair_id": i, "sym_a": syms[i], "sym_b": syms[i + 1], "group_label": "g", "reason": "r"}
+            {"pair_id": i, "sym_a": syms[i], "sym_b": syms[i + 1], "group_label": "", "reason": "r"}
             for i in range(5)
         ]
         groups = assign_groups(confirmed, max_group_size=3)

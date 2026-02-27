@@ -72,7 +72,12 @@ def pipeline_repo(tmp_path):
 
 
 def _mock_llm_complete(prompt, system=None):
-    """Mock LLM that returns different responses based on system prompt."""
+    """Mock LLM that returns different responses based on system prompt.
+
+    Binary decomposition: routing, scope, and precision all use per-item
+    yes/no calls. The mock returns "yes" for all binary calls so the
+    pipeline proceeds through all stages.
+    """
     response = MagicMock()
     response.latency_ms = 100
     response.prompt_tokens = 50
@@ -81,21 +86,17 @@ def _mock_llm_complete(prompt, system=None):
     if system and "task analyzer" in system.lower():
         response.text = "Fix the main function in main.py"
     elif system and "stage router" in system.lower():
-        response.text = json.dumps({
-            "stages": ["scope", "precision"],
-            "reasoning": "Bug fix needs full context.",
-        })
-    elif system and "retrieval judge" in system.lower():
-        response.text = json.dumps([
-            {"path": "src/main.py", "verdict": "relevant", "reason": "directly mentioned"},
-            {"path": "src/utils.py", "verdict": "relevant", "reason": "related utility"},
-        ])
-    elif system and "precision analyst" in system.lower():
-        response.text = json.dumps([
-            {"name": "main", "file_path": "src/main.py", "start_line": 1, "detail_level": "primary", "reason": "target"},
-            {"name": "helper", "file_path": "src/main.py", "start_line": 4, "detail_level": "supporting", "reason": "context"},
-            {"name": "format_output", "file_path": "src/utils.py", "start_line": 1, "detail_level": "type_context", "reason": "utility"},
-        ])
+        # Binary routing: yes for all stages
+        response.text = "yes"
+    elif system and "code relevance classifier" in system.lower():
+        # Binary scope judgment: all files relevant
+        response.text = "yes"
+    elif system and "code relevance judge" in system.lower():
+        # Binary precision judgment (all 3 passes): yes for all
+        response.text = "yes"
+    elif system and "code similarity classifier" in system.lower():
+        # Binary similarity judgment
+        response.text = "yes"
     elif system and "budget optimizer" in system.lower():
         response.text = "Generic response"
     else:
@@ -865,8 +866,10 @@ class TestPipelineRouting:
                 "SELECT * FROM retrieval_llm_calls WHERE task_id = ? AND call_type = 'stage_routing'",
                 (task_id,),
             ).fetchall()
-            assert len(calls) == 1
-            assert calls[0]["stage_name"] == "stage_routing"
+            # Binary routing: one call per stage (scope + precision = 2)
+            assert len(calls) == 2
+            for c in calls:
+                assert c["stage_name"] == "stage_routing"
         finally:
             raw_conn.close()
 
@@ -888,10 +891,8 @@ class TestPipelineRouting:
             if system and "task analyzer" in system.lower():
                 response.text = "Fix the main function in main.py"
             elif system and "stage router" in system.lower():
-                response.text = json.dumps({
-                    "stages": [],
-                    "reasoning": "Simple targeted edit, no expansion needed.",
-                })
+                # Binary routing: reject all stages
+                response.text = "no"
             else:
                 response.text = "Generic response"
             return response
@@ -920,8 +921,8 @@ class TestPipelineRouting:
         # Only task_analysis + routing + assembly calls
         for c in mock_instance.calls:
             sys = c.get("system", "") or ""
-            assert "retrieval judge" not in sys.lower(), "Scope stage should not have run"
-            assert "precision analyst" not in sys.lower(), "Precision stage should not have run"
+            assert "code relevance classifier" not in sys.lower(), "Scope stage should not have run"
+            assert "code relevance judge" not in sys.lower(), "Precision stage should not have run"
 
     @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_routing_selects_subset(self, mock_llm_class, pipeline_repo):
@@ -937,14 +938,14 @@ class TestPipelineRouting:
             if system and "task analyzer" in system.lower():
                 response.text = "Fix the main function in main.py"
             elif system and "stage router" in system.lower():
-                response.text = json.dumps({
-                    "stages": ["scope"],
-                    "reasoning": "Need file expansion but not symbol classification.",
-                })
-            elif system and "retrieval judge" in system.lower():
-                response.text = json.dumps([
-                    {"path": "src/main.py", "verdict": "relevant", "reason": "mentioned"},
-                ])
+                # Binary routing: accept scope, reject precision
+                if "scope" in prompt.lower():
+                    response.text = "yes"
+                else:
+                    response.text = "no"
+            elif system and "code relevance classifier" in system.lower():
+                # Binary scope judgment: all files relevant
+                response.text = "yes"
             else:
                 response.text = "Generic response"
             return response
@@ -972,4 +973,4 @@ class TestPipelineRouting:
         # Precision should not have run
         for c in mock_instance.calls:
             sys = c.get("system", "") or ""
-            assert "precision analyst" not in sys.lower(), "Precision stage should not have run"
+            assert "code relevance judge" not in sys.lower(), "Precision stage should not have run"

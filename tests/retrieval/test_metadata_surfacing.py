@@ -1,6 +1,5 @@
 """Tests for metadata surfacing in scope, precision, assembly, and to_prompt_text (Feature 1)."""
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -25,7 +24,12 @@ from clean_room_agent.retrieval.dataclasses import (
     ScopedFile,
     TaskQuery,
 )
-from clean_room_agent.retrieval.precision_stage import classify_symbols
+from clean_room_agent.retrieval.precision_stage import (
+    PRECISION_PASS1_SYSTEM,
+    PRECISION_PASS2_SYSTEM,
+    PRECISION_PASS3_SYSTEM,
+    classify_symbols,
+)
 from clean_room_agent.retrieval.scope_stage import judge_scope
 from clean_room_agent.retrieval.stage import StageContext
 
@@ -144,32 +148,31 @@ class TestScopeCandidateLinesWithMetadata:
         ]
         task = TaskQuery(raw_task="fix auth", task_id="t1", mode="plan", repo_id=repo_id)
 
-        # Mock LLM: capture the prompt to inspect candidate lines
+        # Mock LLM: binary decomposition — one yes/no call per candidate
         mock_llm = MagicMock()
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
 
         mock_response = MagicMock()
-        mock_response.text = json.dumps([
-            {"path": "src/auth.py", "verdict": "relevant", "reason": "auth related"},
-            {"path": "src/utils.py", "verdict": "relevant", "reason": "utility"},
-        ])
+        mock_response.text = "yes"
         mock_llm.complete.return_value = mock_response
 
         result = judge_scope(candidates, task, mock_llm, kb=kb)
 
-        # Inspect the prompt sent to the LLM
-        call_args = mock_llm.complete.call_args
-        prompt_text = call_args[0][0]
+        # With binary decomposition, each candidate gets its own LLM call.
+        assert mock_llm.complete.call_count == 2
+        all_prompts = [c.args[0] for c in mock_llm.complete.call_args_list]
 
-        # Metadata for auth.py should appear in the prompt
-        assert "purpose=Authentication and authorization" in prompt_text
-        assert "domain=security" in prompt_text
-        assert "concepts=login,oauth,jwt" in prompt_text
+        # Metadata for auth.py should appear in its prompt
+        auth_prompt = next(p for p in all_prompts if "src/auth.py" in p)
+        assert "purpose=Authentication and authorization" in auth_prompt
+        assert "domain=security" in auth_prompt
+        assert "concepts=login,oauth,jwt" in auth_prompt
 
-        # Metadata for utils.py should also appear
-        assert "purpose=Shared utility functions" in prompt_text
-        assert "domain=core" in prompt_text
+        # Metadata for utils.py should appear in its prompt
+        utils_prompt = next(p for p in all_prompts if "src/utils.py" in p)
+        assert "purpose=Shared utility functions" in utils_prompt
+        assert "domain=core" in utils_prompt
 
     def test_scope_candidate_lines_without_metadata(self, scope_kb):
         """When no metadata exists, candidate lines are unchanged (no crash)."""
@@ -187,9 +190,7 @@ class TestScopeCandidateLinesWithMetadata:
         mock_llm.config.max_tokens = 4096
 
         mock_response = MagicMock()
-        mock_response.text = json.dumps([
-            {"path": "src/config.py", "verdict": "relevant", "reason": "needed"},
-        ])
+        mock_response.text = "yes"
         mock_llm.complete.return_value = mock_response
 
         result = judge_scope(candidates, task, mock_llm, kb=kb)
@@ -198,7 +199,7 @@ class TestScopeCandidateLinesWithMetadata:
         assert len(result) == 1
         assert result[0].relevance == "relevant"
 
-        # Prompt should contain the basic line but no metadata brackets
+        # Prompt should contain the basic line but no metadata
         call_args = mock_llm.complete.call_args
         prompt_text = call_args[0][0]
         assert "src/config.py" in prompt_text
@@ -213,9 +214,7 @@ class TestScopeCandidateLinesWithMetadata:
         ]
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
 
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"path": "some/file.py", "verdict": "relevant", "reason": "ok"},
-        ]))
+        mock_llm = _mock_llm_with_response("yes")
 
         result = judge_scope(candidates, task, mock_llm, kb=None)
         assert len(result) == 1
@@ -249,30 +248,41 @@ class TestPrecisionSymbolsWithDocstrings:
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=repo_id)
 
-        # Mock LLM: capture prompt
+        # Mock LLM: 3-pass binary cascade
+        # Pass 1: both relevant. Pass 2: login primary, verify_token not.
+        # Pass 3: verify_token supporting.
         mock_llm = MagicMock()
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
 
-        mock_response = MagicMock()
-        mock_response.text = json.dumps([
-            {"name": "login", "file_path": "src/auth.py", "start_line": 10,
-             "detail_level": "primary", "reason": "directly changed"},
-            {"name": "verify_token", "file_path": "src/auth.py", "start_line": 35,
-             "detail_level": "supporting", "reason": "called by login"},
-        ])
-        mock_llm.complete.return_value = mock_response
+        def _complete(prompt, system=None):
+            resp = MagicMock()
+            if system == PRECISION_PASS1_SYSTEM:
+                resp.text = "yes"  # all relevant
+            elif system == PRECISION_PASS2_SYSTEM:
+                if "Symbol: login (" in prompt:
+                    resp.text = "yes"  # login is primary
+                else:
+                    resp.text = "no"  # verify_token not primary
+            elif system == PRECISION_PASS3_SYSTEM:
+                resp.text = "yes"  # supporting
+            else:
+                resp.text = "no"
+            return resp
+
+        mock_llm.complete.side_effect = _complete
 
         result = classify_symbols(candidates, task, mock_llm, kb=kb)
 
-        # The LLM should have been called with docstring summaries in the prompt
-        call_args = mock_llm.complete.call_args
-        prompt_text = call_args[0][0]
+        # With binary decomposition, each symbol gets individual LLM calls.
+        # Collect all prompts to verify docstring surfacing.
+        all_prompts = [c.args[0] for c in mock_llm.complete.call_args_list]
+        combined = "\n".join(all_prompts)
 
         # First line of login's docstring
-        assert "Authenticate user with credentials." in prompt_text
+        assert "Authenticate user with credentials." in combined
         # First line of verify_token's docstring
-        assert "Verify a JWT token." in prompt_text
+        assert "Verify a JWT token." in combined
 
         # Results should still be classified correctly
         assert len(result) == 2
@@ -293,18 +303,16 @@ class TestPrecisionSymbolsWithDocstrings:
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
 
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "login", "file_path": "auth.py", "start_line": 1,
-             "detail_level": "primary", "reason": "target"},
-        ]))
+        # Return "yes" for all binary calls → pass1 yes, pass2 yes → primary
+        mock_llm = _mock_llm_with_response("yes")
 
         result = classify_symbols(candidates, task, mock_llm, kb=None)
         assert len(result) == 1
         assert result[0].detail_level == "primary"
 
         # Prompt should not contain "doc:" since no KB
-        prompt_text = mock_llm.complete.call_args[0][0]
-        assert "doc:" not in prompt_text
+        for c in mock_llm.complete.call_args_list:
+            assert "doc:" not in c.args[0]
 
 
 # ---------------------------------------------------------------------------

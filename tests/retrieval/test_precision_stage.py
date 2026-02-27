@@ -1,7 +1,7 @@
-"""Tests for precision stage."""
+"""Tests for precision stage — 3-pass binary classification cascade."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -15,21 +15,49 @@ from clean_room_agent.db.queries import (
 from clean_room_agent.query.api import KnowledgeBase
 from clean_room_agent.retrieval.dataclasses import TaskQuery
 from clean_room_agent.retrieval.precision_stage import (
+    PRECISION_PASS1_SYSTEM,
+    PRECISION_PASS2_SYSTEM,
+    PRECISION_PASS3_SYSTEM,
     classify_symbols,
     extract_precision_symbols,
 )
 from clean_room_agent.retrieval.utils import parse_json_response
 
 
-def _mock_llm_with_response(text):
-    """Create a mock LLM with standard config and a fixed response."""
+def _binary_llm(pass_map):
+    """Create a mock LLM for the 3-pass binary cascade.
+
+    pass_map: dict mapping (pass_number, symbol_name) -> "yes"/"no".
+    Pass is determined by the system prompt content.
+    Default: "no" (R2 default-deny).
+    """
     mock_llm = MagicMock()
-    mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
+    mock_llm.flush = MagicMock()
     mock_llm.config.context_window = 32768
     mock_llm.config.max_tokens = 4096
-    mock_response = MagicMock()
-    mock_response.text = text
-    mock_llm.complete.return_value = mock_response
+
+    def _complete(prompt, system=None):
+        resp = MagicMock()
+        # Determine which pass based on system prompt
+        if system == PRECISION_PASS1_SYSTEM:
+            pass_num = 1
+        elif system == PRECISION_PASS2_SYSTEM:
+            pass_num = 2
+        elif system == PRECISION_PASS3_SYSTEM:
+            pass_num = 3
+        else:
+            resp.text = "no"
+            return resp
+
+        # Find symbol name in prompt
+        for (pn, name), answer in pass_map.items():
+            if pn == pass_num and f"Symbol: {name}" in prompt:
+                resp.text = answer
+                return resp
+        resp.text = "no"  # default
+        return resp
+
+    mock_llm.complete.side_effect = _complete
     return mock_llm
 
 
@@ -96,11 +124,16 @@ class TestExtractPrecisionSymbols:
 
 
 class TestClassifySymbols:
-    def test_classification(self):
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "login", "file_path": "auth.py", "start_line": 1, "detail_level": "primary", "reason": "directly changed"},
-            {"name": "helper", "file_path": "auth.py", "start_line": 15, "detail_level": "supporting", "reason": "context"},
-        ]))
+    def test_full_cascade(self):
+        """3-pass cascade: pass1 filters, pass2 splits primary, pass3 splits supporting/type_context."""
+        # login: relevant→primary, helper: relevant→not primary→supporting
+        llm = _binary_llm({
+            (1, "login"): "yes",
+            (1, "helper"): "yes",
+            (2, "login"): "yes",   # primary
+            (2, "helper"): "no",   # not primary → pass 3
+            (3, "helper"): "yes",  # full source needed → supporting
+        })
 
         candidates = [
             {
@@ -118,110 +151,119 @@ class TestClassifySymbols:
         ]
         task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
 
-        result = classify_symbols(candidates, task, mock_llm)
+        result = classify_symbols(candidates, task, llm)
         assert len(result) == 2
         login_cs = next(cs for cs in result if cs.name == "login")
         assert login_cs.detail_level == "primary"
+        assert "pass2" in login_cs.reason
         helper_cs = next(cs for cs in result if cs.name == "helper")
         assert helper_cs.detail_level == "supporting"
+        assert "pass3" in helper_cs.reason
+
+    def test_pass1_excludes(self):
+        """Pass 1 'no' → excluded, skips passes 2 and 3."""
+        llm = _binary_llm({
+            (1, "login"): "yes",
+            (1, "helper"): "no",  # excluded at pass 1
+            (2, "login"): "yes",  # primary
+        })
+
+        candidates = [
+            {
+                "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
+                "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
+                "signature": "def login()", "connections": [],
+                "file_source": "project",
+            },
+            {
+                "symbol_id": 2, "file_id": 10, "file_path": "auth.py",
+                "name": "helper", "kind": "function", "start_line": 15, "end_line": 20,
+                "signature": "def helper()", "connections": [],
+                "file_source": "project",
+            },
+        ]
+        task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
+
+        result = classify_symbols(candidates, task, llm)
+        helper_cs = next(cs for cs in result if cs.name == "helper")
+        assert helper_cs.detail_level == "excluded"
+        assert "pass1" in helper_cs.reason
+
+    def test_pass3_type_context(self):
+        """Pass 3 'no' → type_context (signature sufficient)."""
+        llm = _binary_llm({
+            (1, "foo"): "yes",
+            (2, "foo"): "no",   # not primary
+            (3, "foo"): "no",   # signature sufficient → type_context
+        })
+
+        candidates = [{
+            "symbol_id": 1, "file_id": 10, "file_path": "a.py",
+            "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
+            "signature": "def foo()", "connections": [],
+            "file_source": "project",
+        }]
+        task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
+
+        result = classify_symbols(candidates, task, llm)
+        assert result[0].detail_level == "type_context"
+        assert "pass3" in result[0].reason
 
     def test_empty_candidates(self):
         mock_llm = MagicMock()
-        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
+        mock_llm.flush = MagicMock()
         task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
         result = classify_symbols([], task, mock_llm)
         assert result == []
         mock_llm.complete.assert_not_called()
 
-    def test_invalid_detail_level_defaults(self):
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "foo", "file_path": "a.py", "start_line": 1, "detail_level": "banana", "reason": "???"},
-        ]))
+    def test_r2_default_deny_unparseable(self):
+        """R2: unparseable binary response → default-deny → excluded at pass 1."""
+        mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
+        resp = MagicMock()
+        resp.text = "maybe"  # not yes/no
+        mock_llm.complete.return_value = resp
 
-        candidates = [
-            {
-                "symbol_id": 1, "file_id": 10, "file_path": "a.py",
-                "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
-                "signature": "", "connections": [],
-                "file_source": "project",
-            },
-        ]
+        candidates = [{
+            "symbol_id": 1, "file_id": 10, "file_path": "a.py",
+            "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
+            "signature": "", "connections": [],
+            "file_source": "project",
+        }]
         task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
 
         result = classify_symbols(candidates, task, mock_llm)
-        assert result[0].detail_level == "excluded"  # R2: invalid -> excluded (default-deny)
+        assert result[0].detail_level == "excluded"  # R2: default-deny
 
-    def test_omitted_candidate_defaults_to_excluded(self):
-        """T18/R2: LLM omitting a candidate produces a warning and defaults to excluded."""
-        # LLM response only classifies "login", omits "helper"
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "login", "file_path": "auth.py", "start_line": 1, "detail_level": "primary", "reason": "changed"},
-        ]))
+    def test_library_symbols_auto_type_context(self):
+        """R17: Library symbols skip all 3 passes, auto-classified as type_context."""
+        mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()
+        mock_llm.config.context_window = 32768
+        mock_llm.config.max_tokens = 4096
 
-        candidates = [
-            {
-                "symbol_id": 1, "file_id": 10, "file_path": "auth.py",
-                "name": "login", "kind": "function", "start_line": 1, "end_line": 10,
-                "signature": "def login()", "connections": [],
-                "file_source": "project",
-            },
-            {
-                "symbol_id": 2, "file_id": 10, "file_path": "auth.py",
-                "name": "helper", "kind": "function", "start_line": 15, "end_line": 20,
-                "signature": "def helper()", "connections": [],
-                "file_source": "project",
-            },
-        ]
-        task = TaskQuery(raw_task="fix login", task_id="t1", mode="plan", repo_id=1)
+        candidates = [{
+            "symbol_id": 1, "file_id": 10, "file_path": "lib.py",
+            "name": "Client", "kind": "class", "start_line": 1, "end_line": 50,
+            "signature": "class Client", "connections": [],
+            "file_source": "library",
+        }]
+        task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
 
         result = classify_symbols(candidates, task, mock_llm)
-        helper_cs = next(cs for cs in result if cs.name == "helper")
-        assert helper_cs.detail_level == "excluded"
-
-    def test_llm_omits_symbol_mixed_response(self):
-        """R2: When LLM omits some symbols but classifies others, omitted ones get 'excluded'."""
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "alpha", "file_path": "mod.py", "start_line": 1, "detail_level": "primary", "reason": "main target"},
-            # beta and gamma are omitted from the LLM response
-        ]))
-
-        candidates = [
-            {
-                "symbol_id": 1, "file_id": 10, "file_path": "mod.py",
-                "name": "alpha", "kind": "function", "start_line": 1, "end_line": 10,
-                "signature": "def alpha()", "connections": [],
-                "file_source": "project",
-            },
-            {
-                "symbol_id": 2, "file_id": 10, "file_path": "mod.py",
-                "name": "beta", "kind": "function", "start_line": 15, "end_line": 20,
-                "signature": "def beta()", "connections": [],
-                "file_source": "project",
-            },
-            {
-                "symbol_id": 3, "file_id": 10, "file_path": "mod.py",
-                "name": "gamma", "kind": "class", "start_line": 25, "end_line": 40,
-                "signature": "class gamma:", "connections": [],
-                "file_source": "project",
-            },
-        ]
-        task = TaskQuery(raw_task="fix alpha", task_id="t1", mode="plan", repo_id=1)
-
-        result = classify_symbols(candidates, task, mock_llm)
-        assert len(result) == 3
-        alpha_cs = next(cs for cs in result if cs.name == "alpha")
-        beta_cs = next(cs for cs in result if cs.name == "beta")
-        gamma_cs = next(cs for cs in result if cs.name == "gamma")
-        assert alpha_cs.detail_level == "primary"
-        assert beta_cs.detail_level == "excluded"  # R2: omitted -> excluded
-        assert gamma_cs.detail_level == "excluded"  # R2: omitted -> excluded
+        assert result[0].detail_level == "type_context"
+        assert "library" in result[0].reason
+        mock_llm.complete.assert_not_called()  # no LLM calls for library symbols
 
     def test_key_collision_same_name_different_lines(self):
         """B4: Two symbols named __init__ at different lines are classified independently."""
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "__init__", "file_path": "models.py", "start_line": 5, "detail_level": "primary", "reason": "User init"},
-            {"name": "__init__", "file_path": "models.py", "start_line": 20, "detail_level": "type_context", "reason": "Config init"},
-        ]))
+        llm = _binary_llm({
+            (1, "__init__"): "yes",  # both relevant
+            (2, "__init__"): "yes",  # both primary (binary can't distinguish by name alone)
+        })
 
         candidates = [
             {
@@ -239,80 +281,80 @@ class TestClassifySymbols:
         ]
         task = TaskQuery(raw_task="fix models", task_id="t1", mode="plan", repo_id=1)
 
-        result = classify_symbols(candidates, task, mock_llm)
+        result = classify_symbols(candidates, task, llm)
         assert len(result) == 2
-        init_5 = next(cs for cs in result if cs.start_line == 5)
-        init_20 = next(cs for cs in result if cs.start_line == 20)
-        assert init_5.detail_level == "primary"
-        assert init_20.detail_level == "type_context"
+        # Both should get individual calls (binary processes each independently)
+        assert llm.complete.call_count >= 2
 
 
-class TestPrecisionFieldWarnings:
-    """A12: LLM response missing expected fields logs a warning."""
+class TestCascadeCallCounts:
+    """Verify the cascade is volume-reducing: call counts decrease across passes."""
 
-    def test_missing_signature_logs_warning(self, caplog):
-        """A12: LLM response without 'signature' field triggers warning."""
-        import logging
-        # LLM response has detail_level and reason but no signature
-        mock_llm = _mock_llm_with_response(json.dumps([
-            {"name": "foo", "file_path": "a.py", "start_line": 1,
-             "detail_level": "primary", "reason": "main target"},
-        ]))
+    def test_volume_reduction(self):
+        """8 symbols → 5 relevant (pass1) → 2 primary (pass2) → 3 non-primary enter pass3."""
+        pass_map = {}
+        names = [f"sym_{i}" for i in range(8)]
+        # Pass 1: 5 relevant, 3 excluded
+        for i, name in enumerate(names):
+            pass_map[(1, name)] = "yes" if i < 5 else "no"
+        # Pass 2: 2 primary out of 5 relevant
+        for i in range(5):
+            pass_map[(2, names[i])] = "yes" if i < 2 else "no"
+        # Pass 3: all non-primary get supporting
+        for i in range(2, 5):
+            pass_map[(3, names[i])] = "yes"
+
+        llm = _binary_llm(pass_map)
 
         candidates = [
             {
-                "symbol_id": 1, "file_id": 10, "file_path": "a.py",
-                "name": "foo", "kind": "function", "start_line": 1, "end_line": 5,
-                "signature": "def foo()", "connections": [],
-                "file_source": "project",
-            },
-        ]
-        task = TaskQuery(raw_task="fix foo", task_id="t1", mode="plan", repo_id=1)
-
-        with caplog.at_level(logging.WARNING, logger="clean_room_agent.retrieval.precision_stage"):
-            classify_symbols(candidates, task, mock_llm)
-
-        assert any("missing 'signature'" in msg for msg in caplog.messages)
-
-
-class TestClassifySymbolsBatching:
-    def test_batch_boundary(self):
-        """WU6: large symbol sets are split into batches."""
-        import re
-
-        mock_llm = MagicMock()
-        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
-        mock_llm.config.context_window = 512
-        mock_llm.config.max_tokens = 128
-
-        candidates = []
-        for i in range(30):
-            candidates.append({
-                "symbol_id": i, "file_id": 1, "file_path": "big.py",
-                "name": f"func_{i}", "kind": "function",
+                "symbol_id": i, "file_id": 10, "file_path": "big.py",
+                "name": names[i], "kind": "function",
                 "start_line": i * 10, "end_line": i * 10 + 5,
-                "signature": f"def func_{i}()", "connections": [],
+                "signature": f"def {names[i]}()", "connections": [],
                 "file_source": "project",
-            })
-
-        def _complete(prompt, system=None):
-            resp = MagicMock()
-            names = re.findall(r"- (func_\d+)", prompt)
-            resp.text = json.dumps([
-                {"name": n, "file_path": "big.py", "start_line": int(n.split("_")[1]) * 10,
-                 "detail_level": "supporting", "reason": "ctx"}
-                for n in names
-            ])
-            return resp
-
-        mock_llm.complete.side_effect = _complete
-
+            }
+            for i in range(8)
+        ]
         task = TaskQuery(raw_task="fix big", task_id="t1", mode="plan", repo_id=1)
-        result = classify_symbols(candidates, task, mock_llm)
 
-        assert len(result) == 30
-        assert all(cs.detail_level == "supporting" for cs in result)
-        assert mock_llm.complete.call_count >= 2
+        result = classify_symbols(candidates, task, llm)
+        assert len(result) == 8
+
+        # Verify classifications
+        by_name = {cs.name: cs.detail_level for cs in result}
+        assert by_name["sym_0"] == "primary"
+        assert by_name["sym_1"] == "primary"
+        assert by_name["sym_2"] == "supporting"
+        assert by_name["sym_3"] == "supporting"
+        assert by_name["sym_4"] == "supporting"
+        assert by_name["sym_5"] == "excluded"
+        assert by_name["sym_6"] == "excluded"
+        assert by_name["sym_7"] == "excluded"
+
+        # Total calls: 8 (pass1) + 5 (pass2) + 3 (pass3) = 16
+        assert llm.complete.call_count == 16
+
+    def test_all_excluded_at_pass1_skips_later_passes(self):
+        """If pass 1 excludes everything, passes 2 and 3 never run."""
+        llm = _binary_llm({})  # all default to "no"
+
+        candidates = [
+            {
+                "symbol_id": i, "file_id": 10, "file_path": "a.py",
+                "name": f"sym_{i}", "kind": "function",
+                "start_line": i, "end_line": i + 5,
+                "signature": "", "connections": [],
+                "file_source": "project",
+            }
+            for i in range(3)
+        ]
+        task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
+
+        result = classify_symbols(candidates, task, llm)
+        assert all(cs.detail_level == "excluded" for cs in result)
+        # Only pass 1 calls (3 symbols), no pass 2 or 3
+        assert llm.complete.call_count == 3
 
 
 class TestR6NeighborOrdering:

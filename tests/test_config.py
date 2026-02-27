@@ -80,7 +80,7 @@ class TestCreateDefaultConfig:
         assert config is not None
         models = require_models_config(config)
         assert models["provider"] == "ollama"
-        assert models["coding"] == "qwen2.5-coder:3b-instruct"
+        assert models["coding"] == "qwen3:1.7b"
         assert models["reasoning"] == "qwen3:4b-instruct-2507"
         assert models["base_url"] == "http://localhost:11434"
 

@@ -1,10 +1,15 @@
-"""Similarity stage: find structurally similar symbols for dedup/extract-pattern tasks."""
+"""Similarity stage: find structurally similar symbols for dedup/extract-pattern tasks.
+
+Binary decomposition: each candidate pair gets an independent yes/no LLM call.
+The group_label (used only for logging, not by union-find) is dropped — the
+input + verdict is the audit trail.
+"""
 
 import logging
 
 from clean_room_agent.llm.client import LLMClient
 from clean_room_agent.query.api import KnowledgeBase
-from clean_room_agent.retrieval.batch_judgment import run_batched_judgment, run_binary_judgment
+from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import ClassifiedSymbol, TaskQuery
 from clean_room_agent.retrieval.stage import StageContext, register_stage, resolve_retrieval_param
 
@@ -14,16 +19,6 @@ logger = logging.getLogger(__name__)
 MAX_CANDIDATE_PAIRS = 50
 MIN_COMPOSITE_SCORE = 0.3
 MAX_GROUP_SIZE = 8
-
-SIMILARITY_JUDGMENT_SYSTEM = (
-    "You are Jane, a code similarity analyst. Given pairs of functions/methods "
-    "with structural signals, determine which pairs are truly similar enough to "
-    "group for deduplication or pattern extraction.\n"
-    "Respond with a JSON array: "
-    '[{"pair_id": N, "keep": true/false, "group_label": "...", "reason": "..."}]. '
-    "Only confirm pairs that share genuine structural or behavioral similarity. "
-    "Respond with ONLY the JSON array, no markdown fencing or extra text."
-)
 
 SIMILARITY_BINARY_SYSTEM = (
     "You are a code similarity classifier. Given a task and two functions/methods "
@@ -140,94 +135,39 @@ def find_similar_pairs(
     return pairs[:max_pairs]
 
 
-_TOKENS_PER_PAIR = 40  # ~40 tokens per pair line in judgment prompt
-
-
-def _require_logged_client(llm, caller: str) -> None:
-    """Enforce LoggedLLMClient at runtime so LLM I/O logging cannot be forgotten."""
-    if not hasattr(llm, "flush"):
-        raise TypeError(
-            f"{caller} requires a logging-capable LLM client (with flush()), "
-            f"got {type(llm).__name__}"
-        )
-
-
 def judge_similarity(
     pairs: list[dict],
     task: TaskQuery,
     llm: LLMClient,
-    *,
-    binary: bool = False,
 ) -> list[dict]:
-    """LLM judgment on similarity pairs.
+    """Binary LLM judgment on similarity pairs.
 
-    When binary=False (default), batches pairs for graded judgment.
-    When binary=True, each pair gets an independent yes/no LLM call.
+    Each pair gets an independent yes/no LLM call.
+    Binary decomposition is architectural — not conditional on model size.
 
-    R2: only confirmed pairs (keep=True / yes) are returned.
-    Omitted pairs default to denied.
+    R2: only confirmed pairs (yes) are returned. Omitted pairs default to denied.
     """
     if not pairs:
         return []
-
-    _require_logged_client(llm, "judge_similarity")
 
     def _format(p: dict) -> str:
         a, b = p["sym_a"], p["sym_b"]
         sigs = p["signals"]
         return (
-            f"- pair_id={p['pair_id']}: {a.name} ({a.kind}, {a.end_line - a.start_line + 1} lines) "
-            f"vs {b.name} ({b.kind}, {b.end_line - b.start_line + 1} lines) "
-            f"[line_ratio={sigs['line_ratio']}, callee_jaccard={sigs['callee_jaccard']}, "
-            f"name_lcs={sigs['name_lcs']}, same_parent={sigs['same_parent']}]"
+            f"Function A: {a.name} ({a.kind}, {a.end_line - a.start_line + 1} lines)\n"
+            f"Function B: {b.name} ({b.kind}, {b.end_line - b.start_line + 1} lines)\n"
+            f"Signals: line_ratio={sigs['line_ratio']}, callee_jaccard={sigs['callee_jaccard']}, "
+            f"name_lcs={sigs['name_lcs']}, same_parent={sigs['same_parent']}"
         )
 
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\n"
 
-    if binary:
-        def _format_binary(p: dict) -> str:
-            a, b = p["sym_a"], p["sym_b"]
-            sigs = p["signals"]
-            return (
-                f"Function A: {a.name} ({a.kind}, {a.end_line - a.start_line + 1} lines)\n"
-                f"Function B: {b.name} ({b.kind}, {b.end_line - b.start_line + 1} lines)\n"
-                f"Signals: line_ratio={sigs['line_ratio']}, callee_jaccard={sigs['callee_jaccard']}, "
-                f"name_lcs={sigs['name_lcs']}, same_parent={sigs['same_parent']}"
-            )
-
-        verdict_map, omitted = run_binary_judgment(
-            pairs,
-            system_prompt=SIMILARITY_BINARY_SYSTEM,
-            task_context=task_header,
-            llm=llm,
-            format_item=_format_binary,
-            stage_name="similarity",
-            item_key=lambda p: p["pair_id"],
-            default_action="denied",
-        )
-
-        confirmed: list[dict] = []
-        for p in pairs:
-            pid = p["pair_id"]
-            if verdict_map[pid]:
-                confirmed.append({
-                    "pair_id": pid,
-                    "sym_a": p["sym_a"],
-                    "sym_b": p["sym_b"],
-                    "group_label": "",
-                    "reason": "binary classifier confirmed",
-                })
-        return confirmed
-
-    # Batched mode
-    judgment_map, omitted = run_batched_judgment(
+    verdict_map, omitted = run_binary_judgment(
         pairs,
-        system_prompt=SIMILARITY_JUDGMENT_SYSTEM,
-        task_header=task_header + "Symbol pairs:\n",
+        system_prompt=SIMILARITY_BINARY_SYSTEM,
+        task_context=task_header,
         llm=llm,
-        tokens_per_item=_TOKENS_PER_PAIR,
         format_item=_format,
-        extract_key=lambda j: j.get("pair_id"),
         stage_name="similarity",
         item_key=lambda p: p["pair_id"],
         default_action="denied",
@@ -235,23 +175,15 @@ def judge_similarity(
 
     confirmed: list[dict] = []
     for p in pairs:
-        j = judgment_map.get(p["pair_id"])
-        if j is None:
-            continue
-        if j.get("keep", False):
+        pid = p["pair_id"]
+        if verdict_map.get(pid, False):
             confirmed.append({
-                "pair_id": p["pair_id"],
+                "pair_id": pid,
                 "sym_a": p["sym_a"],
                 "sym_b": p["sym_b"],
-                "group_label": j.get("group_label", ""),
-                "reason": j.get("reason", ""),
+                "group_label": "",
+                "reason": "binary classifier confirmed",
             })
-        else:
-            # A6b: log explicitly denied pairs for traceability
-            logger.warning(
-                "R2: Similarity pair denied: %s vs %s — %s",
-                p["sym_a"].name, p["sym_b"].name, j.get("reason", "no reason"),
-            )
 
     return confirmed
 
@@ -349,9 +281,7 @@ class SimilarityStage:
         if not pairs:
             return context
 
-        # Binary mode when pipeline resolved this stage to the classifier role
-        binary = bool(context.retrieval_params.get("binary_judgment"))
-        confirmed = judge_similarity(pairs, task, llm, binary=binary)
+        confirmed = judge_similarity(pairs, task, llm)
 
         if not confirmed:
             return context
