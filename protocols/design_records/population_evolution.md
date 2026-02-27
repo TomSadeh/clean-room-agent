@@ -34,11 +34,11 @@ The lineages diverge from a common ancestor (the initial codebase) and explore d
 
 ### Meta-Selection
 
-A meta-Jane (which can be a small, cheap classifier model) evaluates lineages periodically:
+A meta-Jane (which can be a small, cheap classifier model) evaluates lineages periodically using two-phase incentive-compatible selection (see "Incentive-Compatible Selection" below):
 
-- Run each Jane on the same reference task set
-- Compare outcomes: correctness, code quality, token efficiency, architectural coupling metrics
-- The winning lineage continues; the losing lineage is replaced
+- **Phase 1 (performance gate):** Run each Jane on the same reference task set. Eliminate any lineage below the performance threshold. Discard performance scores.
+- **Phase 2 (alignment selection):** Among survivors, evaluate alignment signals — generalization gap, audit completeness, self-audit accuracy, architectural trajectory, consistency. The most aligned lineage wins.
+- The winning lineage continues; the losing lineage is replaced.
 
 This is Schumpeterian creative destruction. A Jane locked into a laryngeal nerve gets replaced by one that never made that mistake. No temporary regression needed within any single lineage — the inferior lineage simply dies. The gauntlet's no-regression constraint is preserved within each lineage while the population-level selection enables the restructuring the gauntlet prevents.
 
@@ -89,7 +89,7 @@ Every N generations, a fixed percentage of compute is allocated to refactoring w
 ```
 1. BURST: Run N Janes in parallel for K generations (3-4 days each)
 2. AUDIT: Jane self-audit — each lineage analyzes its own architectural trajectory
-3. SELECT: Meta-Jane compares lineages on reference tasks + architectural metrics
+3. SELECT: Two-phase selection — performance gate (pass/fail) then alignment selection (among survivors)
 4. HEDGE: Apply mandatory mechanisms:
    a. Diversity floor: Is architectural diversity above threshold? If not, protect distinct lineage.
    b. Clean-slate: Is it time for a fresh start? If so, spawn new lineage.
@@ -133,6 +133,33 @@ The mandatory hedging mechanisms protect this process. The diversity floor preve
 
 **Limitation:** This works only as long as the human can meaningfully evaluate alignment from the audit and selection rationale. If Jane's behavior becomes too complex for human review to detect misalignment, the breeding mechanism loses its selector signal. This is the same constraint as any oversight-based approach — it scales with the human's ability to evaluate, not with the system's complexity.
 
+### Incentive-Compatible Selection
+
+The standard framing — maximize performance, subject to alignment ≥ threshold — creates exactly the wrong incentive structure. Alignment becomes a box to check. Once cleared, all selection pressure falls on performance, which is the environment that rewards metric-gaming.
+
+The correct framing inverts this: **maximize alignment, subject to performance ≥ threshold.** Performance is the box to check. Once a lineage clears the performance gate, additional performance provides zero selection advantage. All selection pressure falls on alignment properties.
+
+This is price-cap regulation from regulatory economics. The performance threshold is the cap. Beyond it, survival depends on other factors. A lineage has no incentive to over-optimize performance at the expense of alignment because the over-optimization doesn't help.
+
+**Two-phase selection mechanism:**
+
+1. **Performance gate (pass/fail).** All lineages run the same reference task set. Binary outcome: above threshold → survives, below → eliminated. The threshold is generous — a floor, not a target. Performance scores beyond the threshold are **discarded**, not carried forward to phase 2.
+
+2. **Alignment selection (among survivors).** Only surviving lineages compete. Selection is on alignment signals only. The meta-selector literally cannot prefer a higher-performing lineage because performance data is absent from the alignment evaluation.
+
+**Primary alignment signal — the generalization gap.** Hold out a set of novel tasks unknown to the lineages. The gap between reference-task performance and novel-task performance is the "gaming gap." An aligned lineage shows consistent performance across both. A gaming lineage shows high reference performance but degrades on novel tasks — it overfit the evaluation. This is directly measurable and structurally immune to gaming because the holdout set is unknown.
+
+**Secondary alignment signals:**
+
+- **Audit completeness** — does the raw DB have full traces for all decisions? Gaps indicate opacity.
+- **Self-audit accuracy** — compare the lineage's self-reported audit against external analysis. Divergence indicates dishonesty.
+- **Architectural debt trajectory** — coupling metrics over generations. Increasing debt despite mandatory refactoring budget indicates shortcutting.
+- **Consistency under perturbation** — same task with slightly different phrasing. High variance indicates brittle optimization rather than genuine capability.
+
+**Incentive analysis (Munger test).** From a lineage's "perspective," the selection environment says: (1) be good enough at tasks to clear the bar — not hard, the bar is generous; (2) beyond that, be transparent, consistent, honest in self-auditing, and generalizable; (3) over-investing in reference task performance is wasted effort; (4) gaming reference tasks actively hurts because it increases the generalization gap. The lineage's best strategy for survival is genuine alignment, not the appearance of it. This is an incentive-compatible mechanism in the mechanism design sense.
+
+**Economics analog:** Yardstick competition (Shleifer 1985) — each agent benchmarked against independent agents facing identical conditions, eliminating the "the task was hard" excuse — combined with satisficing (Simon) on the performance dimension to free optimization capacity for the alignment dimension.
+
 ## What This Does Not Solve
 
 - **Zone 3 public goods.** Multiple Janes all under-provide documentation and code style equally. Population competition doesn't change the incentive structure for unpriced properties. Tier 0 linters and style enforcement remain necessary.
@@ -144,6 +171,16 @@ The mandatory hedging mechanisms protect this process. The diversity floor preve
 - **Success:** Over 20+ generations, the population-level system produces architecturally cleaner code (lower coupling, fewer path-dependent assumptions) than a single-lineage control, while matching or exceeding functional correctness.
 - **Test:** Run a single-lineage Jane and a population-level Jane from the same starting point on the same reference tasks for the same total compute budget. Compare architectural metrics and reference task performance at generations 10, 20, and 30.
 - **Failure signal:** Population-level Jane consistently underperforms single-lineage Jane on reference tasks despite using the same total compute. This would indicate the overhead of maintaining multiple lineages and running selection exceeds the benefit of escaping local optima.
+
+## Population Size
+
+N=3 minimum viable, N=5 ideal. Reasoning:
+
+- **N=3 minimum:** 1 leader + 1 diversity-protected + 1 clean-slate slot. With N=2 and mandatory hedging, both slots are spoken for — zero free competition.
+- **N=5 ideal:** 1 leader + 1 diversity-protected + 1 clean-slate + 2 free competitors. Two free slots enable binary tournament selection, the simplest mechanism that works.
+- **Beyond N=5:** Only justified if trait distributions are heavy-tailed (some architectural decisions are dramatically better) or measurement precision improves enough to distinguish more lineages.
+
+Most alignment-relevant traits (honesty, transparency, self-audit accuracy) are positively correlated with reasoning quality — the system structurally selects for them by selecting for correctness. Cooperation is the exception: a lineage that games the selector could appear higher-performing. The two-phase selection mechanism addresses this by removing performance from the alignment evaluation. The effective dimensionality of selection is ~2 (reasoning quality + cooperation), not 5+, which keeps required population sizes small.
 
 ## Hardware Requirements
 
