@@ -8,6 +8,8 @@ LANGUAGE_MAP: dict[str, str] = {
     ".jsx": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
+    ".c": "c",
+    ".h": "c",
 }
 
 KNOWN_EXTENSIONS: frozenset[str] = frozenset(LANGUAGE_MAP)

@@ -205,20 +205,13 @@ def _read_and_render_files(
             })
             continue
         detail = file_detail[fid]
-        abs_path = repo_path / info["path"]
 
-        try:
-            source = abs_path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, IOError) as e:
-            if detail == "primary":
-                raise RuntimeError(
-                    f"R1: cannot read primary file '{info['path']}': {e}. "
-                    f"Primary files must be readable — fix the file or re-run retrieval."
-                ) from e
-            logger.warning("Cannot read %s: %s — skipping (detail=%s)", info["path"], e, detail)
+        # Knowledge base files: read content from ref_sections table, not disk
+        source = _read_file_source(fid, info, detail, repo_path, kb)
+        if source is None:
             decisions.append({
                 "file_id": fid, "included": False,
-                "reason": f"read_error: {detail} file unreadable: {e}",
+                "reason": f"read_error: {detail} file unreadable",
             })
             continue
 
@@ -425,6 +418,49 @@ def _drop_by_priority(rendered_files: list[dict], budget_limit: int) -> list[dic
         result = [rf for rf in result if rf["detail"] != level]
 
     return result
+
+
+def _read_file_source(
+    fid: int,
+    info: dict,
+    detail: str,
+    repo_path: Path,
+    kb: "KnowledgeBase | None",
+) -> str | None:
+    """Read file content from disk or knowledge base DB.
+
+    Knowledge base files (file_source='knowledge_base', path starts with 'kb/')
+    are read from ref_sections via the bridge. All other files are read from disk.
+    Returns None if the file cannot be read (with appropriate logging/raising).
+    """
+    path = info["path"]
+
+    # Knowledge base bridge files: read from ref_sections table
+    if path.startswith("kb/") and kb is not None:
+        from clean_room_agent.db.queries import get_ref_section_content_by_file_id
+
+        content = get_ref_section_content_by_file_id(kb._conn, fid)
+        if content is not None:
+            return content
+        logger.warning("KB section not found for file_id=%d path=%s", fid, path)
+        if detail == "primary":
+            raise RuntimeError(
+                f"R1: cannot read primary KB file '{path}': section not found in ref_sections."
+            )
+        return None
+
+    # Regular files: read from disk
+    abs_path = repo_path / path
+    try:
+        return abs_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, IOError) as e:
+        if detail == "primary":
+            raise RuntimeError(
+                f"R1: cannot read primary file '{path}': {e}. "
+                f"Primary files must be readable — fix the file or re-run retrieval."
+            ) from e
+        logger.warning("Cannot read %s: %s — skipping (detail=%s)", path, e, detail)
+        return None
 
 
 def _render_at_level(

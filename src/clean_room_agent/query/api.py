@@ -341,6 +341,14 @@ class KnowledgeBase:
         ).fetchone()
         return _row_to_adapter_info(row) if row else None
 
+    # --- Knowledge base queries ---
+
+    def get_ref_section_content(self, file_id: int) -> str | None:
+        """Get knowledge base section content by bridge file_id."""
+        from clean_room_agent.db.queries import get_ref_section_content_by_file_id
+
+        return get_ref_section_content_by_file_id(self._conn, file_id)
+
     # --- Row converters ---
 
     @staticmethod

@@ -225,6 +225,119 @@ def upsert_file_metadata(
     )
 
 
+def upsert_ref_source(
+    conn: sqlite3.Connection,
+    name: str,
+    source_type: str,
+    path: str,
+    format_: str,
+) -> int:
+    """Insert or update a reference source. Returns the source id."""
+    now = _now()
+    row = conn.execute("SELECT id FROM ref_sources WHERE name = ?", (name,)).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE ref_sources SET source_type = ?, path = ?, format = ?, indexed_at = ? WHERE id = ?",
+            (source_type, path, format_, now, row["id"]),
+        )
+        return row["id"]
+    return _insert_row(conn, "ref_sources",
+        ["name", "source_type", "path", "format", "indexed_at"],
+        [name, source_type, path, format_, now],
+    )
+
+
+def insert_ref_section(
+    conn: sqlite3.Connection,
+    source_id: int,
+    title: str,
+    section_path: str,
+    content: str,
+    content_hash: str,
+    size_bytes: int,
+    section_type: str,
+    ordering: int,
+    parent_section_id: int | None = None,
+    source_file: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> int:
+    """Insert a reference section. Returns the section id."""
+    return _insert_row(conn, "ref_sections",
+        ["source_id", "title", "section_path", "content", "content_hash",
+         "size_bytes", "section_type", "parent_section_id", "source_file",
+         "start_line", "end_line", "ordering"],
+        [source_id, title, section_path, content, content_hash,
+         size_bytes, section_type, parent_section_id, source_file,
+         start_line, end_line, ordering],
+    )
+
+
+def insert_ref_section_metadata(
+    conn: sqlite3.Connection,
+    section_id: int,
+    domain: str | None = None,
+    concepts: str | None = None,
+    c_standard: str | None = None,
+    header: str | None = None,
+    related_functions: str | None = None,
+) -> None:
+    """Insert metadata for a reference section."""
+    conn.execute(
+        "INSERT INTO ref_section_metadata "
+        "(section_id, domain, concepts, c_standard, header, related_functions) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (section_id, domain, concepts, c_standard, header, related_functions),
+    )
+
+
+def delete_ref_sections_for_source(conn: sqlite3.Connection, source_id: int) -> int:
+    """Delete all sections (and their metadata) for a source. Returns count deleted."""
+    conn.execute(
+        "DELETE FROM ref_section_metadata WHERE section_id IN "
+        "(SELECT id FROM ref_sections WHERE source_id = ?)",
+        (source_id,),
+    )
+    cursor = conn.execute(
+        "DELETE FROM ref_sections WHERE source_id = ?", (source_id,),
+    )
+    return cursor.rowcount
+
+
+def get_ref_section_content_by_file_id(
+    conn: sqlite3.Connection,
+    file_id: int,
+) -> str | None:
+    """Get reference section content by looking up the bridge file's virtual path.
+
+    The bridge links files.path (kb/{source}/{section_path}) to ref_sections.
+    Returns the section content, or None if not found.
+    """
+    file_row = conn.execute(
+        "SELECT path FROM files WHERE id = ?", (file_id,),
+    ).fetchone()
+    if not file_row:
+        return None
+    path = file_row["path"]
+    if not path.startswith("kb/"):
+        return None
+
+    # Parse: kb/{source_name}/{section_path}
+    parts = path.split("/", 2)
+    if len(parts) < 3:
+        return None
+    source_name = parts[1]
+    section_path = parts[2]
+
+    row = conn.execute(
+        "SELECT rs.content FROM ref_sections rs "
+        "JOIN ref_sources src ON rs.source_id = src.id "
+        "WHERE src.name = ? AND rs.section_path = ?",
+        (source_name, section_path),
+    ).fetchone()
+    return row["content"] if row else None
+
+
 def clear_file_children(conn: sqlite3.Connection, file_id: int) -> None:
     """Delete child data owned by a file, keeping the file row itself.
 

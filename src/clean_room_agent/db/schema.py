@@ -125,6 +125,41 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
             deployed_at TEXT NOT NULL
         );
 
+        -- Knowledge base reference tables
+        CREATE TABLE IF NOT EXISTS ref_sources (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            source_type TEXT NOT NULL,
+            path TEXT NOT NULL,
+            format TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ref_sections (
+            id INTEGER PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES ref_sources(id),
+            title TEXT NOT NULL,
+            section_path TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            section_type TEXT NOT NULL,
+            parent_section_id INTEGER REFERENCES ref_sections(id),
+            source_file TEXT,
+            start_line INTEGER,
+            end_line INTEGER,
+            ordering INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ref_section_metadata (
+            section_id INTEGER PRIMARY KEY REFERENCES ref_sections(id),
+            domain TEXT,
+            concepts TEXT,
+            c_standard TEXT,
+            header TEXT,
+            related_functions TEXT
+        );
+
         -- Indexes
         CREATE UNIQUE INDEX IF NOT EXISTS idx_repos_path ON repos(path);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_files_repo_path ON files(repo_id, path);
@@ -138,6 +173,9 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_file_metadata_domain ON file_metadata(domain);
         CREATE INDEX IF NOT EXISTS idx_file_metadata_module ON file_metadata(module);
         CREATE INDEX IF NOT EXISTS idx_adapter_stage_active ON adapter_metadata(stage_name, active);
+        CREATE INDEX IF NOT EXISTS idx_ref_sections_source ON ref_sections(source_id);
+        CREATE INDEX IF NOT EXISTS idx_ref_sections_parent ON ref_sections(parent_section_id);
+        CREATE INDEX IF NOT EXISTS idx_ref_section_metadata_domain ON ref_section_metadata(domain);
     """)
 
     # Migration: add file_source column for existing DBs

@@ -24,8 +24,14 @@ class TestLanguageMap:
         assert LANGUAGE_MAP[".mjs"] == "javascript"
         assert LANGUAGE_MAP[".cjs"] == "javascript"
 
+    def test_c_extensions(self):
+        assert LANGUAGE_MAP[".c"] == "c"
+        assert LANGUAGE_MAP[".h"] == "c"
+
     def test_all_extensions_present(self):
-        assert set(LANGUAGE_MAP) == {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+        assert set(LANGUAGE_MAP) == {
+            ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".c", ".h",
+        }
 
 
 class TestKnownExtensions:
