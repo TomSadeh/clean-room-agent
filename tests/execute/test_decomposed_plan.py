@@ -187,17 +187,15 @@ class TestRunPartDependencies:
         assert result["p1"] == []
         assert result["p2"] == []
 
-    def test_unparseable_response_defaults_to_no_dependency(self, model_config):
-        """R2: Unparseable binary response defaults to no dependency (safe direction)."""
+    def test_unparseable_response_raises(self, model_config):
+        """A1: Unparseable binary response raises — incomplete judgments are not silent."""
         grouping = PartGrouping(parts=[
             PartGroup(id="p1", description="d1", change_point_indices=[0]),
             PartGroup(id="p2", description="d2", change_point_indices=[1]),
         ])
         llm = _make_mock_llm(model_config, ["garbage", "garbage"])
-        result = _run_part_dependencies(grouping, "task", llm)
-        # Both should default to no dependency
-        assert result["p1"] == []
-        assert result["p2"] == []
+        with pytest.raises(ValueError, match="failed to parse"):
+            _run_part_dependencies(grouping, "task", llm)
 
 
 # -- Assembly tests --

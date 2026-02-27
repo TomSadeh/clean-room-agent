@@ -121,23 +121,25 @@ class TestModelRouter:
         mc = router.resolve("coding")
         assert mc.temperature == 0.0
 
-    def test_missing_temperature_raises(self):
-        """F5: config missing 'temperature' key raises KeyError."""
+    def test_missing_temperature_defaults_to_zero(self):
+        """C2: config missing 'temperature' key defaults all roles to 0.0."""
         config = {k: v for k, v in self.config.items() if k != "temperature"}
-        with pytest.raises(KeyError):
-            ModelRouter(config)
+        router = ModelRouter(config)
+        assert router.resolve("coding").temperature == 0.0
+        assert router.resolve("reasoning").temperature == 0.0
 
-    def test_temperature_missing_subkey_raises(self):
-        """F6: temperature dict missing 'coding' key raises KeyError."""
-        config = {**self.config, "temperature": {"reasoning": 0.0, "classifier": 0.0}}
-        with pytest.raises(KeyError):
-            ModelRouter(config)
+    def test_temperature_missing_subkey_defaults(self):
+        """C2: temperature dict missing 'coding' key defaults to 0.0."""
+        config = {**self.config, "temperature": {"reasoning": 0.5, "classifier": 0.0}}
+        router = ModelRouter(config)
+        assert router.resolve("coding").temperature == 0.0
+        assert router.resolve("reasoning").temperature == 0.5
 
-    def test_temperature_missing_classifier_raises(self):
-        """F7: temperature dict missing 'classifier' key raises KeyError."""
-        config = {**self.config, "temperature": {"coding": 0.0, "reasoning": 0.0}}
-        with pytest.raises(KeyError):
-            ModelRouter(config)
+    def test_temperature_missing_classifier_defaults(self):
+        """C2: temperature dict missing 'classifier' key defaults to 0.0."""
+        config = {**self.config, "temperature": {"coding": 0.2, "reasoning": 0.0}}
+        router = ModelRouter(config)
+        assert router.resolve("coding").temperature == 0.2
 
     def test_override_inherits_role_temperature(self):
         config = {
@@ -180,6 +182,14 @@ class TestModelRouter:
         config = {**self.config, "overrides": ["scope", "precision"]}
         with pytest.raises(RuntimeError, match="must be a dict"):
             ModelRouter(config)
+
+    def test_missing_overrides_defaults_to_empty(self):
+        """C1: config without 'overrides' defaults to empty dict."""
+        config = {k: v for k, v in self.config.items() if k != "overrides"}
+        router = ModelRouter(config)
+        # No override → role default
+        mc = router.resolve("reasoning", stage_name="scope")
+        assert mc.model == "qwen3:4b"
 
     def test_invalid_role_in_stage_override(self):
         """T7: invalid role caught even when stage override matches."""

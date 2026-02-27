@@ -69,7 +69,8 @@ def run_plan(
 
         # Phase 3: execute plan
         # Flush LLM records even if execute_plan raises (T28 traceability)
-        decomposed = bool(config.get("orchestrator", {}).get("decomposed_planning", False))
+        from clean_room_agent.orchestrator.runner import _use_decomposed_planning
+        decomposed = _use_decomposed_planning(config)
         with LoggedLLMClient(reasoning_config) as llm:
             try:
                 if decomposed:

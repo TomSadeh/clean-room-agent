@@ -99,6 +99,17 @@ def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _require_stage_output(stage_dir: Path, filename: str):
+    """Load stage output file. Raises if stage dir exists but file does not."""
+    path = stage_dir / filename
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Stage output missing: {path}. "
+            f"Stage dir exists but expected output is absent — incomplete run?"
+        )
+    return _load_json(path)
+
+
 def _write_summary(text: str, path: Path) -> None:
     """Write summary text to file AND print to stdout."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,15 +235,29 @@ class DebugSession:
         seeds_info = []
         for fid in file_ids:
             f = self.kb.get_file_by_id(fid)
-            seeds_info.append({"file_id": fid, "path": f.path if f else "?"})
+            if f is None:
+                raise ValueError(
+                    f"Seed file_id {fid} not found in knowledge base. "
+                    f"Stale seed from task analysis — re-index required."
+                )
+            seeds_info.append({"file_id": fid, "path": f.path})
         for sid in symbol_ids:
             s = self.kb.get_symbol_by_id(sid)
-            if s:
-                f = self.kb.get_file_by_id(s.file_id)
-                seeds_info.append({
-                    "symbol_id": sid, "name": s.name,
-                    "file_path": f.path if f else "?",
-                })
+            if s is None:
+                raise ValueError(
+                    f"Seed symbol_id {sid} not found in knowledge base. "
+                    f"Stale seed from task analysis — re-index required."
+                )
+            f = self.kb.get_file_by_id(s.file_id)
+            if f is None:
+                raise ValueError(
+                    f"File for seed symbol {s.name!r} (file_id={s.file_id}) "
+                    f"not found in knowledge base. Re-index required."
+                )
+            seeds_info.append({
+                "symbol_id": sid, "name": s.name,
+                "file_path": f.path,
+            })
 
         return {
             "task_query": task_query,
@@ -661,6 +686,8 @@ def format_assembly_summary(artifacts: dict) -> str:
 # Subcommand: run
 # ---------------------------------------------------------------------------
 
+_DEFAULT_RESERVED_TOKENS = 4096
+
 STAGE_ORDER = ["scope", "precision", "similarity"]
 STAGE_INDEX = {name: i for i, name in enumerate(STAGE_ORDER)}
 
@@ -670,8 +697,10 @@ def cmd_run(args):
     repo_path = Path(args.repo).resolve()
     config = load_config(repo_path)
     if config is None:
-        print(f"ERROR: No config at {repo_path / '.clean_room' / 'config.toml'}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(
+            f"No config at {repo_path / '.clean_room' / 'config.toml'}. "
+            f"Run 'cra init' first."
+        )
 
     # Budget
     budget_section = config.get("budget", {})
@@ -679,7 +708,7 @@ def cmd_run(args):
     cw = budget_section.get("context_window") or models_section["context_window"]
     if isinstance(cw, dict):
         cw = max(cw.values())
-    reserved = budget_section.get("reserved_tokens", 4096)
+    reserved = budget_section.get("reserved_tokens", _DEFAULT_RESERVED_TOKENS)
     budget = BudgetConfig(context_window=cw, reserved_tokens=reserved)
 
     # Available stages from config
@@ -781,9 +810,9 @@ def cmd_run(args):
                 summary = format_similarity_summary(result)
 
             else:
-                print(f"  Unknown stage {stage_name}, skipping")
-                stage_num += 1
-                continue
+                raise ValueError(
+                    f"Unknown stage {stage_name!r}. Known stages: {STAGE_ORDER}"
+                )
 
             trace_logger.log_calls(stage_name, stage_name, result["llm_calls"],
                                    session.router.resolve(
@@ -841,8 +870,10 @@ def cmd_rerun(args):
     repo_path = Path(meta["repo_path"])
     config = load_config(repo_path)
     if config is None:
-        print("ERROR: No config found", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(
+            f"No config at {repo_path / '.clean_room' / 'config.toml'}. "
+            f"Run 'cra init' first."
+        )
 
     budget_data = meta["budget"]
     budget = BudgetConfig(
@@ -1067,8 +1098,8 @@ def _diff_routing(sa: Path, sb: Path):
 
 
 def _diff_scope(sa: Path, sb: Path):
-    oa = _load_json(sa / "output_context.json") if (sa / "output_context.json").exists() else {}
-    ob = _load_json(sb / "output_context.json") if (sb / "output_context.json").exists() else {}
+    oa = _require_stage_output(sa, "output_context.json")
+    ob = _require_stage_output(sb, "output_context.json")
 
     files_a = {f["path"]: f for f in oa.get("scoped_files", [])}
     files_b = {f["path"]: f for f in ob.get("scoped_files", [])}
@@ -1092,8 +1123,8 @@ def _diff_scope(sa: Path, sb: Path):
 
 
 def _diff_precision(sa: Path, sb: Path):
-    oa = _load_json(sa / "output_context.json") if (sa / "output_context.json").exists() else {}
-    ob = _load_json(sb / "output_context.json") if (sb / "output_context.json").exists() else {}
+    oa = _require_stage_output(sa, "output_context.json")
+    ob = _require_stage_output(sb, "output_context.json")
 
     def _sym_key(cs):
         return (cs["name"], cs["file_id"], cs["start_line"])
@@ -1121,8 +1152,8 @@ def _diff_precision(sa: Path, sb: Path):
 
 
 def _diff_similarity(sa: Path, sb: Path):
-    ca = _load_json(sa / "confirmed.json") if (sa / "confirmed.json").exists() else []
-    cb = _load_json(sb / "confirmed.json") if (sb / "confirmed.json").exists() else []
+    ca = _require_stage_output(sa, "confirmed.json")
+    cb = _require_stage_output(sb, "confirmed.json")
     print(f"  Confirmed pairs: A={len(ca)}, B={len(cb)}")
 
     def _pair_key(p):
@@ -1141,8 +1172,8 @@ def _diff_similarity(sa: Path, sb: Path):
 
 
 def _diff_assembly(sa: Path, sb: Path):
-    pa = _load_json(sa / "output_package.json") if (sa / "output_package.json").exists() else {}
-    pb = _load_json(sb / "output_package.json") if (sb / "output_package.json").exists() else {}
+    pa = _require_stage_output(sa, "output_package.json")
+    pb = _require_stage_output(sb, "output_package.json")
 
     paths_a = {f["path"] for f in pa.get("files", [])}
     paths_b = {f["path"] for f in pb.get("files", [])}

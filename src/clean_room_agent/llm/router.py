@@ -2,6 +2,9 @@
 
 from clean_room_agent.llm.client import ModelConfig
 
+# Supplementary: deterministic by default when temperature section absent
+_DEFAULT_TEMPERATURE = 0.0
+
 
 class ModelRouter:
     """Resolves which model to use for a given role and optional stage."""
@@ -19,7 +22,7 @@ class ModelRouter:
         self._classifier = models_config.get("classifier")
         self._base_url = models_config.get("base_url")
 
-        overrides = models_config["overrides"]
+        overrides = models_config.get("overrides", {})
         if not isinstance(overrides, dict):
             raise RuntimeError(
                 f"'overrides' in [models] config must be a dict, got {type(overrides).__name__}"
@@ -61,12 +64,12 @@ class ModelRouter:
             raise RuntimeError("Missing 'provider' in [models] config")
         self._provider = models_config["provider"]
 
-        # Temperature per role: 0.0 (deterministic) is the safe default
-        temps = models_config["temperature"]
+        # Temperature per role: Supplementary, defaults to _DEFAULT_TEMPERATURE
+        temps = models_config.get("temperature", {})
         self._temperature = {
-            "coding": temps["coding"],
-            "reasoning": temps["reasoning"],
-            "classifier": temps["classifier"],
+            "coding": temps.get("coding", _DEFAULT_TEMPERATURE),
+            "reasoning": temps.get("reasoning", _DEFAULT_TEMPERATURE),
+            "classifier": temps.get("classifier", _DEFAULT_TEMPERATURE),
         }
 
         # max_tokens per role: optional, derived from context_window // 8 when absent

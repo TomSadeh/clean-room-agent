@@ -71,7 +71,11 @@ def _run_change_point_enum(
     )
     response = llm.complete(user, system=system)
     result = parse_plan_response(response.text, "change_point_enum")
-    assert isinstance(result, ChangePointEnumeration)
+    if not isinstance(result, ChangePointEnumeration):
+        raise ValueError(
+            f"Expected ChangePointEnumeration from change_point_enum parse, "
+            f"got {type(result).__name__}. Response: {response.text[:200]}"
+        )
     return result
 
 
@@ -102,7 +106,11 @@ def _run_part_grouping(
     )
     response = llm.complete(user, system=system)
     result = parse_plan_response(response.text, "part_grouping")
-    assert isinstance(result, PartGrouping)
+    if not isinstance(result, PartGrouping):
+        raise ValueError(
+            f"Expected PartGrouping from part_grouping parse, "
+            f"got {type(result).__name__}. Response: {response.text[:200]}"
+        )
 
     # Validate grouping covers all change points
     warnings = validate_part_grouping(result, len(enum_result.change_points))
@@ -146,7 +154,7 @@ def _run_part_dependencies(
         a, b = pair
         return f"{a.id}->{b.id}"
 
-    verdict_map, _omitted = run_binary_judgment(
+    verdict_map, omitted = run_binary_judgment(
         pairs,
         system_prompt=system_prompt,
         task_context=f"Task: {task_description}\n",
@@ -156,6 +164,12 @@ def _run_part_dependencies(
         item_key=pair_key,
         default_action="no_dependency",
     )
+    if omitted:
+        raise ValueError(
+            f"Part dependency judgment failed to parse {len(omitted)} of "
+            f"{len(pairs)} pairs: {sorted(omitted)}. "
+            f"Cannot build dependency graph from incomplete judgments."
+        )
 
     # Build dependency dict: {part_id: [depends_on_ids]}
     dep_edges: dict[str, list[str]] = {p.id: [] for p in parts}
@@ -243,7 +257,11 @@ def _run_symbol_targeting(
     )
     response = llm.complete(user, system=system)
     result = parse_plan_response(response.text, "symbol_targeting")
-    assert isinstance(result, SymbolTargetEnumeration)
+    if not isinstance(result, SymbolTargetEnumeration):
+        raise ValueError(
+            f"Expected SymbolTargetEnumeration from symbol_targeting parse, "
+            f"got {type(result).__name__}. Response: {response.text[:200]}"
+        )
     return result
 
 
@@ -275,7 +293,11 @@ def _run_step_design(
     )
     response = llm.complete(user, system=system)
     result = parse_plan_response(response.text, "step_design")
-    assert isinstance(result, PartPlan)
+    if not isinstance(result, PartPlan):
+        raise ValueError(
+            f"Expected PartPlan from step_design parse, "
+            f"got {type(result).__name__}. Response: {response.text[:200]}"
+        )
     return result
 
 
@@ -311,7 +333,7 @@ def _run_step_dependencies(
         a, b = pair
         return f"{a.id}->{b.id}"
 
-    verdict_map, _omitted = run_binary_judgment(
+    verdict_map, omitted = run_binary_judgment(
         pairs,
         system_prompt=system_prompt,
         task_context=f"Part: {part_description}\n",
@@ -321,6 +343,12 @@ def _run_step_dependencies(
         item_key=pair_key,
         default_action="no_dependency",
     )
+    if omitted:
+        raise ValueError(
+            f"Step dependency judgment failed to parse {len(omitted)} of "
+            f"{len(pairs)} pairs: {sorted(omitted)}. "
+            f"Cannot build dependency graph from incomplete judgments."
+        )
 
     # Build dependency dict: {step_id: [depends_on_ids]}
     dep_edges: dict[str, list[str]] = {s.id: [] for s in steps}

@@ -9,6 +9,9 @@ from typing import Any
 # -- Serialization mixin (T81) --
 
 
+_SERIALIZABLE_PRIMITIVES = (str, int, float, bool, type(None))
+
+
 class _SerializableMixin:
     """Auto-generate to_dict()/from_dict() for dataclasses.
 
@@ -18,6 +21,9 @@ class _SerializableMixin:
         _VALIDATE_LISTS: field names that must be validated as list type (non-nested)
         _EXCLUDE: field names to omit from to_dict output
         _NON_EMPTY: field names that must be truthy (non-empty) after construction
+
+    # INVARIANT: Fields in _REQUIRED must NOT have default_factory values.
+    # default_factory would silently supply values, bypassing required-field validation.
     """
 
     _REQUIRED: tuple[str, ...] = ()
@@ -31,6 +37,16 @@ class _SerializableMixin:
             if not getattr(self, name):
                 raise ValueError(f"{type(self).__name__}.{name} must be non-empty")
 
+    @staticmethod
+    def _validate_serializable(val: object, field_name: str) -> None:
+        """Validate that a value is JSON-serializable (primitive or dict)."""
+        if not isinstance(val, (*_SERIALIZABLE_PRIMITIVES, dict)):
+            raise TypeError(
+                f"Field '{field_name}' has non-serializable type "
+                f"{type(val).__name__}. Expected primitive, dict, or "
+                f"object with to_dict()."
+            )
+
     def to_dict(self) -> dict:
         result = {}
         for f in dataclass_fields(self):
@@ -38,13 +54,18 @@ class _SerializableMixin:
                 continue
             val = getattr(self, f.name)
             if isinstance(val, list):
-                result[f.name] = [
-                    item.to_dict() if hasattr(item, "to_dict") else item
-                    for item in val
-                ]
+                items = []
+                for item in val:
+                    if hasattr(item, "to_dict"):
+                        items.append(item.to_dict())
+                    else:
+                        self._validate_serializable(item, f.name)
+                        items.append(item)
+                result[f.name] = items
             elif hasattr(val, "to_dict"):
                 result[f.name] = val.to_dict()
             else:
+                self._validate_serializable(val, f.name)
                 result[f.name] = val
         return result
 
@@ -355,7 +376,12 @@ class PassResult(_SerializableMixin):
             "task_run_id": self.task_run_id,
             "success": self.success,
         }
-        if self.artifact is not None and hasattr(self.artifact, "to_dict"):
+        if self.artifact is not None:
+            if not hasattr(self.artifact, "to_dict"):
+                raise TypeError(
+                    f"PassResult.artifact must implement to_dict(), "
+                    f"got {type(self.artifact).__name__}"
+                )
             d["artifact"] = self.artifact.to_dict()
         return d
 

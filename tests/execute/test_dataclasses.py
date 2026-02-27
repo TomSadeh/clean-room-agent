@@ -390,6 +390,29 @@ class TestPassResult:
         })
         assert restored.task_run_id is None
 
+    def test_to_dict_non_serializable_artifact_raises(self):
+        """B1: PassResult.to_dict() raises TypeError for artifact without to_dict()."""
+        pr = PassResult(pass_type="meta_plan", success=True, artifact="not_serializable_obj")
+        # strings have no to_dict() — but strings are set directly, so this triggers the check
+        # Use an object that truly lacks to_dict()
+        class BadArtifact:
+            pass
+        pr = PassResult(pass_type="meta_plan", success=True, artifact=BadArtifact())
+        with pytest.raises(TypeError, match="must implement to_dict"):
+            pr.to_dict()
+
+
+class TestSerializableMixinTypeSafety:
+    """B2: _SerializableMixin.to_dict() rejects non-serializable types."""
+
+    def test_to_dict_rejects_unknown_type(self):
+        """Non-primitive, non-serializable field values raise TypeError."""
+        step = PlanStep(id="s1", description="test")
+        # Monkey-patch a field to an unserializable type
+        object.__setattr__(step, "target_files", object())
+        with pytest.raises(TypeError, match="non-serializable type"):
+            step.to_dict()
+
 
 class TestOrchestratorResult:
     def test_basic(self):

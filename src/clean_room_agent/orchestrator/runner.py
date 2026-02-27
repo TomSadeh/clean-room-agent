@@ -68,8 +68,10 @@ _MAX_CUMULATIVE_DIFF_CHARS = 50_000
 
 
 def _use_decomposed_planning(config: dict) -> bool:
-    """Check if decomposed planning is enabled. Optional, default False."""
+    """Check if decomposed planning is enabled. Supplementary, default False."""
     orch = config.get("orchestrator", {})
+    if "decomposed_planning" not in orch:
+        logger.debug("decomposed_planning not in config, defaulting to False")
     return bool(orch.get("decomposed_planning", False))
 
 
