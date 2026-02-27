@@ -306,7 +306,7 @@ class TestLoggedLLMClientFailedCalls:
         calls = logged.flush()
         assert len(calls) == 1
         assert calls[0]["response"] == "result"
-        assert "error" not in calls[0]
+        assert calls[0]["error"] == ""
 
 
 # ── T71: Null checks after .fetchone() ──────────────────────────────

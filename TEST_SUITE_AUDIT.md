@@ -8,17 +8,17 @@
 
 ## Summary
 
-| Classification | Count | Description |
-|---|---|---|
-| **BROKEN** | 4 | Will crash in production or silently produces wrong results |
-| **STALE** | 14 | Tests exercise dead behavior or have misleading names |
-| **FRAGILE** | 17 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
+| Classification | Count | Fixed | Description |
+|---|---|---|---|
+| **BROKEN** | 4 | 4 | Will crash in production or silently produces wrong results |
+| **STALE** | 14 | 4 | Tests exercise dead behavior or have misleading names |
+| **FRAGILE** | 17 | 2 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
 
 ---
 
 ## BROKEN Findings
 
-### B1. `trace.py:46` — `call["thinking"]` KeyError on non-thinking models
+### B1. `trace.py:46` — `call["thinking"]` KeyError on non-thinking models — FIXED
 
 - **Test**: `tests/test_trace.py:10-31` (`_make_call` helper always provides `thinking=""`)
 - **Production**: `src/clean_room_agent/trace.py:46` — `call["thinking"]`
@@ -27,7 +27,7 @@
 - **Why tests pass**: `_make_call()` always provides `thinking=""`, masking the mismatch.
 - **Fix**: Either restore `.get("thinking", "")` in trace.py (thinking is structurally optional — depends on model capability), or fix `LoggedLLMClient` to always emit `"thinking": ""` in the success record.
 
-### B2. `trace.py:50` — `call["error"]` KeyError on successful LLM calls
+### B2. `trace.py:50` — `call["error"]` KeyError on successful LLM calls — FIXED
 
 - **Test**: `tests/test_trace.py:10-31` (`_make_call` helper always provides `error=""`)
 - **Production**: `src/clean_room_agent/trace.py:50` — `call["error"]`
@@ -36,7 +36,7 @@
 - **Why tests pass**: `_make_call()` always provides `error=""`.
 - **Fix**: Same as B1 — either restore `.get("error", "")` in trace.py (error is structurally absent on success), or fix `LoggedLLMClient` to always emit `"error": ""`.
 
-### B3. `runner.py:942-950` — `apply_edits` `success=False` not checked in code step loop
+### B3. `runner.py:942-950` — `apply_edits` `success=False` not checked in code step loop — FIXED
 
 - **Test**: All `TestRunOrchestrator` tests mock `apply_edits` returning `PatchResult(success=True)`
 - **Production**: `src/clean_room_agent/orchestrator/runner.py:942-950`
@@ -45,7 +45,7 @@
 - **Why tests pass**: All mocks return `success=True`.
 - **Fix**: Add `if not patch_result.success: raise RuntimeError(patch_result.error_info)` after line 943, or check the flag and handle the failure path. Add a test with `apply_edits` returning `success=False`.
 
-### B4. `runner.py:1241-1247` — Same `apply_edits` gap in test step loop
+### B4. `runner.py:1241-1247` — Same `apply_edits` gap in test step loop — FIXED
 
 - **Production**: `src/clean_room_agent/orchestrator/runner.py:1241-1247`
 - **Issue**: Identical to B3 but in the test step loop. Comment at line 1240 says "Both raise on failure — no success flag checks." Same incorrect assumption.
@@ -83,7 +83,7 @@
 - **Issue**: Temperature is now a required key (direct `[]` access). There is no default. The test asserts `0.0` from the explicit config, not from a default.
 - **Fix**: Rename to `test_temperature_zero_passthrough`.
 
-### S5. `test_enrichment.py` — No happy-path test; `public_api_surface` gap
+### S5. `test_enrichment.py` — No happy-path test; `public_api_surface` gap — FIXED (validation)
 
 - **Test**: `tests/llm/test_enrichment.py` (entire file)
 - **Production**: `src/clean_room_agent/llm/enrichment.py:156,179` — `parsed["public_api_surface"]`
@@ -112,7 +112,7 @@
 - **Issue**: `_require_logged_client` is new code. It raises `TypeError` if LLM client lacks `flush`. No test covers the negative path.
 - **Fix**: Add test passing `Mock(spec=LLMClient)` and asserting `TypeError`.
 
-### S9. `test_runner.py:531` — `test_single_pass_failure` mocks impossible `success=False`
+### S9. `test_runner.py:531` — `test_single_pass_failure` mocks impossible `success=False` — FIXED
 
 - **Test**: `tests/orchestrator/test_runner.py:531` — `test_single_pass_failure`
 - **Production**: `src/clean_room_agent/execute/implement.py:46-50` — always returns `success=True` or raises `ValueError`
@@ -120,13 +120,13 @@
 - **Issue**: `execute_implement` never returns `success=False`. The mock `return_value = _make_step_result(False)` produces an impossible state. The `if not step_result.success` branch at runner.py:1440 is dead code.
 - **Fix**: Change mock to `side_effect = ValueError("Parse failed")` and update assertions to test the actual failure path (exception handling at runner.py:1489).
 
-### S10. `test_runner.py:69-76` — `_make_step_result(False)` produces impossible state
+### S10. `test_runner.py:69-76` — `_make_step_result(False)` produces impossible state — FIXED
 
 - **Test**: `tests/orchestrator/test_runner.py:69-76`
 - **Issue**: Helper creates `StepResult(success=False, ...)` which `execute_implement` and `execute_test_implement` can never produce. Any test using this helper with `success=False` as a `return_value` is testing an impossible state.
 - **Fix**: Remove the `success=False` path from the helper or mark it clearly as "for testing dead-code paths only."
 
-### S11. `runner.py:1440` — Dead code: `if not step_result.success`
+### S11. `runner.py:1440` — Dead code: `if not step_result.success` — FIXED
 
 - **Production**: `src/clean_room_agent/orchestrator/runner.py:1440-1445`
 - **Issue**: Since `execute_implement` always returns `success=True` or raises, this branch is unreachable. Left behind after the conversion.
@@ -168,7 +168,7 @@
 - **Issue**: `models_config["overrides"]`, `models_config["temperature"]`, `temps["coding"]`, `temps["reasoning"]`, `temps["classifier"]` are all direct accesses. Tests exist for `context_window` and `provider` missing, but not for these three.
 - **Fix**: Add `test_missing_overrides_raises`, `test_missing_temperature_raises`, `test_missing_temperature_subkeys_raises`.
 
-### F8. `enrichment.py:135` — `public_api_surface` accessed via `dict[key]` but not validated
+### F8. `enrichment.py:135` — `public_api_surface` accessed via `dict[key]` but not validated — FIXED
 
 - **Test**: `tests/llm/test_enrichment.py` (no happy-path test)
 - **Production**: `src/clean_room_agent/llm/enrichment.py:135,156`
@@ -182,7 +182,7 @@
 - **Issue**: When LLM returns a response with `name`/`file_path`/`start_line` but missing BOTH `detail_level` AND `reason`, the `elif "detail_level" not in cl` branch fires and `cl["reason"]` crashes. Previously `cl.get("reason", "")`.
 - **Fix**: Either validate `"reason"` in this branch or use `.get("reason", "omitted")`.
 
-### F10. `precision_stage.py:207-209` — Warning says "using empty" but next line crashes (**production bug**)
+### F10. `precision_stage.py:207-209` — Warning says "using empty" but next line crashes (**production bug**) — FIXED
 
 - **Test**: `tests/retrieval/test_precision_stage.py` (all mocks provide `"reason"`)
 - **Production**: `src/clean_room_agent/retrieval/precision_stage.py:207-209`
@@ -245,22 +245,22 @@
 
 ### Must Fix (production crashes or wrong behavior)
 
-| ID | Severity | Effort | Description |
-|---|---|---|---|
-| B1 | Critical | 5 min | trace.py `call["thinking"]` — crashes on every non-thinking-model call |
-| B2 | Critical | 5 min | trace.py `call["error"]` — crashes on every successful LLM call |
-| B3 | High | 15 min | runner.py code step loop — marks failed patches as applied |
-| B4 | High | 15 min | runner.py test step loop — same |
-| F10 | High | 5 min | precision_stage.py:207-209 — warning/crash contradiction |
+| ID | Severity | Effort | Description | Status |
+|---|---|---|---|---|
+| B1 | Critical | 5 min | trace.py `call["thinking"]` — crashes on every non-thinking-model call | FIXED |
+| B2 | Critical | 5 min | trace.py `call["error"]` — crashes on every successful LLM call | FIXED |
+| B3 | High | 15 min | runner.py code step loop — marks failed patches as applied | FIXED |
+| B4 | High | 15 min | runner.py test step loop — same | FIXED |
+| F10 | High | 5 min | precision_stage.py:207-209 — warning/crash contradiction | FIXED |
 
 ### Should Fix (stale tests mislead developers)
 
-| ID | Severity | Effort | Description |
-|---|---|---|---|
-| S1-S4 | Medium | 15 min | Rename 4 tests with misleading names |
-| S5, F8 | Medium | 10 min | Add `public_api_surface` to `_REQUIRED_ENRICHMENT_FIELDS` |
-| S9-S11 | Medium | 15 min | Remove/rewrite dead-code tests around `success=False` |
-| S12-S14 | Low | 10 min | Clean up dead `DICT_GET_ALLOWLIST` |
+| ID | Severity | Effort | Description | Status |
+|---|---|---|---|---|
+| S1-S4 | Medium | 15 min | Rename 4 tests with misleading names | |
+| S5, F8 | Medium | 10 min | Add `public_api_surface` to `_REQUIRED_ENRICHMENT_FIELDS` | FIXED |
+| S9-S11 | Medium | 15 min | Remove/rewrite dead-code tests around `success=False` | FIXED |
+| S12-S14 | Low | 10 min | Clean up dead `DICT_GET_ALLOWLIST` | |
 
 ### Good to Have (lock in fail-fast contracts)
 

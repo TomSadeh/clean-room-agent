@@ -18,7 +18,7 @@ def _make_call(
     elapsed_ms=100,
     error="",
 ):
-    """Build a call dict with sensible defaults, allowing per-field overrides."""
+    """Build a call dict matching LoggedLLMClient.flush() 8-key schema."""
     return {
         "system": system,
         "prompt": prompt,

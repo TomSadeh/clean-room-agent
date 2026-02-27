@@ -196,6 +196,7 @@ class LoggedLLMClient:
                 "prompt": prompt,
                 "system": system,
                 "response": f"[ERROR] {type(e).__name__}: {e}",
+                "thinking": "",
                 "prompt_tokens": None,
                 "completion_tokens": None,
                 "elapsed_ms": elapsed,
@@ -207,12 +208,12 @@ class LoggedLLMClient:
             "prompt": prompt,
             "system": system,
             "response": response.text,
+            "thinking": response.thinking or "",
             "prompt_tokens": response.prompt_tokens,
             "completion_tokens": response.completion_tokens,
             "elapsed_ms": elapsed,
+            "error": "",
         }
-        if response.thinking is not None:
-            record["thinking"] = response.thinking
         self.calls.append(record)
         return response
 

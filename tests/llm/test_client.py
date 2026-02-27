@@ -369,14 +369,14 @@ class TestLoggedLLMClient:
         assert call["thinking"] == "reasoning here"
         client.close()
 
-    def test_no_thinking_omits_key(self):
-        """When no thinking block, 'thinking' key is absent from logged call."""
+    def test_no_thinking_uses_empty_string(self):
+        """When no thinking block, 'thinking' key is present with empty string."""
         client = self._make_logged_client()
         with self._mock_http_response(client, "plain answer"):
             client.complete("test")
 
         call = client.calls[0]
-        assert "thinking" not in call
+        assert call["thinking"] == ""
         client.close()
 
     def test_config_passthrough(self):
