@@ -336,10 +336,9 @@ class TestApplyEditsIOFailure:
         edits = [PatchEdit(file_path="a.py", search="    pass", replacement="    return 42")]
 
         with patch("clean_room_agent.execute.patch._atomic_write", side_effect=OSError("disk full")):
-            result = apply_edits(edits, repo_with_files)
+            with pytest.raises(RuntimeError, match="disk full"):
+                apply_edits(edits, repo_with_files)
 
-        assert result.success is False
-        assert "disk full" in result.error_info
         # File should be restored to original by rollback
         assert (repo_with_files / "a.py").read_text(encoding="utf-8") == original_a
 

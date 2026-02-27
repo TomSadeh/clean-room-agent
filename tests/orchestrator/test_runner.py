@@ -195,8 +195,8 @@ class TestRunOrchestrator:
             _make_part_plan(),
             _make_adjustment(),
         ]
-        # Implementation always fails
-        mock_exec_impl.return_value = _make_step_result(False)
+        # Implementation always fails (raises ValueError as of fail-fast enforcement)
+        mock_exec_impl.side_effect = ValueError("No valid <edit> blocks found")
 
         (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
 
@@ -360,8 +360,8 @@ class TestRunOrchestrator:
             _make_part_plan(),
             _make_adjustment(),
         ]
-        # Implementation always fails
-        mock_exec_impl.return_value = _make_step_result(False)
+        # Implementation always fails (raises ValueError as of fail-fast enforcement)
+        mock_exec_impl.side_effect = ValueError("No valid <edit> blocks found")
 
         (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
 
@@ -452,9 +452,9 @@ class TestRunOrchestrator:
         ]
 
         mock_exec_impl.return_value = _make_step_result(True)
-        # Test impl fails on first try, succeeds on second (tests retry)
+        # Test impl fails on first try (raises ValueError), succeeds on second (tests retry)
         mock_exec_test_impl.side_effect = [
-            _make_step_result(False),
+            ValueError("No valid <edit> blocks found"),
             _make_step_result(True),
         ]
         from clean_room_agent.execute.dataclasses import PatchResult
@@ -1243,7 +1243,8 @@ class TestDocumentationPass:
             _make_part_plan(),
             _make_adjustment(),
         ]
-        mock_exec_impl.return_value = _make_step_result(False)
+        # Implementation fails (raises ValueError as of fail-fast enforcement)
+        mock_exec_impl.side_effect = ValueError("No valid <edit> blocks found")
 
         (tmp_path / ".clean_room" / "tmp").mkdir(parents=True)
 

@@ -106,11 +106,13 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
     # Resolve each to site-packages
     result = []
     seen_paths: set[str] = set()
+    unresolvable: list[tuple[str, str]] = []  # (name, reason)
     for name in sorted(import_names):
         try:
             spec = importlib.util.find_spec(name)
         except (ImportError, ValueError, AttributeError, ModuleNotFoundError) as e:
-            logger.warning("Failed to resolve library %s: %s", name, e)
+            # Boundary: external system state (installed packages) — track but don't fail.
+            unresolvable.append((name, str(e)))
             continue
         if spec is None or spec.origin is None:
             continue
@@ -131,6 +133,14 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
             continue
         seen_paths.add(pkg_str)
         result.append(LibrarySource(package_name=name, package_path=pkg_path))
+
+    if unresolvable:
+        logger.warning(
+            "Library auto-resolve: %d import(s) could not be resolved (namespace packages, "
+            "C extensions, or not installed): %s",
+            len(unresolvable),
+            ", ".join(f"{name} ({reason})" for name, reason in unresolvable),
+        )
 
     return result
 

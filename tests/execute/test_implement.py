@@ -70,15 +70,11 @@ class TestExecuteImplement:
         assert len(result.edits) == 1
         assert result.edits[0].file_path == "src/main.py"
 
-    def test_parse_failure_returns_failed_result(self, context_package):
+    def test_parse_failure_raises(self, context_package):
         llm = _make_llm("I don't know how to do that")
         step = PlanStep(id="s1", description="Fix bug")
-        result = execute_implement(
-            context_package, step, llm,         )
-        assert result.success is False
-        assert result.error_info is not None
-        assert "No valid <edit>" in result.error_info
-        assert result.raw_response == "I don't know how to do that"
+        with pytest.raises(ValueError, match="No valid <edit>"):
+            execute_implement(context_package, step, llm)
 
     def test_multiple_edits(self, context_package):
         response = '''<edit file="a.py">
@@ -221,13 +217,11 @@ class TestExecuteTestImplement:
         assert len(result.edits) == 1
         assert result.edits[0].file_path == "tests/test_main.py"
 
-    def test_parse_failure_returns_failed_result(self, context_package):
+    def test_parse_failure_raises(self, context_package):
         llm = _make_llm("I can't write tests for that")
         step = PlanStep(id="t1", description="Test something")
-        result = execute_test_implement(context_package, step, llm)
-        assert result.success is False
-        assert result.error_info is not None
-        assert "No valid <edit>" in result.error_info
+        with pytest.raises(ValueError, match="No valid <edit>"):
+            execute_test_implement(context_package, step, llm)
 
     def test_prompt_includes_test_step_header(self, context_package):
         response = '''<edit file="tests/test_a.py">

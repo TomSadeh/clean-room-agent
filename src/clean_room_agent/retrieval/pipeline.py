@@ -72,6 +72,17 @@ def run_pipeline(
     models_config = require_models_config(config)
     router = ModelRouter(models_config)
 
+    # Validate at startup: every stage's preferred_role must be configured.
+    # Fail-fast here instead of silently substituting roles at runtime.
+    for name, stage in stages.items():
+        role = stage.preferred_role
+        if not router.has_role(role):
+            raise RuntimeError(
+                f"Stage {name!r} requires model role {role!r} but it is not "
+                f"configured in [models]. Add '{role} = \"<model_tag>\"' to "
+                f"[models] in config.toml, or remove {name!r} from stages."
+            )
+
     # Resolve execute model for logging — plan mode uses reasoning, implement uses coding
     execute_model_config = router.resolve("reasoning" if mode == "plan" else "coding")
 
@@ -269,7 +280,12 @@ def run_pipeline(
         logged_symbol_ids: set[int] = set()
         for stage_name in stage_names:
             stage = stages[stage_name]
-            stage_config = router.resolve("reasoning", stage_name)
+            # Role was validated at startup — no fallback needed.
+            stage_role = stage.preferred_role
+            stage_config = router.resolve(stage_role, stage_name)
+
+            # binary_judgment is True when stage uses the classifier role.
+            context.retrieval_params["binary_judgment"] = (stage_role == "classifier")
 
             with LoggedLLMClient(stage_config) as base_llm:
                 llm = EnvironmentLLMClient(base_llm, brief_text)

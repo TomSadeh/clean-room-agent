@@ -234,6 +234,10 @@ class PrecisionStage:
     def name(self) -> str:
         return "precision"
 
+    @property
+    def preferred_role(self) -> str:
+        return "reasoning"
+
     def run(
         self,
         context: StageContext,

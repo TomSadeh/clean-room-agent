@@ -46,6 +46,13 @@ from clean_room_agent.execute.documentation import run_documentation_pass
 from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.execute.patch import apply_edits, rollback_edits
 from clean_room_agent.execute.plan import execute_plan
+from clean_room_agent.execute.scaffold import (
+    execute_function_implement,
+    execute_scaffold,
+    extract_function_stubs,
+    is_c_part,
+    validate_scaffold_compilation,
+)
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
 from clean_room_agent.orchestrator.validator import require_testing_config, run_validation
@@ -390,6 +397,9 @@ class _OrchestratorContext:
     max_test_retries: int
     max_adj_rounds: int
     doc_pass_enabled: bool
+    scaffold_enabled: bool
+    scaffold_compiler: str
+    scaffold_compiler_flags: str
 
 
 def _init_orchestrator(
@@ -451,6 +461,20 @@ def _init_orchestrator(
     # documentation_pass: intentional default True — cosmetic feature, not behavioral
     doc_pass_enabled = orch_config.get("documentation_pass", True)
 
+    # scaffold: Optional, default false. When true and target is C, scaffold pass runs.
+    scaffold_enabled = orch_config.get("scaffold_enabled", False)
+    scaffold_compiler = orch_config.get("scaffold_compiler", "gcc")
+    scaffold_compiler_flags = orch_config.get("scaffold_compiler_flags", "-c -fsyntax-only -Wall")
+
+    # Fail-fast: if scaffold enabled but compiler not found, error at init time
+    if scaffold_enabled:
+        import shutil as _shutil
+        if _shutil.which(scaffold_compiler) is None:
+            raise RuntimeError(
+                f"scaffold_enabled=true but compiler {scaffold_compiler!r} not found on PATH. "
+                f"Install it or set scaffold_enabled = false in [orchestrator] config."
+            )
+
     use_git = orch_config.get("git_workflow")
     if use_git is None:
         raise RuntimeError(
@@ -508,6 +532,9 @@ def _init_orchestrator(
         max_test_retries=max_test_retries,
         max_adj_rounds=max_adj_rounds,
         doc_pass_enabled=doc_pass_enabled,
+        scaffold_enabled=scaffold_enabled,
+        scaffold_compiler=scaffold_compiler,
+        scaffold_compiler_flags=scaffold_compiler_flags,
     )
 
 
@@ -581,6 +608,9 @@ def run_orchestrator(
     max_adj_rounds = ctx.max_adj_rounds
     max_diff_chars = ctx.max_diff_chars
     doc_pass_enabled = ctx.doc_pass_enabled
+    scaffold_enabled = ctx.scaffold_enabled
+    scaffold_compiler = ctx.scaffold_compiler
+    scaffold_compiler_flags = ctx.scaffold_compiler_flags
     tmp_dir = ctx.tmp_dir
     pass_results = ctx.pass_results
 
@@ -685,7 +715,6 @@ def run_orchestrator(
                 ))
 
                 set_state(session_conn, f"part_plan:{part.id}", part_plan.to_dict())
-                all_steps_count += len(part_plan.steps)
 
             except (ValueError, RuntimeError, OSError) as e:
                 logger.error("Part plan failed for %s: %s", part.id, e)
@@ -694,201 +723,343 @@ def run_orchestrator(
                 ))
                 continue
 
-            # --- CODE STEP LOOP (within part) ---
-            sorted_steps = _topological_sort(
-                part_plan.steps, lambda s: s.id, lambda s: s.depends_on,
-            )
+            # --- SCAFFOLD PASS (C projects only) ---
+            scaffold_active = False
+            if scaffold_enabled and is_c_part(part_plan):
+                logger.info("Scaffold pass: C part detected for %s", part.id)
+                sub_task_id = f"{task_id}:scaffold:{part.id}"
 
+                scaffold_context = run_pipeline(
+                    raw_task=part.description,
+                    repo_path=repo_path,
+                    stage_names=stage_names,
+                    budget=plan_budget,
+                    mode="plan",
+                    task_id=sub_task_id,
+                    config=config,
+                    trace_logger=trace_logger,
+                )
+
+                with LoggedLLMClient(reasoning_config) as scaffold_llm:
+                    scaffold_result = execute_scaffold(
+                        scaffold_context, part_plan, scaffold_llm,
+                        cumulative_diff=cumulative_diff or None,
+                    )
+                    _flush_llm_calls(
+                        scaffold_llm, raw_conn, sub_task_id,
+                        "execute_scaffold", "execute_scaffold", trace_logger,
+                    )
+
+                # execute_scaffold raises ValueError on parse failure — no success check.
+                if not scaffold_result.edits:
+                    raise RuntimeError(
+                        f"Scaffold generation produced no edits for part {part.id}"
+                    )
+
+                # Apply scaffold edits (raises on failure — no success flag check needed)
+                scaffold_patch = apply_edits(scaffold_result.edits, repo_path)
+
+                # Validate compilation
+                all_scaffold_files = scaffold_result.header_files + scaffold_result.source_files
+                compiled, comp_output = validate_scaffold_compilation(
+                    all_scaffold_files, repo_path,
+                    compiler=scaffold_compiler,
+                    flags=scaffold_compiler_flags,
+                )
+                scaffold_result.compilation_output = comp_output
+
+                if not compiled:
+                    rollback_edits(scaffold_patch, repo_path)
+                    raise RuntimeError(
+                        f"Scaffold compilation failed for part {part.id}:\n{comp_output}"
+                    )
+
+                logger.info("Scaffold compiled successfully for %s", part.id)
+
+                # Extract function stubs via tree-sitter
+                stubs = extract_function_stubs(
+                    scaffold_result.source_files, repo_path,
+                )
+                scaffold_result.function_stubs = stubs
+                if not stubs:
+                    raise RuntimeError(
+                        f"Scaffold compiled but no function stubs extracted for part {part.id}"
+                    )
+
+                scaffold_active = True
+                logger.info(
+                    "Scaffold extracted %d function stubs for %s",
+                    len(stubs), part.id,
+                )
+
+                scaffold_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
+                insert_orchestrator_pass(
+                    raw_conn, orch_run_id, scaffold_task_run_id, "scaffold",
+                    sequence_order, part_id=part.id,
+                )
+                raw_conn.commit()
+                sequence_order += 1
+
+                pass_results.append(PassResult(
+                    pass_type="scaffold",
+                    task_run_id=scaffold_task_run_id,
+                    success=True,
+                    artifact=scaffold_result,
+                ))
+
+                set_state(session_conn, f"scaffold:{part.id}", scaffold_result.to_dict())
+
+            # --- CODE STEP LOOP or PER-FUNCTION IMPLEMENT (within part) ---
             # Track applied code patches for LIFO rollback
             code_patch_results = []
             code_step_results = []
             all_code_steps_ok = True
 
-            # Use index-based iteration so adjustment can splice revised
-            # steps into the remaining portion of the list (T25).
-            step_idx = 0
-            while step_idx < len(sorted_steps):
-                step = sorted_steps[step_idx]
-                step_success = False
-                step_result = None
-                attempt_num = 0
+            if scaffold_active:
+                # Per-function implement loop: each stub gets an independent LLM call
+                # against the compact scaffold context (~3-5K tokens vs 20K+)
+                scaffold_content: dict[str, str] = {}
+                for sf in scaffold_result.header_files + scaffold_result.source_files:
+                    sf_path = repo_path / sf
+                    if sf_path.exists():
+                        scaffold_content[sf] = sf_path.read_text(encoding="utf-8", errors="replace")
 
-                for attempt in range(max_retries + 1):
-                    attempt_num = attempt + 1
-
-                    # IMPLEMENT
-                    suffix = f":retry_{attempt}" if attempt > 0 else ""
-                    sub_task_id = f"{task_id}:impl:{part.id}:{step.id}{suffix}"
-                    temp_plan_path = _write_temp_plan(step.target_files, tmp_dir)
+                for stub_idx, stub in enumerate(scaffold_result.function_stubs):
+                    sub_task_id = f"{task_id}:func_impl:{part.id}:{stub.name}"
+                    step_key = f"{part.id}:func:{stub.name}"
+                    func_result = None
 
                     try:
-                        impl_context = run_pipeline(
-                            raw_task=step.description,
-                            repo_path=repo_path,
-                            stage_names=stage_names,
-                            budget=impl_budget,
-                            mode="implement",
-                            task_id=sub_task_id,
-                            config=config,
-                            plan_artifact_path=temp_plan_path,
-                            trace_logger=trace_logger,
-                        )
-
-                        with LoggedLLMClient(coding_config) as impl_llm:
-                            step_result = execute_implement(
-                                impl_context, step, impl_llm,
-                                plan=part_plan,
-                                cumulative_diff=cumulative_diff or None,
+                        with LoggedLLMClient(coding_config) as func_llm:
+                            func_result = execute_function_implement(
+                                stub, scaffold_content, func_llm,
                             )
-                            impl_pt, impl_ct, impl_ms = _flush_llm_calls(
-                                impl_llm, raw_conn, sub_task_id,
-                                "execute_implement", "execute_implement",
+                            _flush_llm_calls(
+                                func_llm, raw_conn, sub_task_id,
+                                "execute_function_implement", "execute_function_implement",
                                 trace_logger,
                             )
 
-                        impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
-
-                        # Log run_attempt with actual token counts (T40) and
-                        # patch_applied=False; updated after apply succeeds (T27).
-                        attempt_id = insert_run_attempt(
-                            raw_conn, impl_task_run_id, attempt_num,
-                            impl_pt, impl_ct, impl_ms,
-                            step_result.raw_response,
-                            False,
-                        )
-                        raw_conn.commit()
-
-                        impl_pass_id = insert_orchestrator_pass(
-                            raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
-                            part_id=part.id, step_id=step.id,
-                        )
-                        raw_conn.commit()
-                        sequence_order += 1
-
-                        if not step_result.success:
-                            pass_results.append(PassResult(
-                                pass_type="step_implement", task_run_id=impl_task_run_id,
-                                success=False, artifact=step_result,
-                            ))
-                            continue
-
-                        # APPLY EDITS
-                        patch_result = apply_edits(step_result.edits, repo_path)
-                        if not patch_result.success:
-                            pass_results.append(PassResult(
-                                pass_type="step_implement", task_run_id=impl_task_run_id,
-                                success=False, artifact=step_result,
-                            ))
-                            continue
-
-                        # Patch actually applied — update the DB record (T27)
-                        update_run_attempt_patch(raw_conn, attempt_id, True)
-                        raw_conn.commit()
-
-                        step_success = True
+                        # Both raise on failure — no success flag checks.
+                        patch_result = apply_edits(func_result.edits, repo_path)
                         code_patch_results.append(patch_result)
-                        pass_results.append(PassResult(
-                            pass_type="step_implement", task_run_id=impl_task_run_id,
-                            success=True, artifact=step_result,
-                        ))
-                        break
+                        steps_completed += 1
+                        step_final_outcomes[step_key] = True
 
+                        # Update scaffold_content with the new implementation
+                        for edit in func_result.edits:
+                            if edit.file_path in scaffold_content:
+                                sf_path = repo_path / edit.file_path
+                                if sf_path.exists():
+                                    scaffold_content[edit.file_path] = sf_path.read_text(
+                                        encoding="utf-8", errors="replace"
+                                    )
+
+                        cumulative_diff, commit_sha = _update_cumulative_diff(
+                            git, cumulative_diff, func_result.edits,
+                            f"cra: {part.id}:func:{stub.name}",
+                            max_diff_chars,
+                        )
                     except (ValueError, RuntimeError, OSError) as e:
-                        logger.error("Step implement failed for %s:%s: %s", part.id, step.id, e)
-                        pass_results.append(PassResult(
-                            pass_type="step_implement", task_run_id=None, success=False,
-                        ))
-                        break
-
-                # Track final outcome for this code step
-                step_key = f"{part.id}:{step.id}"
-                step_final_outcomes[step_key] = step_success
-                code_step_results.append(step_result)
-
-                # Update state
-                if step_success and step_result:
-                    cumulative_diff, commit_sha = _update_cumulative_diff(
-                        git, cumulative_diff, step_result.edits,
-                        f"cra: {part.id}:{step.id} — {step.description[:60].rsplit(' ', 1)[0]}",
-                        max_diff_chars,
-                    )
-                    if commit_sha is not None:
-                        update_orchestrator_pass_sha(raw_conn, impl_pass_id, commit_sha)
-                        raw_conn.commit()
-                    set_state(session_conn, f"step_result:{part.id}:{step.id}", {
-                        "success": True, "edits_count": len(step_result.edits),
-                    })
-
-                    # Only count successfully completed steps (T26)
-                    steps_completed += 1
-                else:
-                    all_code_steps_ok = False
-
-                # ADJUSTMENT PASS (after every code step)
-                adj_count = adjustment_counts.get(part.id, 0)
-                if adj_count >= max_adj_rounds:
-                    logger.info(
-                        "Adjustment limit reached for part %s (%d/%d)",
-                        part.id, adj_count, max_adj_rounds,
-                    )
-                else:
-                    try:
-                        adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
-                        remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
-                        adj_context = run_pipeline(
-                            raw_task=remaining_desc,
-                            repo_path=repo_path,
-                            stage_names=stage_names,
-                            budget=plan_budget,
-                            mode="plan",
-                            task_id=adj_sub_task_id,
-                            config=config,
-                            trace_logger=trace_logger,
+                        all_code_steps_ok = False
+                        step_final_outcomes[step_key] = False
+                        logger.error(
+                            "Function implement failed for %s: %s",
+                            stub.name, e,
                         )
 
-                        with LoggedLLMClient(reasoning_config) as adj_llm:
-                            adjustment = execute_plan(
-                                adj_context, remaining_desc, adj_llm,
-                                pass_type="adjustment",
-                                prior_results=[step_result] if step_result else None,
-                                cumulative_diff=cumulative_diff or None,
+                    if func_result is not None:
+                        code_step_results.append(func_result)
+
+                    pass_results.append(PassResult(
+                        pass_type="function_implement",
+                        task_run_id=None,
+                        success=step_final_outcomes.get(step_key, False),
+                        artifact=func_result,
+                    ))
+
+                all_steps_count += len(scaffold_result.function_stubs)
+
+            else:
+                # Normal code step loop (existing behavior)
+                sorted_steps = _topological_sort(
+                    part_plan.steps, lambda s: s.id, lambda s: s.depends_on,
+                )
+
+                # Use index-based iteration so adjustment can splice revised
+                # steps into the remaining portion of the list (T25).
+                step_idx = 0
+                while step_idx < len(sorted_steps):
+                    step = sorted_steps[step_idx]
+                    step_success = False
+                    step_result = None
+                    attempt_num = 0
+
+                    for attempt in range(max_retries + 1):
+                        attempt_num = attempt + 1
+
+                        # IMPLEMENT
+                        suffix = f":retry_{attempt}" if attempt > 0 else ""
+                        sub_task_id = f"{task_id}:impl:{part.id}:{step.id}{suffix}"
+                        temp_plan_path = _write_temp_plan(step.target_files, tmp_dir)
+
+                        try:
+                            impl_context = run_pipeline(
+                                raw_task=step.description,
+                                repo_path=repo_path,
+                                stage_names=stage_names,
+                                budget=impl_budget,
+                                mode="implement",
+                                task_id=sub_task_id,
+                                config=config,
+                                plan_artifact_path=temp_plan_path,
+                                trace_logger=trace_logger,
                             )
-                            _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust", trace_logger)
 
-                        adj_task_run_id = _get_task_run_id(raw_conn, adj_sub_task_id)
+                            with LoggedLLMClient(coding_config) as impl_llm:
+                                step_result = execute_implement(
+                                    impl_context, step, impl_llm,
+                                    plan=part_plan,
+                                    cumulative_diff=cumulative_diff or None,
+                                )
+                                impl_pt, impl_ct, impl_ms = _flush_llm_calls(
+                                    impl_llm, raw_conn, sub_task_id,
+                                    "execute_implement", "execute_implement",
+                                    trace_logger,
+                                )
 
-                        insert_orchestrator_pass(
-                            raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
-                            part_id=part.id, step_id=step.id,
+                            impl_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
+
+                            # Log run_attempt with actual token counts (T40) and
+                            # patch_applied=False; updated after apply succeeds (T27).
+                            attempt_id = insert_run_attempt(
+                                raw_conn, impl_task_run_id, attempt_num,
+                                impl_pt, impl_ct, impl_ms,
+                                step_result.raw_response,
+                                False,
+                            )
+                            raw_conn.commit()
+
+                            impl_pass_id = insert_orchestrator_pass(
+                                raw_conn, orch_run_id, impl_task_run_id, "step_implement", sequence_order,
+                                part_id=part.id, step_id=step.id,
+                            )
+                            raw_conn.commit()
+                            sequence_order += 1
+
+                            # APPLY EDITS (raises on failure — no success flag check needed)
+                            patch_result = apply_edits(step_result.edits, repo_path)
+
+                            # Patch actually applied — update the DB record (T27)
+                            update_run_attempt_patch(raw_conn, attempt_id, True)
+                            raw_conn.commit()
+
+                            step_success = True
+                            code_patch_results.append(patch_result)
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=impl_task_run_id,
+                                success=True, artifact=step_result,
+                            ))
+                            break
+
+                        except (ValueError, RuntimeError, OSError) as e:
+                            logger.error("Step implement failed for %s:%s: %s", part.id, step.id, e)
+                            pass_results.append(PassResult(
+                                pass_type="step_implement", task_run_id=None, success=False,
+                            ))
+                            # Continue to next retry attempt (don't break the loop)
+
+                    # Track final outcome for this code step
+                    step_key = f"{part.id}:{step.id}"
+                    step_final_outcomes[step_key] = step_success
+                    code_step_results.append(step_result)
+
+                    # Update state
+                    if step_success and step_result:
+                        cumulative_diff, commit_sha = _update_cumulative_diff(
+                            git, cumulative_diff, step_result.edits,
+                            f"cra: {part.id}:{step.id} — {step.description[:60].rsplit(' ', 1)[0]}",
+                            max_diff_chars,
                         )
-                        raw_conn.commit()
-                        sequence_order += 1
-
-                        set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", adjustment.to_dict())
-
-                        # Replace remaining steps with revised ones (T25).
-                        # Safe because we use index-based iteration.
-                        if adjustment.revised_steps:
-                            sorted_steps[step_idx + 1:] = adjustment.revised_steps
-
-                        pass_results.append(PassResult(
-                            pass_type="adjustment", task_run_id=adj_task_run_id,
-                            success=True, artifact=adjustment,
-                        ))
-
-                        adjustment_counts[part.id] = adj_count + 1
-
-                    except (ValueError, RuntimeError, OSError) as e:
-                        logger.warning("Adjustment pass failed for %s:after_%s: %s", part.id, step.id, e)
-                        # T66: Record adjustment failure in session state
-                        set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", {
-                            "success": False, "error": str(e),
+                        if commit_sha is not None:
+                            update_orchestrator_pass_sha(raw_conn, impl_pass_id, commit_sha)
+                            raw_conn.commit()
+                        set_state(session_conn, f"step_result:{part.id}:{step.id}", {
+                            "success": True, "edits_count": len(step_result.edits),
                         })
-                        pass_results.append(PassResult(
-                            pass_type="adjustment", success=False,
-                        ))
 
-                step_idx += 1
+                        # Only count successfully completed steps (T26)
+                        steps_completed += 1
+                    else:
+                        all_code_steps_ok = False
+
+                    # ADJUSTMENT PASS (after every code step)
+                    adj_count = adjustment_counts.get(part.id, 0)
+                    if adj_count >= max_adj_rounds:
+                        logger.info(
+                            "Adjustment limit reached for part %s (%d/%d)",
+                            part.id, adj_count, max_adj_rounds,
+                        )
+                    else:
+                        try:
+                            adj_sub_task_id = f"{task_id}:adjust:{part.id}:after_{step.id}"
+                            remaining_desc = f"Remaining steps after {step.id} in part {part.id}"
+                            adj_context = run_pipeline(
+                                raw_task=remaining_desc,
+                                repo_path=repo_path,
+                                stage_names=stage_names,
+                                budget=plan_budget,
+                                mode="plan",
+                                task_id=adj_sub_task_id,
+                                config=config,
+                                trace_logger=trace_logger,
+                            )
+
+                            with LoggedLLMClient(reasoning_config) as adj_llm:
+                                adjustment = execute_plan(
+                                    adj_context, remaining_desc, adj_llm,
+                                    pass_type="adjustment",
+                                    prior_results=[step_result] if step_result else None,
+                                    cumulative_diff=cumulative_diff or None,
+                                )
+                                _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust", trace_logger)
+
+                            adj_task_run_id = _get_task_run_id(raw_conn, adj_sub_task_id)
+
+                            insert_orchestrator_pass(
+                                raw_conn, orch_run_id, adj_task_run_id, "adjustment", sequence_order,
+                                part_id=part.id, step_id=step.id,
+                            )
+                            raw_conn.commit()
+                            sequence_order += 1
+
+                            set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", adjustment.to_dict())
+
+                            # Replace remaining steps with revised ones (T25).
+                            # Safe because we use index-based iteration.
+                            if adjustment.revised_steps:
+                                sorted_steps[step_idx + 1:] = adjustment.revised_steps
+
+                            pass_results.append(PassResult(
+                                pass_type="adjustment", task_run_id=adj_task_run_id,
+                                success=True, artifact=adjustment,
+                            ))
+
+                            adjustment_counts[part.id] = adj_count + 1
+
+                        except (ValueError, RuntimeError, OSError) as e:
+                            logger.warning("Adjustment pass failed for %s:after_%s: %s", part.id, step.id, e)
+                            # T66: Record adjustment failure in session state
+                            set_state(session_conn, f"adjustment:{part.id}:after_{step.id}", {
+                                "success": False, "error": str(e),
+                            })
+                            pass_results.append(PassResult(
+                                pass_type="adjustment", success=False,
+                            ))
+
+                    step_idx += 1
+
+                all_steps_count += len(part_plan.steps)
 
             # --- DOCUMENTATION PASS (after code steps, before tests) ---
             doc_patch_results: list[PatchResult] = []
@@ -1074,20 +1245,8 @@ def run_orchestrator(
                             raw_conn.commit()
                             sequence_order += 1
 
-                            if not test_step_result.success:
-                                pass_results.append(PassResult(
-                                    pass_type="test_implement", task_run_id=ti_task_run_id,
-                                    success=False, artifact=test_step_result,
-                                ))
-                                continue
-
+                            # Both raise on failure — no success flag checks.
                             test_patch_result = apply_edits(test_step_result.edits, repo_path)
-                            if not test_patch_result.success:
-                                pass_results.append(PassResult(
-                                    pass_type="test_implement", task_run_id=ti_task_run_id,
-                                    success=False, artifact=test_step_result,
-                                ))
-                                continue
 
                             update_run_attempt_patch(raw_conn, attempt_id, True)
                             raw_conn.commit()
@@ -1105,7 +1264,7 @@ def run_orchestrator(
                             pass_results.append(PassResult(
                                 pass_type="test_implement", task_run_id=None, success=False,
                             ))
-                            break
+                            # Continue to next retry attempt (don't break the loop)
 
                     step_key = f"{part.id}:test:{test_step.id}"
                     step_final_outcomes[step_key] = test_step_success

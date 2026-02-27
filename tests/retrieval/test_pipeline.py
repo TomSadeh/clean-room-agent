@@ -23,6 +23,7 @@ def _make_config():
             "provider": "ollama",
             "coding": "qwen2.5-coder:3b",
             "reasoning": "qwen3:4b",
+            "classifier": "qwen3:0.6b",
             "base_url": "http://localhost:11434",
             "context_window": 32768,
         },

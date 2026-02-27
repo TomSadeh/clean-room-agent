@@ -67,7 +67,7 @@ class TestLibraryScannerWarnings:
                     with patch("importlib.util.find_spec", side_effect=ImportError("No module")):
                         _auto_resolve(td_path)
 
-        assert any("Failed to resolve library" in r.message for r in caplog.records)
+        assert any("could not be resolved" in r.message for r in caplog.records)
 
 
 class TestPrecisionMissingSignature:

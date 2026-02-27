@@ -108,6 +108,15 @@ class RetrievalStage(Protocol):
     @property
     def name(self) -> str: ...
 
+    @property
+    def preferred_role(self) -> str:
+        """Model role this stage prefers for its LLM calls.
+
+        Every stage must explicitly declare its role — no default.
+        Common values: "reasoning", "classifier".
+        """
+        ...
+
     def run(
         self,
         context: StageContext,

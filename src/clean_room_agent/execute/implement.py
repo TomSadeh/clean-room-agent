@@ -29,7 +29,7 @@ def execute_implement(
 ) -> StepResult:
     """Execute an implement pass: build prompt, call LLM, parse edits.
 
-    Returns StepResult(success=False) on parse failure (does not raise).
+    Raises ValueError on parse failure — caller handles logging to raw DB.
     model_config is derived from llm.config.
     """
     system, user = build_implement_prompt(
@@ -42,21 +42,12 @@ def execute_implement(
 
     response = llm.complete(user, system=system)
 
-    try:
-        edits = parse_implement_response(response.text)
-        return StepResult(
-            success=True,
-            edits=edits,
-            raw_response=response.text,
-        )
-    except ValueError as e:
-        logger.warning("Failed to parse implement response: %s", e)
-        return StepResult(
-            success=False,
-            edits=[],
-            error_info=str(e),
-            raw_response=response.text,
-        )
+    edits = parse_implement_response(response.text)
+    return StepResult(
+        success=True,
+        edits=edits,
+        raw_response=response.text,
+    )
 
 
 def execute_test_implement(
@@ -70,7 +61,7 @@ def execute_test_implement(
 ) -> StepResult:
     """Execute a test implement pass: build prompt, call LLM, parse edits.
 
-    Returns StepResult(success=False) on parse failure (does not raise).
+    Raises ValueError on parse failure — caller handles logging to raw DB.
     model_config is derived from llm.config.
     """
     system, user = build_implement_prompt(
@@ -84,18 +75,9 @@ def execute_test_implement(
 
     response = llm.complete(user, system=system)
 
-    try:
-        edits = parse_implement_response(response.text)
-        return StepResult(
-            success=True,
-            edits=edits,
-            raw_response=response.text,
-        )
-    except ValueError as e:
-        logger.warning("Failed to parse test implement response: %s", e)
-        return StepResult(
-            success=False,
-            edits=[],
-            error_info=str(e),
-            raw_response=response.text,
-        )
+    edits = parse_implement_response(response.text)
+    return StepResult(
+        success=True,
+        edits=edits,
+        raw_response=response.text,
+    )

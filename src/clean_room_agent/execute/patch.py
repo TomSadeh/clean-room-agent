@@ -112,13 +112,10 @@ def apply_edits(edits: list[PatchEdit], repo_path: Path) -> PatchResult:
             file_path = repo_path / rel_path
             _atomic_write(file_path, content)
     except Exception as e:
-        logger.error("Failed to apply edits: %s", e)
         rollback_edits(result, repo_path)
-        return PatchResult(
-            success=False,
-            error_info=f"Application failed: {e}",
-            original_contents=original_contents,
-        )
+        raise RuntimeError(
+            f"Failed to apply edits (rolled back): {e}"
+        ) from e
 
     return result
 

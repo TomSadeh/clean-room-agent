@@ -209,7 +209,7 @@ class TestJudgeSimilarity:
         confirmed = judge_similarity(pairs, task, llm)
         assert len(confirmed) == 0
 
-    def test_invalid_response_returns_empty(self):
+    def test_invalid_response_raises(self):
         sym_a = _make_symbol(1, 10, "a")
         sym_b = _make_symbol(2, 10, "b")
         pairs = [{
@@ -218,8 +218,8 @@ class TestJudgeSimilarity:
         }]
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
         llm = _mock_llm_with_response("not json at all")
-        confirmed = judge_similarity(pairs, task, llm)
-        assert len(confirmed) == 0
+        with pytest.raises(ValueError, match="unparseable JSON"):
+            judge_similarity(pairs, task, llm)
 
     def test_empty_pairs_returns_empty(self):
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
