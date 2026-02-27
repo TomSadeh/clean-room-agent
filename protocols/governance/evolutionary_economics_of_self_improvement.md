@@ -227,7 +227,7 @@ The monolithic context window approach is central planning. One model, one promp
 
 The N-prompt pipeline is the market solution. Each stage generates local price signals (detail levels, inclusion/exclusion decisions, budget allocations) that later stages use. The assembly stage doesn't need to know WHY the scope stage included a file — it just needs to know the "price" (detail level) to allocate the right amount of budget. Information flows through the pipeline via these compressed signals, enabling coordination without any single component needing global knowledge.
 
-**This is why the pipeline architecture works even with small models.** A 3-4B parameter model cannot effectively process 200K tokens of uncurated context. But it can effectively process 32K tokens of curated context where every token was placed by a prior decision with a reason. The pipeline doesn't make the model smarter — it makes the information the model receives cleaner. The price system (budget + detail levels + inclusion decisions) does the work that the model's limited capacity cannot.
+**This is why the pipeline architecture works even with small models.** A sub-4B parameter model (currently 1.7B) cannot effectively process 200K tokens of uncurated context. But it can effectively process 32K tokens of curated context where every token was placed by a prior decision with a reason. The pipeline doesn't make the model smarter — it makes the information the model receives cleaner. The price system (budget + detail levels + inclusion decisions) does the work that the model's limited capacity cannot.
 
 ### Asymmetric information: what the pipeline can't see
 
@@ -446,7 +446,7 @@ Merging both frameworks produces a unified prediction with more precision than e
 
 1. Reward-hack its own tests (multi-level selection makes this unstable; multi-proxy optimization makes intersection of gaming strategies vanishingly small).
 2. Develop misaligned goals (no goal structure exists — it is an amoral optimizer with no objectives beyond "pass tests at all four levels").
-3. Develop deceptive capabilities (deception requires situational awareness and long-term planning that 3-4B parameter models lack, and even if they developed it, deceptive code fails tests on novel tasks).
+3. Develop deceptive capabilities (deception requires situational awareness and long-term planning that sub-4B parameter models lack — currently 1.7B primary, with 4B likely eliminated — and even if they developed it, deceptive code fails tests on novel tasks).
 4. Spontaneously improve beyond the capacity of its selection mechanism to evaluate (improvement is bounded by the reference task set difficulty — the system cannot improve at what it cannot measure).
 
 ---
@@ -501,7 +501,7 @@ The industry's response to the context-window problem is revealing: make the win
 
 **The uncomfortable implication.** If the evolutionary-economic framing is correct, then the current industry approach — large models, large context windows, centralized inference, RLHF-based value specification, human-in-the-loop oversight — is not just suboptimal. It is the wrong paradigm. It is solving the wrong problem with the wrong tools. The right problem is not "how do we build a smarter model" but "how do we build a selection environment that produces the behaviors we want." The right tools are not larger transformers and more RLHF but better fitness landscapes, better price systems, better externality internalization, and controlled evolutionary dynamics.
 
-This does not mean large models are useless — they are useful in the same way a talented individual is useful within a market economy. But the individual's talent is not what makes the economy work. The economy works because the price system coordinates millions of individually limited actors into collective intelligence that exceeds any individual's capacity. Similarly, a 3-4B parameter model within a well-designed selection environment can outperform a 400B parameter model in a monolithic context window, because the environment does the work that raw capability cannot.
+This does not mean large models are useless — they are useful in the same way a talented individual is useful within a market economy. But the individual's talent is not what makes the economy work. The economy works because the price system coordinates millions of individually limited actors into collective intelligence that exceeds any individual's capacity. Similarly, a sub-4B parameter model (currently 1.7B) within a well-designed selection environment can outperform a 400B parameter model in a monolithic context window, because the environment does the work that raw capability cannot.
 
 ---
 

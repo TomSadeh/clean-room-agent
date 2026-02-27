@@ -14,7 +14,7 @@ A custom coding agent harness built around a multi-stage context curation pipeli
 1. **Three-Database Architecture** - Raw DB (append-only log of all activity), Curated DB (verified signals the model reads from), and Session DB (ephemeral per-task working memory). Three separate SQLite files with independent lifecycles. Cold-startable from git history.
 2. **Deterministic Pre-filtering + LLM Judgment** - Not embedding similarity hoping to capture relevance. Deterministic methods (AST, deps, git, metadata queries) narrow candidates, then an LLM call per stage evaluates relevance against the task.
 3. **N-Stage Prompt Pipeline** - Early stages filter and ground. Later stages reason and execute. Each prompt starts clean with curated context. No conversation accumulation, no compaction, no degradation.
-4. **Multi-Model Architecture** - Two base models: Qwen2.5-Coder-3B-Instruct for coding and Qwen3-4B-Instruct-2507 for reasoning/planning. Routing is config-only.
+4. **Model Architecture** - Qwen3-1.7B as the primary model for code generation and structured classification, with an optional Qwen3-0.6B for high-volume binary classification. Planning decomposition reduces per-call cognitive load, making the 1.7B sufficient for tasks previously assigned to larger models. Routing is config-only via three roles (`coding`, `reasoning`, `classifier`).
 5. **Per-Stage LoRA Adapters** (Phase 4) - One per pipeline stage, fine-tuned from logged activity and synthetic data bootstrapped from external repo commit histories.
 
 **Result**: A 32K context window at nearly 100% signal relevance, versus a 200K window at 10-15% effective utilization.

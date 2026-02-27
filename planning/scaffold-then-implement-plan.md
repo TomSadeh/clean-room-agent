@@ -200,4 +200,4 @@ If `scaffold_enabled = true` in config but `gcc` is not found on PATH, raise a h
 
 ## Relationship to Binary Decomposition Plan
 
-Scaffold benefits from model tiers (scaffold → 4B, per-function → 1.7B), but works independently with the existing 2-role system (scaffold → reasoning, per-function → coding). **Implement binary decomposition first** (smaller scope, retrieval-only), then scaffold (larger scope, orchestrator changes).
+Scaffold benefits from model tiers (scaffold → 1.7B reasoning, per-function → 1.7B coding), and works with the existing role system (scaffold → reasoning, per-function → coding). With a single primary model (1.7B), both roles resolve to the same model. **Implement binary decomposition first** (smaller scope, retrieval-only), then scaffold (larger scope, orchestrator changes).

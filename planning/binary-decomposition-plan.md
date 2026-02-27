@@ -9,7 +9,7 @@ The current retrieval pipeline batches multiple candidates into single LLM calls
 The design record argues for two orthogonal changes:
 
 1. **Binary decomposition** (architectural): every judgment that IS binary gets restructured into independent per-candidate calls. This is not optional. If the decision is yes/no, the code calls `run_binary_judgment()`. Period.
-2. **Model tiers** (config): routing different call types to different-sized models (0.6B/1.7B/4B). This uses the existing `[models.overrides]` mechanism. No new roles, no runtime negotiation.
+2. **Model tiers** (config): routing different call types to different-sized models (0.6B/1.7B). The 4B tier is likely redundant given planning decomposition. This uses the existing `[models.overrides]` mechanism. No new roles, no runtime negotiation.
 
 These are separate concerns. Binary decomposition is an architectural fact about how decisions are structured. Model routing is a deployment decision in config.toml.
 
@@ -246,7 +246,7 @@ Update `create_default_config()` in `config.py` to show the 3-tier model tags an
 [models]
 provider = "ollama"
 coding = "qwen3:1.7b"
-reasoning = "qwen3:4b"
+reasoning = "qwen3:1.7b"    # likely same as coding with single-model architecture
 base_url = "http://localhost:11434"
 context_window = 32768
 
@@ -257,7 +257,7 @@ context_window = 32768
 # precision = {model = "qwen3:0.6b", context_window = 8192, max_tokens = 16}
 ```
 
-The model tier cascade (0.6B → 1.7B → 4B) is a deployment recommendation in config, not an architectural constraint in code. A user could route precision to 4B — binary decomposition still applies, just with a bigger model.
+The model tier cascade (0.6B → 1.7B) is a deployment recommendation in config, not an architectural constraint in code. The 4B tier is likely redundant given planning decomposition but could still be used via `[models.overrides]` if needed — binary decomposition still applies regardless of model size.
 
 ### ModelRouter — one small addition
 

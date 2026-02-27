@@ -68,23 +68,26 @@ A repo without tests isn't a dead end — the agent writes the verification, run
 ### Stream B: Training Pipeline
 
 **Base fine-tune (outsourced):**
-- Two base models: Qwen3-4B (reasoning/planning) and Qwen2.5-Coder-3B (coding)
-- Planning capability baked into the Qwen3-4B base fine-tune (not LoRA) — all three planning types (meta-plan, step-plan, test-plan) via CoT-SFT
+
+> **Revision (Feb 2026):** Originally specified two base models (Qwen3-4B + Qwen2.5-Coder-3B). Now targets Qwen3-1.7B as the single primary model (+ optional 0.6B for binary classification). Planning decomposition reduces per-call cognitive load enough for 1.7B.
+
+- Single primary base model: Qwen3-1.7B (coding, reasoning, planning)
+- Planning capability baked into the base fine-tune (not LoRA) — all three planning types (meta-plan, step-plan, test-plan) via CoT-SFT, with decomposed planning reducing each to atomic sub-tasks
 - 32K context window reduction for most stages (empirically validated: shorter windows produce better output)
 - Coding style from the 25-repo fail-fast corpus
-- Outsourced to external GPU (4× A100 80GB or equivalent). One-time activity, possibly iterated 2-3 times.
+- Outsourced to external GPU (4× A100 80GB or equivalent). One-time activity, possibly iterated 2-3 times. Training the 1.7B is significantly faster than the original 4B target.
 
 **LoRA adapters (on-premises, consumer GPU):**
 
 | Adapter | Model | Technique | Data Source | Priority |
 |---|---|---|---|---|
-| Scope (file relevance) | Qwen3-4B | SFT | Commit diffs (files changed = ground truth) | Tier 1 |
-| Execute-Code | Qwen2.5-Coder-3B | SFT + DPO | CommitPackFT + harness successes/failures | Tier 1 |
-| Precision (symbol tier) | Qwen3-4B | SFT + curriculum | Commit diffs (symbols modified = ground truth) | Tier 2 |
-| Task Analysis | Qwen3-4B | SFT | Logged task analyses + teacher distillation | Tier 2 |
-| Planning DPO (optional) | Qwen3-4B | DPO | Harness preference pairs | Tier 3 |
+| Scope (file relevance) | Qwen3-1.7B (or 0.6B) | SFT | Commit diffs (files changed = ground truth) | Tier 1 |
+| Execute-Code | Qwen3-1.7B | SFT + DPO | CommitPackFT + harness successes/failures | Tier 1 |
+| Precision (symbol tier) | Qwen3-1.7B | SFT + curriculum | Commit diffs (symbols modified = ground truth) | Tier 2 |
+| Task Analysis | Qwen3-1.7B | SFT | Logged task analyses + teacher distillation | Tier 2 |
+| Planning DPO (optional) | Qwen3-1.7B | DPO | Harness preference pairs | Tier 3 |
 
-**Training framework:** Unsloth + QLoRA (4-bit, all 7 linear layers). ZeRO-2 only for distributed — ZeRO-3 breaks gradient flow with LoRA on Qwen3. Explicit `eos_token='<|im_end|>'` to avoid the silent Qwen3 tokenizer bug.
+**Training framework:** Unsloth + QLoRA (4-bit, all 7 linear layers). ZeRO-2 only for distributed — ZeRO-3 breaks gradient flow with LoRA on Qwen3. Explicit `eos_token='<|im_end|>'` to avoid the silent Qwen3 tokenizer bug. Training the 1.7B is ~4-5x faster than the original 4B target, enabling faster self-improvement iteration cycles.
 
 **Cold-start datasets:** CommitPackFT (702K pairs, Apache 2.0) bootstraps the Execute-Code adapter before the harness produces data. Once harness volume is sufficient, CommitPackFT becomes 10-20% replay data to prevent distribution narrowing. OpenCodeInstruct and SRI Tuning are optional breadth insurance, not primary sources — the base Qwen models already have general coding ability from pre-training.
 
@@ -182,7 +185,9 @@ A repo without tests isn't a dead end — the agent writes the verification, run
 
 ## 6. Self-Improvement Guardrails
 
-- Sub-6B models cannot bootstrap from self-generated data alone — external teacher signal is mandatory for initial training
+> **Revision (Feb 2026):** Original guardrails assumed monolithic planning prompts (sub-6B fails, sub-7B plateaus). Planning decomposition reduces per-call complexity to binary judgments and small structured outputs, which may lower the effective threshold for self-improvement. The 1.7B model's viability for self-improvement is plausible but needs empirical validation during Phase 4 bootstrapping.
+
+- External teacher signal is mandatory for initial training — the 1.7B can likely self-improve after initial bootstrapping given decomposed planning, but this is an empirical claim to be validated
 - Recursive training on synthetic data leads to model collapse without data management (Shumailov et al., Nature 2024)
 - Full GRPO/PPO is not feasible on consumer hardware — DPO from self-generated trajectories is the practical alternative
 - Never merge a LoRA into base weights and retrain from the merged model
@@ -250,7 +255,7 @@ These are not Phase 4 deliverables. They are horizons that Phase 4 enables.
 
 **Knowledge base expansion:** Index reference documentation (C books, CUDA docs, algorithm references) alongside code. The retrieval pipeline is content-agnostic — extend the indexer with document chunking and enrichment. Tree-sitter already has C/CUDA grammars. Worth a research spike: manually chunk one book, run through enrichment, evaluate retrieval quality.
 
-**Mini-model creation:** The agent trains small specialist models (10M-500M) to replace LLM calls in the pipeline. A 10M retrieval classifier runs in milliseconds vs seconds for a 4B model call. Requires: the training infrastructure from Phase 4 + the ability to define and train custom architectures.
+**Mini-model creation:** The agent trains small specialist models (10M-500M) to replace LLM calls in the pipeline. A 10M retrieval classifier runs in milliseconds vs seconds for a 1.7B model call. Requires: the training infrastructure from Phase 4 + the ability to define and train custom architectures.
 
 **C-native training:** The microgpt.py algorithm reimplemented in C/CUDA. Eliminates PyTorch dependency, enables custom kernels optimized for the exact hardware and model architecture. Self-contained training binary: data in, model out. On the air-gapped machine, this means no framework dependencies at all.
 

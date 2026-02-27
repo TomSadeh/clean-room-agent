@@ -4,7 +4,7 @@
 
 Phase 3 builds the code agent — the MVP that produces working code from task descriptions. It composes Phase 2's retrieval pipeline with new execute functions (plan + implement), patch application, mandatory test validation, and a deterministic orchestrator for multi-step tasks.
 
-**Core thesis** (from `pipeline-and-modes.md`): The primary bottleneck is planning quality, not coding capability. Qwen2.5-Coder-3B is excellent at small, well-scoped tasks — the planner's job (Qwen3-4B) is to decompose tasks into pieces the coder can't fail on.
+**Core thesis** (from `pipeline-and-modes.md`): The primary bottleneck is planning quality, not coding capability. Qwen3-1.7B is excellent at small, well-scoped tasks — planning decomposition (atomic binary sub-tasks) reduces per-call complexity enough that the 1.7B handles both planning and coding.
 
 **Architecture**: Each "pass" in the agent is a fresh N-prompt pipeline invocation (Phase 2) followed by an execute function call (Phase 3). The pipeline handles retrieval and context curation. The execute function consumes the `ContextPackage`, calls the LLM, and produces a structured result (plan or code edits). The orchestrator sequences passes deterministically.
 

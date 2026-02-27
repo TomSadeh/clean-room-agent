@@ -1,6 +1,10 @@
 # Building coding LoRAs for a self-improving agent pipeline
 
-**The open-source ecosystem now supports every piece of this pipeline — but no turnkey system connects them.** Training per-stage LoRA adapters on Qwen2.5-Coder-3B and Qwen3-4B is practical on a single consumer GPU using Unsloth with QLoRA (4–6 GB VRAM for the 3B model), with total training time around 2–4 hours for five pipeline stages on an RTX 4090. The critical architectural finding: **Ollama cannot hot-swap LoRA adapters per request**, so the deployment target should shift to vLLM or llama.cpp's `llama-server`, both of which support true per-request adapter routing with near-zero switching cost. The evidence strongly favors task-specific LoRAs over a single general-purpose adapter, particularly for small models where capacity is limited — IBM's Granite Intrinsics Library and META-LoRA both demonstrate this at production scale. The weakest link in the pipeline is dataset creation from git commits: no end-to-end tool exists, and custom building is required to bridge PyDriller extraction through LLM-powered instruction generation to training-ready format.
+**The open-source ecosystem now supports every piece of this pipeline — but no turnkey system connects them.** Training per-stage LoRA adapters on Qwen3-1.7B (primary) and Qwen3-0.6B (binary classification) is practical on a single consumer GPU using Unsloth with QLoRA (3–5 GB VRAM for the 1.7B model), with total training time around 1–3 hours for five pipeline stages on an RTX 4090.
+
+> **Architecture revision (Feb 2026):** The original model targets (Qwen2.5-Coder-3B + Qwen3-4B) have been replaced by Qwen3-1.7B (primary, all roles) and Qwen3-0.6B (binary classification). Planning decomposition reduced per-call complexity enough that the 4B is likely eliminated and the code-specialized 3B is replaced by the generalist 1.7B (avoiding negative transfer from Python priors). VRAM requirements and training times are lower. See `protocols/design_records/binary_decomposition_and_model_tiers.md`.
+
+The critical architectural finding: **Ollama cannot hot-swap LoRA adapters per request**, so the deployment target should shift to vLLM or llama.cpp's `llama-server`, both of which support true per-request adapter routing with near-zero switching cost. The evidence strongly favors task-specific LoRAs over a single general-purpose adapter, particularly for small models where capacity is limited — IBM's Granite Intrinsics Library and META-LoRA both demonstrate this at production scale. The weakest link in the pipeline is dataset creation from git commits: no end-to-end tool exists, and custom building is required to bridge PyDriller extraction through LLM-powered instruction generation to training-ready format.
 
 ---
 
@@ -8,16 +12,18 @@
 
 Four frameworks dominate LoRA fine-tuning for small models, each with distinct strengths. **Unsloth** (github.com/unslothai/unsloth, ~30K+ stars, actively updated through February 2026) is the clear choice for this setup: it delivers 2–5× faster training with 70–80% less VRAM via custom Triton kernels, has explicit Qwen2.5-Coder and Qwen3 support with pre-quantized models on HuggingFace, and provides one-line Ollama/GGUF export via `model.save_pretrained_gguf()`. **LLaMA-Factory** (github.com/hiyouga/LlamaFactory, 67K+ stars, ACL 2024 paper) is the strongest alternative, offering a Web UI (LlamaBoard), Qwen3 templates (`qwen3` and `qwen3_nothink`), and direct Ollama Modelfile export since February 2025. **Axolotl** (github.com/axolotl-ai-cloud/axolotl) excels at multi-GPU training with DeepSpeed/FSDP but adds unnecessary complexity for single-card setups. **HuggingFace PEFT + TRL** provides maximum flexibility for custom training loops but requires assembling multiple components manually.
 
-All four frameworks support Qwen2.5-Coder-3B and Qwen3-4B. One critical compatibility note: Unsloth identified and fixed a bug where Qwen2.5-Coder's `pad_token` was incorrectly set to `<|endoftext|>`, causing infinite generations — use Unsloth's uploaded HuggingFace versions which include this fix.
+All four frameworks support the Qwen3 model family including 0.6B and 1.7B. (The original Qwen2.5-Coder-3B and Qwen3-4B targets are also supported if needed as fallbacks.) One critical compatibility note: Unsloth identified and fixed a bug where Qwen2.5-Coder's `pad_token` was incorrectly set to `<|endoftext|>`, causing infinite generations — use Unsloth's uploaded HuggingFace versions which include this fix.
 
 **Realistic VRAM requirements** for QLoRA 4-bit training with gradient checkpointing and sequence length 2048:
 
 | Model | Batch Size 1 | Batch Size 2 | Batch Size 4 |
 |-------|:-----------:|:-----------:|:-----------:|
-| Qwen2.5-Coder-3B | 4–6 GB | 5–7 GB | 7–10 GB |
-| Qwen3-4B | 5–7 GB | 6–8 GB | 8–12 GB |
+| Qwen3-0.6B | 2–3 GB | 3–4 GB | 4–6 GB |
+| Qwen3-1.7B | 3–5 GB | 4–6 GB | 6–9 GB |
+| ~~Qwen2.5-Coder-3B~~ *(original)* | 4–6 GB | 5–7 GB | 7–10 GB |
+| ~~Qwen3-4B~~ *(original)* | 5–7 GB | 6–8 GB | 8–12 GB |
 
-An **8 GB GPU** handles QLoRA on the 3B model at batch size 1. A **24 GB RTX 4090** runs LoRA 16-bit with batch size 4+ on both models comfortably.
+An **8 GB GPU** handles QLoRA on the 1.7B model at batch size 2+. A **24 GB RTX 4090** runs LoRA 16-bit with batch size 4+ on the 1.7B comfortably, and can run multiple training experiments concurrently.
 
 The recommended LoRA configuration, synthesized from the PLoRA paper (arXiv:2508.02932), QLoRA paper, and Unsloth documentation:
 
@@ -67,14 +73,16 @@ For **code edit/diff datasets**, the options are thinner. **LintSeq** provides a
 
 **No large RAG-augmented coding training dataset exists.** The field uses RAG at inference time, not training time. **CodeRAG-Bench** (arXiv:2406.14497, Carnegie Mellon/UW) and **CrossCodeEval** (NeurIPS 2023, github.com/amazon-science/cceval, 10K cross-file completion examples) serve as evaluation frameworks. For training, the recommendation is to synthesize RAG training data by sampling (retrieved_files, task_description, solution) triples from real repositories.
 
-**Realistic benchmark expectations for 3–4B dense models** after LoRA fine-tuning:
+**Realistic benchmark expectations for 1.7B dense models** after LoRA fine-tuning:
 
-| Benchmark | Base Qwen2.5-Coder-3B | Expected Post-LoRA |
+> *Note: Original benchmarks below were for Qwen2.5-Coder-3B. Qwen3-1.7B base benchmarks differ (see `research/qwen3_small_models.md`). Post-LoRA expectations should be calibrated against 1.7B baselines, not 3B.*
+
+| Benchmark | Base Qwen2.5-Coder-3B *(original ref)* | Expected Post-LoRA (1.7B) |
 |-----------|:---------------------:|:------------------:|
-| HumanEval | 84.1% | 85–88% |
-| MBPP+ | 62.4% | 65–68% |
-| LiveCodeBench | ~14.2% | 16–20% |
-| BigCodeBench Full | 35.8% | 38–42% |
+| HumanEval | 84.1% | 75–82% |
+| MBPP+ | 62.4% | 55–62% |
+| LiveCodeBench | ~14.2% | 12–18% |
+| BigCodeBench Full | 35.8% | 30–36% |
 | SWE-bench Verified | <5% (no agent) | <10% (with agent scaffold) |
 
 LiveCodeBench (livecodebench.github.io, contamination-free, continuously updated) and BigCodeBench (ICLR 2025, bigcode-bench.github.io) are the recommended evaluation benchmarks. CrossCodeEval directly tests RAG-augmented cross-file completion. SWE-bench is aspirational for dense 3B models — Qwen3-Coder-Next achieves 70.6% but is an 80B MoE model with only 3B active parameters, architecturally very different.
@@ -97,10 +105,10 @@ For the **planning stage**, a blog post at krasserm.github.io/2024/05/31/planner
 
 **Recommended per-stage architecture**:
 
-- **Relevance judgment LoRA** (Qwen2.5-Coder-3B): Self-RAG special-token approach, ~2K–5K labeled examples, rank 16–32
-- **Code generation LoRA** (Qwen2.5-Coder-3B): Edit-format training (LintSeq/SRI), larger dataset (10K–50K), rank 32–64
-- **Planning LoRA** (Qwen3-4B): Synthetic trajectories from strong teacher model, ~2K–5K examples, rank 16–32
-- **Task analysis LoRA** (Qwen3-4B): Code structure + decomposition training, ~5K–10K examples, rank 16–32
+- **Relevance judgment LoRA** (Qwen3-0.6B or 1.7B): Self-RAG special-token approach, ~2K–5K labeled examples, rank 16–32. Binary relevance is viable on 0.6B.
+- **Code generation LoRA** (Qwen3-1.7B): Edit-format training (LintSeq/SRI), larger dataset (10K–50K), rank 32–64
+- **Planning LoRA** (Qwen3-1.7B): Synthetic trajectories from strong teacher model, ~2K–5K examples, rank 16–32. Decomposed planning reduces per-call complexity.
+- **Task analysis LoRA** (Qwen3-1.7B): Code structure + decomposition training, ~5K–10K examples, rank 16–32
 
 **Key gap**: No published work exists on per-stage LoRA specifically for coding agent pipelines with these exact stages. IBM's work targets RAG pipelines, not code editing. The cross-stage ablation (per-stage vs. single combined LoRA) must be run by the user.
 
@@ -114,7 +122,7 @@ SWE-Gym's pipeline — deploy model → sample trajectories on 2,438 real Python
 
 For approaches that work at the 3–4B parameter scale, **SelfCodeAlign** (NeurIPS 2024, arXiv:2410.24198) achieves self-alignment **without any teacher model** on models from 3B to 33B, with the key finding that "base models benefit more from alignment with their own data distribution." The pipeline extracts coding concepts from seed snippets, generates instructions, generates responses with test cases, executes in sandbox, and filters passing examples. **LintSeq** generates synthetic edit sequences from existing code using only a linter (no LLM needed for data generation), validated from 150M to 14B parameters. **LADDER** (arXiv:2503.00735) improved Llama 3B from 2% to 82% on integration problems using a generate→solve→verify→learn cycle with explicit curriculum.
 
-A critical warning: the original **STaR paper** (NeurIPS 2022) states that **"sub-6B models generally fail to bootstrap"** reasoning capabilities. This directly applies to the 3B/4B target. The mitigation: use teacher-generated training data (from a stronger model or API) for the initial bootstrap rounds, then switch to self-generated data once the model has enough baseline capability.
+A critical warning: the original **STaR paper** (NeurIPS 2022) states that **"sub-6B models generally fail to bootstrap"** reasoning capabilities. This applies even more directly to the 1.7B/0.6B targets than to the original 3B/4B plan. The mitigation: use teacher-generated training data (from a stronger model or API) for the initial bootstrap rounds, then switch to self-generated data once the model has enough baseline capability. Planning decomposition partially mitigates this by reducing the reasoning depth required per call.
 
 **DPO from self-generated trajectories** is practical on consumer hardware. Single-round DPO with coarse filtering achieves RL-level results with lower compute (arXiv:2503.12854). The approach: collect successful and failed agent trajectories, pair them for preference optimization, and train with DPO. **Full GRPO/PPO training is NOT feasible on consumer hardware** — DeepSWE used 64 H100s for 6 days.
 
@@ -134,10 +142,10 @@ Among open-source coding agents: **OpenHands** (formerly OpenDevin) trains its o
 
 **Ollama does not support per-request LoRA hot-swapping.** Each adapter must be baked into a separate model tag via the `ADAPTER` directive in a Modelfile. GitHub Issue #9548 (opened March 2025) requests this feature and remains open with no implementation timeline. For a multi-stage pipeline calling different adapters per step, Ollama requires unloading/reloading between model tags — adding seconds of latency per stage transition.
 
-**vLLM** (docs.vllm.ai) is the recommended alternative. It supports true per-request LoRA selection via the `model` parameter in its OpenAI-compatible API, dynamic loading/unloading via `/v1/load_lora_adapter` and `/v1/unload_lora_adapter` endpoints, and concurrent multi-LoRA batching with `--max-loras N`. A quantized Qwen2.5-Coder-3B base (~2 GB) plus 5 rank-32 LoRA adapters (~20–50 MB each) plus KV cache fits in approximately **3–5 GB total VRAM**, leaving ample headroom on even an 8 GB GPU. The server launch command:
+**vLLM** (docs.vllm.ai) is the recommended alternative. It supports true per-request LoRA selection via the `model` parameter in its OpenAI-compatible API, dynamic loading/unloading via `/v1/load_lora_adapter` and `/v1/unload_lora_adapter` endpoints, and concurrent multi-LoRA batching with `--max-loras N`. A quantized Qwen3-1.7B base (~1.4 GB at Q4) plus 5 rank-32 LoRA adapters (~15–40 MB each) plus KV cache fits in approximately **2–4 GB total VRAM**, leaving ample headroom on even an 8 GB GPU. The server launch command:
 
 ```bash
-vllm serve Qwen/Qwen2.5-Coder-3B-Instruct \
+vllm serve Qwen/Qwen3-1.7B \
     --quantization awq --enable-lora --max-loras 8 --max-lora-rank 64 \
     --lora-modules stage1=./adapters/stage1 stage2=./adapters/stage2
 ```
@@ -148,13 +156,15 @@ Pipeline orchestration then becomes trivial — each stage calls the OpenAI clie
 
 **Training time estimates** for QLoRA rank-32 on sequence length 2048, using Unsloth:
 
-| GPU | 3B Model, 10K examples | 4B Model, 10K examples | 3B Model, 50K examples |
-|-----|:----------------------:|:----------------------:|:----------------------:|
-| RTX 4090 (24GB) | 15–45 min | 20–60 min | 1.5–3.5 hr |
-| RTX 3090 (24GB) | 25–70 min | 35–90 min | 2.5–5.5 hr |
-| RTX 4080 (16GB) | 30–80 min | 40–100 min | 3–6 hr |
+| GPU | 1.7B Model, 10K examples | 1.7B Model, 50K examples | 0.6B Model, 10K examples |
+|-----|:------------------------:|:------------------------:|:------------------------:|
+| RTX 4090 (24GB) | 10–30 min | 1–2.5 hr | 5–15 min |
+| RTX 3090 (24GB) | 15–45 min | 1.5–4 hr | 8–25 min |
+| RTX 4080 (16GB) | 20–50 min | 2–4.5 hr | 10–30 min |
 
-For a 5-stage pipeline with 10K examples per stage on an RTX 4090: **roughly 2–4 hours total training time**.
+*(Original estimates for 3B/4B targets: RTX 4090 15-60 min per 10K examples. The 1.7B is faster.)*
+
+For a 5-stage pipeline with 10K examples per stage on an RTX 4090: **roughly 1–3 hours total training time**.
 
 **On multi-round fine-tuning degradation**: LoRA does not prevent catastrophic forgetting (confirmed by Biderman et al.'s "LoRA Learns Less and Forgets Less" and multiple follow-up studies). The critical practice: **always train independent LoRA adapters from the same frozen base model, never merge-then-retrain**. Sequential merge-retrain cycles compound quantization artifacts and cause progressive degradation after 2–3 rounds. For iterative self-improvement rounds on the same task, always retrain from the original base model with updated/expanded data — include 10–20% replay data from previous rounds to maintain past capabilities. For advanced continual learning, **CURLoRA** (arXiv:2408.14572) uses CUR decomposition, and **I-LoRA** (arXiv:2402.18865) maintains a dual-memory framework.
 
@@ -176,4 +186,4 @@ Several components of this pipeline have no existing open-source solutions and r
 
 6. **Ollama adapter hot-swap**: If Ollama is a hard deployment constraint, the workaround is merging each LoRA into a separate model copy (each becoming its own Ollama tag like `coding-agent:planner`, `coding-agent:generator`). This works but wastes disk space and adds switching latency. The better path is switching to vLLM or llama-server for the multi-adapter inference layer while potentially keeping Ollama for other uses.
 
-The practical starting point: begin with Unsloth + QLoRA training on a subsample of OpenCodeInstruct, deploy initial adapters on vLLM with per-request switching, build the commit-history extraction pipeline in parallel, and establish the evaluation loop on LiveCodeBench + BigCodeBench before investing in self-improvement infrastructure.
+The practical starting point: begin with Unsloth + QLoRA training on Qwen3-1.7B with a subsample of OpenCodeInstruct, deploy initial adapters on vLLM with per-request switching, build the commit-history extraction pipeline in parallel, and establish the evaluation loop on LiveCodeBench + BigCodeBench before investing in self-improvement infrastructure.

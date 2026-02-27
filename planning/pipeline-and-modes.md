@@ -132,14 +132,14 @@ class BudgetConfig:
 
 Budget is calculated against the execute model's context window for the current mode:
 
-| Mode | Execute Model | Budget Window |
-|------|--------------|---------------|
-| Plan | Qwen3-4B (reasoning) | Qwen3-4B context window |
-| Implement | Qwen2.5-Coder-3B (coding) | Qwen2.5-Coder-3B context window |
-| Train-Plan | Qwen3-4B (reasoning) | Qwen3-4B context window |
-| Curate-Data | Qwen3-4B (reasoning) | Qwen3-4B context window |
+| Mode | Execute Role | Budget Window |
+|------|-------------|---------------|
+| Plan | reasoning (Qwen3-1.7B) | 1.7B context window (32K) |
+| Implement | coding (Qwen3-1.7B) | 1.7B context window (32K) |
+| Train-Plan | reasoning (Qwen3-1.7B) | 1.7B context window (32K) |
+| Curate-Data | reasoning (Qwen3-1.7B) | 1.7B context window (32K) |
 
-Retrieval stage prompts are bounded by the reasoning model's window (separate, smaller concern -- each stage prompt is small).
+With a single primary model (1.7B), the budget window is the same across all modes (32K). Retrieval stage prompts are bounded by the model's window (separate, smaller concern -- each stage prompt is small).
 
 ### 4.3 Token Counting
 
@@ -167,7 +167,7 @@ Enforced once in shared code, called by all CLI commands that use budgets:
 
 Same retrieval as the coding pipeline (scope, precision). Execute stage produces a structured plan: which files to change, what changes to make, in what order, with rationale. The plan is a persistent artifact (file) that implement mode can consume. Human can review/edit the plan before implementation.
 
-Execute stage uses the reasoning model (Qwen3-4B).
+Execute stage uses the `reasoning` role (Qwen3-1.7B).
 
 **Atomic mode**: Plan mode is a single pipeline pass (task analysis → retrieval → execute). The solve orchestrator ([Section 5.7](#57-solve-orchestrator--recursive-planning-pipeline)) composes multiple atomic plan and implement passes to handle multi-part tasks.
 
@@ -215,7 +215,7 @@ Accepts optional `--plan <artifact>` -- if provided, the plan seeds the retrieva
 
 Without `--plan`, `cra solve` invokes the solve orchestrator ([Section 5.7](#57-solve-orchestrator--recursive-planning-pipeline)), which decomposes the task and composes multiple atomic plan and implement passes.
 
-Execute stage uses the coding model (Qwen2.5-Coder-3B).
+Execute stage uses the `coding` role (Qwen3-1.7B).
 
 **Atomic mode**: Implement mode is a single pipeline pass (task analysis → retrieval → execute). When invoked directly via `--plan`, it bypasses the orchestrator entirely.
 
@@ -252,9 +252,9 @@ This may be implemented as a dedicated `cra bootstrap <repo-path>` command or as
 
 #### 5.7.0 Core Design Thesis
 
-The primary bottleneck is not coding capability but planning quality. **Qwen2.5-Coder-3B is an excellent coder for its size** — given a small enough, well-scoped task with the right context, it will produce correct code reliably. The planner's job (Qwen3-4B) is to decompose work into pieces small enough that the coder can't fail.
+The primary bottleneck is not coding capability but planning quality. **Qwen3-1.7B is an excellent coder for its size** — given a small enough, well-scoped task with the right context, it will produce correct code reliably. Planning decomposition (atomic binary sub-tasks via `run_binary_judgment()`) reduces the cognitive complexity of each planning call, making the 1.7B sufficient for both coding and planning.
 
-This means the system's performance ceiling is set by the planner, not the coder. The planner uses the full N-prompt pipeline (task analysis → scope → precision → execute) for both meta-planning and part-planning — arguably the component that most needs carefully curated context, since decomposition errors cascade into every downstream step.
+This means the system's performance ceiling is set by planning quality, not coding capability. The planner uses decomposed sub-tasks (enumeration → grouping → binary dependency judgments) within the full N-prompt pipeline — arguably the component that most needs carefully curated context, since decomposition errors cascade into every downstream step.
 
 **Granularity minimization**: Start with the smallest possible task granularity (single file, minimal edits per step) and iterate. The goal is to find the floor where further decomposition stops improving coder success rate. Larger files will strain the coder's context window; smaller tasks are always safer. Granularity can always be relaxed later if success rates are high.
 
@@ -262,38 +262,38 @@ This means the system's performance ceiling is set by the planner, not the coder
 
 The orchestrator decomposes work through five types of atomic passes. The first four are complete N-prompt pipeline invocations (task analysis → retrieval → execute). The fifth (testing) is deterministic validation.
 
-1. **Meta-plan pass** (plan mode, Qwen3-4B): Decomposes the full task into logical parts with dependency ordering. Input: original task description. Output: `MetaPlan` with ordered `MetaPlanPart` entries.
+1. **Meta-plan pass** (plan mode, reasoning role / 1.7B): Decomposes the full task into logical parts with dependency ordering. With decomposed planning, this breaks into enumeration → grouping → binary dependency sub-tasks. Input: original task description. Output: `MetaPlan` with ordered `MetaPlanPart` entries.
 
-2. **Part-plan pass** (plan mode, Qwen3-4B, per part): Produces a step-by-step plan for one part, with context from completed parts. Input: part description + cumulative diff from prior parts. Output: `PartPlan` with ordered `PlanStep` entries. Each step must be small enough for the coder to execute reliably.
+2. **Part-plan pass** (plan mode, reasoning role / 1.7B, per part): Produces a step-by-step plan for one part, with context from completed parts. With decomposed planning, this breaks into targeting → design → binary dependency sub-tasks. Input: part description + cumulative diff from prior parts. Output: `PartPlan` with ordered `PlanStep` entries. Each step must be small enough for the coder to execute reliably.
 
-3. **Step implementation pass** (implement mode, Qwen2.5-Coder-3B, per step): Executes one step with its plan as context. Input: step description + part plan + cumulative diff. Output: `StepResult` with the applied diff.
+3. **Step implementation pass** (implement mode, coding role / 1.7B, per step): Executes one step with its plan as context. Input: step description + part plan + cumulative diff. Output: `StepResult` with the applied diff.
 
 4. **Testing pass** (mandatory, deterministic, after every step): Runs the test suite and captures results. Input: current working tree state. Output: test pass/fail, test output, lint output, type check output. Results are logged to raw DB (`validation_results` table) and fed as input to the adjustment pass.
 
-5. **Adjustment pass** (plan mode, Qwen3-4B, after each step): Revises remaining steps given implementation results and test outcomes. Input: original part plan + step results so far + **test results** + cumulative diff. Output: `PlanAdjustment` with revised remaining steps.
+5. **Adjustment pass** (plan mode, reasoning role / 1.7B, after each step): Revises remaining steps given implementation results and test outcomes. Input: original part plan + step results so far + **test results** + cumulative diff. Output: `PlanAdjustment` with revised remaining steps.
 
 #### 5.7.2 Execution Flow
 
 ```
-meta_plan = run_plan_pass(task_description)               # Qwen3-4B, N-prompt pipeline
+meta_plan = run_plan_pass(task_description)               # reasoning role (1.7B), N-prompt pipeline
 
 for each part in meta_plan.parts (dependency order):
-    part_plan = run_plan_pass(part, cumulative_diff)       # Qwen3-4B, N-prompt pipeline
+    part_plan = run_plan_pass(part, cumulative_diff)       # reasoning role (1.7B), N-prompt pipeline
 
     for each step in part_plan.steps:
-        step_result = run_implement_pass(step, part_plan, cumulative_diff)  # Qwen2.5-Coder-3B
+        step_result = run_implement_pass(step, part_plan, cumulative_diff)  # coding role (1.7B)
         test_result = run_tests()                                           # mandatory
 
         if test_result.failed:
             # Coder gets one retry with failure context
             step_result = run_implement_pass(step, part_plan, cumulative_diff,
-                                             failure_context=test_result)   # Qwen2.5-Coder-3B
+                                             failure_context=test_result)   # coding role (1.7B)
             test_result = run_tests()                                       # mandatory
 
         cumulative_diff += step_result.diff
 
         # Planner reviews diff + test results, adjusts remaining steps
-        adjustment = run_plan_pass(remaining_steps, step_result,            # Qwen3-4B
+        adjustment = run_plan_pass(remaining_steps, step_result,            # reasoning role (1.7B)
                                    test_result, cumulative_diff)
         part_plan.steps = adjustment.revised_steps
 

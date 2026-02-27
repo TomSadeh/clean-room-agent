@@ -1,6 +1,6 @@
 # ML Workstation — Endgame Build Spec
 
-**Purpose:** Self-contained ML workstation for the clean-room agent's self-improvement loop. Dual RTX 5090 for: LoRA/QLoRA/DPO training, full fine-tuning of 3-4B base models, training mini-models from scratch (up to ~3.5B), plan validation harness inference, and all agent inference. Target: fully air-gapped post-migration.
+**Purpose:** Self-contained ML workstation for the clean-room agent's self-improvement loop. Dual RTX 5090 for: LoRA/QLoRA/DPO training, full fine-tuning of sub-4B base models (primary: Qwen3-1.7B, optional: 0.6B for binary classification), training mini-models from scratch (up to ~3.5B), plan validation harness inference, and all agent inference. Target: fully air-gapped post-migration.
 
 **OS:** Ubuntu Server 24.04 LTS + i3 window manager (X11)
 
@@ -68,17 +68,22 @@ RTX 5090 cards vary significantly in physical size. For dual-GPU, thickness matt
 
 ## ML Training Capabilities
 
+*Model architecture revision (Feb 2026): primary model shifted from Qwen2.5-Coder-3B + Qwen3-4B to Qwen3-1.7B (+ optional 0.6B for binary classification). The 4B model is likely eliminated — planning decomposition reduced per-call cognitive complexity to the point where 1.7B handles all tasks. Estimates below updated accordingly; original 3B/4B estimates preserved in parentheses for reference.*
+
 | Operation | VRAM Used | Duration (10K examples) |
 |---|---|---|
-| Inference (3B + 4B, fp16, concurrent) | ~14 GB | — |
-| QLoRA on 4B model | ~8–12 GB | 1–3 hours |
-| LoRA (fp16) on 4B model | ~12–18 GB | 2–6 hours |
-| DPO on 4B model (QLoRA) | ~10–14 GB | 2–4 hours |
-| Full fine-tune 3B (ZeRO-3, 2 GPUs) | ~20–25 GB/GPU | 4–12 hours |
-| Full fine-tune 4B (ZeRO-3, 2 GPUs) | ~25–33 GB/GPU | 6–16 hours |
+| Inference (1.7B + 0.6B, fp16, concurrent) | ~5 GB | — |
+| QLoRA on 1.7B model | ~4–6 GB | 0.5–1.5 hours |
+| LoRA (fp16) on 1.7B model | ~6–10 GB | 1–3 hours |
+| DPO on 1.7B model (QLoRA) | ~5–8 GB | 1–2 hours |
+| Full fine-tune 1.7B (single GPU, fp16) | ~12–16 GB | 2–6 hours |
+| Full fine-tune 1.7B (ZeRO-3, 2 GPUs) | ~8–12 GB/GPU | 1–4 hours |
 | Mini-model 100M from scratch | ~2–4 GB | Minutes–hours |
+| Mini-model 0.6B from scratch | ~8–12 GB | Hours–days |
 | Mini-model 1B from scratch | ~15–20 GB | Hours–days |
 | Mini-model 3.5B from scratch (ZeRO-3) | ~25–30 GB/GPU | Days |
+
+*Previous estimates (3B/4B, retained for reference): Inference 3B+4B concurrent ~14 GB; QLoRA 4B ~8-12 GB / 1-3 hrs; LoRA fp16 4B ~12-18 GB / 2-6 hrs; DPO 4B QLoRA ~10-14 GB / 2-4 hrs; Full fine-tune 3B ZeRO-3 ~20-25 GB/GPU / 4-12 hrs; Full fine-tune 4B ZeRO-3 ~25-33 GB/GPU / 6-16 hrs.*
 
 **Max model size trainable from scratch:** ~3–3.5B parameters (ZeRO-3 across both GPUs).
 
@@ -152,7 +157,7 @@ The dual RTX 5090 configuration is the endgame GPU setup. No further GPU upgrade
 
 **Motherboard (ProArt X870E-Creator):** Two CPU-direct PCIe 5.0 x16 slots with x8/x8 bifurcation — the only AM5 board with real dual-GPU capability. PCIe 5.0 x8 provides ~32 GB/s per direction, sufficient for DeepSpeed ZeRO-3 inter-GPU communication (much less bandwidth-hungry than NVLink-dependent workloads).
 
-**GPU (2× RTX 5090 32GB):** 64GB total VRAM enables full fine-tuning of 3-4B base models with ZeRO-3 (no more outsourcing), training mini-models up to ~3.5B from scratch, and all LoRA/QLoRA/DPO training. The 1.8 TB/s memory bandwidth per card accelerates both inference (bandwidth-bound for autoregressive generation) and training throughput. Blackwell tensor cores with FP4/FP8 support for future quantized training.
+**GPU (2× RTX 5090 32GB):** 64GB total VRAM enables full fine-tuning of sub-4B base models with ZeRO-3 — now significantly overprovisioned for the primary 1.7B model, leaving substantial headroom for parallel training runs, larger mini-models, or future model scale increases. Also supports training mini-models up to ~3.5B from scratch, and all LoRA/QLoRA/DPO training. The 1.8 TB/s memory bandwidth per card accelerates both inference (bandwidth-bound for autoregressive generation) and training throughput. Blackwell tensor cores with FP4/FP8 support for future quantized training.
 
 **PSU (1600W Titanium):** Sized for dual RTX 5090 (2× 575W TDP) + 9900X (170W) + system (80W) = ~1,400W peak. Must have 2× 12V-2x6 connectors for the two GPUs. The be quiet! Dark Power Pro 13 1600W is ATX 3.1 compliant with dual 12VHPWR cables included. 80+ Titanium efficiency means less waste heat at sustained ML loads.
 

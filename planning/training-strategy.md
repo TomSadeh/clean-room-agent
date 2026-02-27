@@ -6,21 +6,22 @@ Per-stage LoRA training targets, base model full fine-tuning (coding style + rol
 
 ## 1. Per-Stage LoRA Training Targets
 
-**Qwen3-4B LoRAs (reasoning/retrieval):**
+> **Revision (Feb 2026):** Originally organized around two base models (Qwen3-4B reasoning + Qwen2.5-Coder-3B coding). Now targets a single primary model: Qwen3-1.7B for all LoRAs (code generation, structured classification, planning). Optional Qwen3-0.6B for binary classification adapters. The 4B model is likely redundant given planning decomposition and is under evaluation for elimination. See `protocols/design_records/single_generalist_model.md` and `protocols/design_records/binary_decomposition_and_model_tiers.md`.
+
+**Qwen3-1.7B LoRAs (all stages):**
 
 | Stage | Training Pair | Quality Signal | Technique | Rank | Examples |
 |-------|--------------|----------------|-----------|------|----------|
 | Task Analysis | task description -> structured task analysis | did retrieval find the right files? | SFT | 16-32 | 3-5K |
 | Scope | task + candidates -> relevance classification | were the included files actually needed? | SFT | 16-32 | 2-4K |
 | Precision | task + symbols -> tier classification | did the selected symbols lead to correct code? | SFT + curriculum | 16-32 | 3-5K |
-
-**Qwen2.5-Coder-3B LoRAs (coding):**
-
-| Stage | Training Pair | Quality Signal | Technique | Rank | Examples |
-|-------|--------------|----------------|-----------|------|----------|
 | Execute (Code) | context + task -> code edits | did the code pass validation? | SFT + DPO | 32-64 | 10-50K |
 
-**Qwen3-4B optional refinement LoRA (planning DPO):**
+**Qwen3-0.6B LoRAs (binary classification, optional):**
+
+Scope and routing judgments may use 0.6B adapters if the binary classifier proves reliable enough at that scale. If not, these stay on 1.7B (see risk 1 in `binary_decomposition_and_model_tiers.md`).
+
+**Qwen3-1.7B optional refinement LoRA (planning DPO):**
 
 | Stage | Training Pair | Quality Signal | Technique | Rank | Examples |
 |-------|--------------|----------------|-----------|------|----------|
@@ -30,7 +31,7 @@ Per-stage LoRA training targets, base model full fine-tuning (coding style + rol
 
 **Training pair format**: NL-to-Code instruction format (natural language description → code) significantly outperforms Code-to-Code format across all benchmarks (OpenCodeInstruct, 2025). All training pairs — including synthetic pairs from commit histories — should use natural language task descriptions as input, not code-in → code-out.
 
-Training data curation must separate examples by base model -- a Qwen3-4B reasoning LoRA cannot be applied to Qwen2.5-Coder-3B and vice versa.
+Training data curation must separate examples by base model — a Qwen3-1.7B LoRA cannot be applied to Qwen3-0.6B and vice versa. With a single primary model (1.7B), this constraint simplifies: all non-classifier LoRAs share the same base.
 
 ---
 
@@ -470,13 +471,13 @@ LoRA adapters and the base fine-tune's planning component are trained via teache
 
 | Stage | Target Model | Primary Teacher | Secondary |
 |-------|-------------|----------------|-----------|
-| 1-3 (Task Analysis, Scope, Precision) | Qwen3-4B | Qwen3.5-397B-A17B (Apache 2.0, $0.11/M input) | — |
-| Base fine-tune — Planning | Qwen3-4B | Qwen3.5-397B thinking mode | DeepSeek-V3.2 (cross-validation) |
-| 4 (Execute — Code) | Qwen2.5-Coder-3B | Qwen3-Coder-Next-80B-A3B | OpenCodeInstruct dataset |
+| 1-3 (Task Analysis, Scope, Precision) | Qwen3-1.7B | Qwen3.5-397B-A17B (Apache 2.0, $0.11/M input) | — |
+| Base fine-tune — Planning | Qwen3-1.7B | Qwen3.5-397B thinking mode | DeepSeek-V3.2 (cross-validation) |
+| 4 (Execute — Code) | Qwen3-1.7B | Qwen3-Coder-Next-80B-A3B | OpenCodeInstruct dataset |
 
 **Planning teacher role**: The teacher generates plans through the plan validation harness ([Section 6.9](#69-plan-validation-harness)) — our pipeline provides the context, the teacher produces the plan, execution validates it. The teacher also generates CoT reasoning traces for all three planning types (meta-plan, step-plan, test-plan). These feed into the base fine-tune's planning objective, not a separate LoRA.
 
-**Tokenizer incompatibility**: Qwen3.5 uses a 250K vocabulary vs Qwen3-4B's 150K. This means only response-level SFT (train on teacher's text output), not logit-level distillation (KL divergence on token probabilities). Fallback for logit distillation if needed: Qwen3-235B (same tokenizer family as Qwen3-4B).
+**Tokenizer incompatibility**: Qwen3.5 uses a 250K vocabulary vs Qwen3-1.7B's 150K. This means only response-level SFT (train on teacher's text output), not logit-level distillation (KL divergence on token probabilities). Fallback for logit distillation if needed: Qwen3-235B (same tokenizer family as Qwen3-1.7B).
 
 ### 7.2 Per-Stage Training Configurations
 
@@ -530,16 +531,15 @@ LoRA adapters and the base fine-tune's planning component are trained via teache
 
 **Qwen-specific gotchas**:
 - EOS token `<|im_end|>` must be set explicitly (common source of infinite generation bugs).
-- Qwen2.5-Coder `pad_token` was incorrectly set to `<|endoftext|>` in the original release, causing infinite generations — use Unsloth's corrected HuggingFace versions.
 
 **VRAM requirements** (QLoRA 4-bit, gradient checkpointing, sequence length 2048):
 
 | Model | Batch Size 1 | Batch Size 2 | Batch Size 4 |
 |-------|:-----------:|:-----------:|:-----------:|
-| Qwen2.5-Coder-3B | 4-6 GB | 5-7 GB | 7-10 GB |
-| Qwen3-4B | 5-7 GB | 6-8 GB | 8-12 GB |
+| Qwen3-0.6B | 2-3 GB | 3-4 GB | 4-6 GB |
+| Qwen3-1.7B | 3-5 GB | 4-6 GB | 6-9 GB |
 
-An 8 GB GPU handles QLoRA on the 3B model at batch size 1. A 24 GB RTX 4090 runs LoRA 16-bit with batch size 4+ on both models.
+An 8 GB GPU handles QLoRA on the 1.7B at batch size 2+. A 24 GB RTX 4090/5090 runs LoRA 16-bit with batch size 4+ comfortably. Training times are significantly faster than the original 3B/4B targets: LoRA fine-tuning the 1.7B takes ~1-2 days, the 0.6B trains in hours.
 
 **LoRA-to-deployment conversion** (three paths):
 1. **Unsloth auto-export**: `save_pretrained_gguf()` + `save_pretrained_ollama()` — auto-generates Modelfile with correct Qwen ChatML template, calls `ollama create` internally. Easiest path.
@@ -648,11 +648,13 @@ Manual review of a random sample (10-20 examples per stage per training round) i
 
 ## 10. Self-Improvement Guardrails
 
-Empirical limits on self-improvement at sub-7B scale, informed by recent research:
+Empirical limits on self-improvement at small scale, informed by recent research:
+
+> **Revision (Feb 2026):** The original "sub-6B fails to bootstrap" and "sub-7B plateaus after ~2 iterations" guardrails assumed monolithic planning prompts with high cognitive complexity per call. Planning decomposition (binary sub-tasks via `run_binary_judgment()`) fundamentally changes this: each LLM call now produces 1 bit of information (binary judgment) or a small structured output (enumeration, grouping), not a complex multi-file plan. A 1.7B model producing reliable binary judgments is a much easier problem than a 4B model producing full plans in one call. The guardrails below are revised to account for this, but empirical validation during Phase 4 bootstrapping is still needed.
 
 **Hard limits**:
-- Self-improvement plateaus after ~2 iterations at sub-7B scale (SWE-Gym, ICML 2025).
-- Sub-6B models fail to bootstrap via self-generated data (STaR finding) — external teacher signal is mandatory.
+- Self-improvement plateaus after ~2 iterations at small scale (SWE-Gym, ICML 2025), though planning decomposition may extend this ceiling by reducing per-call complexity.
+- Sub-2B models may struggle with structured outputs (enumeration, step design) even after decomposition — the 1.7B's viability for these tasks needs empirical validation during Phase 4. Binary classification (0.6B) is lower risk.
 - Recursive training on synthetic data leads to model collapse (Shumailov et al., Nature 2024) without careful data management.
 - Full GRPO/PPO training is NOT feasible on consumer hardware (DeepSWE required 64 H100s for 6 days). DPO from self-generated trajectories is practical — single-round DPO with coarse filtering achieves RL-level results with lower compute.
 

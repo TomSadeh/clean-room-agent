@@ -56,7 +56,7 @@ Command definitions, argument conventions, required inputs, config file format, 
 provider = "ollama"                          # Required
 # classifier = "qwen3:0.6b"                 # Optional: tier-0 binary classifier
 coding = "qwen3:1.7b"                        # Required
-reasoning = "qwen3:4b-instruct-2507"        # Required
+reasoning = "qwen3:1.7b"                     # Required (may be same as coding with single-model architecture)
 base_url = "http://localhost:11434"          # Required
 context_window = 32768                       # Required (int or per-role dict)
 # max_tokens = 4096  # defaults to context_window // 8 if omitted

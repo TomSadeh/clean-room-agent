@@ -1,6 +1,8 @@
 # Full fine-tuning + LoRA stacking for specialist code classifiers
 
-**The full fine-tune → LoRA stacking pattern is proven, practical, and essentially the same pipeline every major AI lab uses for RLHF alignment.** Applying LoRA adapters on top of a fully fine-tuned model is trivially supported by the PEFT library, validated by the SFT→DPO/RLHF workflow used in ChatGPT, Llama, and Qwen, and formally studied through ReLoRA (ICLR 2024) for iterative merge-and-retrain. The hypothesis that a fully fine-tuned Qwen3-4B specialist with LoRA-based self-improvement will dramatically outperform a base model with LoRA alone is well-supported — but the optimal architecture likely involves a hybrid: encoder models for the two pure-classification stages and a causal LM only for JSON parsing. No existing coding agent uses a fine-tuned small model for file relevance classification, making this approach a genuine innovation over the expensive LLM-prompting methods used by Agentless, CodeMonkeys, and Moatless Tools.
+**The full fine-tune → LoRA stacking pattern is proven, practical, and essentially the same pipeline every major AI lab uses for RLHF alignment.** Applying LoRA adapters on top of a fully fine-tuned model is trivially supported by the PEFT library, validated by the SFT→DPO/RLHF workflow used in ChatGPT, Llama, and Qwen, and formally studied through ReLoRA (ICLR 2024) for iterative merge-and-retrain. The hypothesis that a fully fine-tuned specialist with LoRA-based self-improvement will dramatically outperform a base model with LoRA alone is well-supported — but the optimal architecture likely involves a hybrid: encoder models for the two pure-classification stages and a causal LM only for JSON parsing. No existing coding agent uses a fine-tuned small model for file relevance classification, making this approach a genuine innovation over the expensive LLM-prompting methods used by Agentless, CodeMonkeys, and Moatless Tools.
+
+> **Architecture revision (Feb 2026):** This report's references to "fully fine-tuned Qwen3-4B specialist" should be read as applying to the current primary target: **Qwen3-1.7B**. Planning decomposition reduced per-call complexity enough that the 4B is likely eliminated. The full FT + LoRA stacking methodology described here applies identically to the 1.7B — at lower VRAM and faster training times. See `protocols/design_records/binary_decomposition_and_model_tiers.md`.
 
 ---
 
@@ -225,9 +227,9 @@ Starting points for building code relevance classifiers:
 
 ### Recommended implementation path
 
-**Phase 1 — Baseline** (1–2 days): QLoRA fine-tune Qwen3-4B on 1K–5K manually labeled examples per task. Deploy merged + quantized on Ollama. This establishes the quality baseline with minimal investment.
+**Phase 1 — Baseline** (1–2 days): QLoRA fine-tune Qwen3-1.7B on 1K–5K manually labeled examples per task. Deploy merged + quantized on Ollama. This establishes the quality baseline with minimal investment. *(Original target was Qwen3-4B; 1.7B fits more easily on consumer GPUs.)*
 
-**Phase 2 — Full specialization** (1 week): Full fine-tune Qwen3-4B on cloud A100 (~$10–30) with 10K–50K examples. Compare accuracy against Phase 1. Simultaneously, fine-tune CodeBERT/UniXcoder cross-encoders for Stages 1–2 and compare speed/accuracy tradeoff.
+**Phase 2 — Full specialization** (1 week): Full fine-tune Qwen3-1.7B on local 24GB GPU or cloud A100 (~$5–20) with 10K–50K examples. Compare accuracy against Phase 1. Simultaneously, fine-tune CodeBERT/UniXcoder cross-encoders for Stages 1–2 and compare speed/accuracy tradeoff. *(Full fine-tuning of 1.7B is more feasible on consumer hardware than the original 4B target.)*
 
 **Phase 3 — Self-improvement loop**: Apply LoRA (rank 8–16) on the full fine-tuned base using production disagreements as training signal. Merge after each successful iteration (validation accuracy improved). Reset optimizer state between iterations. Target monthly retraining cycles.
 
@@ -243,7 +245,7 @@ No published work exists on **fine-tuning small models specifically as code file
 | Does the FT→LoRA pattern work well? | **9/10** | Industry standard (RLHF) |
 | Can iterative merge→retrain stack? | **8/10** | Proven (ReLoRA, ICLR 2024) |
 | Will full FT + LoRA beat base + LoRA alone? | **8/10** | Strong theoretical + empirical support |
-| Will Qwen3-4B work for code classification? | **8/10** | Analogous results strong; no direct precedent |
+| Will Qwen3-1.7B work for code classification? | **7/10** | Smaller than original 4B target; decomposed tasks reduce per-call complexity |
 | Is self-improvement via production disagreements viable? | **7/10** | SPIN validates concept; filtering quality is key unknown |
 | Can 0.5B–1B replace 4B for classification stages? | **6/10** | Plausible but unproven for code relevance |
 

@@ -119,8 +119,8 @@ file_metadata (
 adapter_metadata (
   id INTEGER PRIMARY KEY,
   stage_name TEXT NOT NULL,          -- pipeline stage this adapter serves
-  base_model TEXT NOT NULL,          -- "coding" or "reasoning"
-  model_tag TEXT NOT NULL,           -- model/adapter identifier for the inference server (e.g. "qwen3:4b-scope-v1")
+  base_model TEXT NOT NULL,          -- "coding", "reasoning", or "classifier"
+  model_tag TEXT NOT NULL,           -- model/adapter identifier for the inference server (e.g. "qwen3:1.7b-scope-v1")
   version INTEGER NOT NULL DEFAULT 1,
   active INTEGER NOT NULL DEFAULT 1, -- 1 = active, 0 = inactive
   performance_notes TEXT,            -- free-form metrics/observations

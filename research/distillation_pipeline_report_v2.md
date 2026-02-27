@@ -1,6 +1,8 @@
 # Distilling Coding Agents into 3-4B Local Models (v2)
 
-**Per-stage LoRA distillation from large open-weight teachers into Qwen3-4B and Qwen2.5-Coder-3B is technically feasible, legally safe, and surprisingly affordable — roughly $60–150 total.** The primary teacher is now **Qwen3.5-397B-A17B** (released Feb 16, 2026), which scores 83.6 on LiveCodeBench v6, 76.4 on SWE-bench Verified, and 91.3 on AIME'26 — a substantial leap over its predecessor Qwen3-235B. All Qwen models remain Apache 2.0. The per-task LoRA architecture has no direct precedent in published work — it would be a genuinely novel contribution — but all architectural primitives (independent LoRA training, mixture-of-LoRA routing) are proven. **Planning distillation is the critical path.** It's the hardest stage to bootstrap, the hardest to evaluate, and the stage where teacher quality matters most. This report gives it proportionate depth.
+> **Architecture revision (Feb 2026):** The primary distillation target has shifted from Qwen3-4B to **Qwen3-1.7B**. Planning decomposition reduced per-call complexity enough that the 4B is likely eliminated. Teacher models (Qwen3.5-397B, DeepSeek-V3.2) are unchanged. The distillation methodology, cost estimates, and research findings in this report remain valid — the 1.7B is a smaller student, which makes Stage 4 (planning) risk assessment even more relevant. See `protocols/design_records/binary_decomposition_and_model_tiers.md`.
+
+**Per-stage LoRA distillation from large open-weight teachers into Qwen3-1.7B (primary) and Qwen3-0.6B (binary classification) is technically feasible, legally safe, and surprisingly affordable — roughly $60–150 total.** The primary teacher is now **Qwen3.5-397B-A17B** (released Feb 16, 2026), which scores 83.6 on LiveCodeBench v6, 76.4 on SWE-bench Verified, and 91.3 on AIME'26 — a substantial leap over its predecessor Qwen3-235B. All Qwen models remain Apache 2.0. The per-task LoRA architecture has no direct precedent in published work — it would be a genuinely novel contribution — but all architectural primitives (independent LoRA training, mixture-of-LoRA routing) are proven. **Planning distillation is the critical path.** It's the hardest stage to bootstrap, the hardest to evaluate, and the stage where teacher quality matters most. This report gives it proportionate depth.
 
 ---
 
@@ -27,25 +29,25 @@ The model also supports 262K context natively (1M via the hosted Qwen3.5-Plus va
 
 ### Coding teacher: Qwen3-Coder-Next-80B-A3B
 
-For Stage 5 (code generation targeting Qwen2.5-Coder-3B), the newly released **Qwen3-Coder-Next** is the most interesting teacher. It's an 80B MoE with only 3B active parameters, built on the Qwen3-Next architecture, and achieves over 70% on SWE-bench Verified using SWE-Agent scaffolding. It was specifically trained with agentic signals — large-scale executable task synthesis, environment interaction, and RL from environment feedback. It sits on a strong Pareto frontier for cost-effective agent deployment, matching models with 10-20× more active parameters.
+For Stage 5 (code generation, now targeting Qwen3-1.7B), the newly released **Qwen3-Coder-Next** is the most interesting teacher. It's an 80B MoE with only 3B active parameters, built on the Qwen3-Next architecture, and achieves over 70% on SWE-bench Verified using SWE-Agent scaffolding. It was specifically trained with agentic signals — large-scale executable task synthesis, environment interaction, and RL from environment feedback. It sits on a strong Pareto frontier for cost-effective agent deployment, matching models with 10-20× more active parameters.
 
 However, as you noted, Stage 5 is not the focus. The recommended approach there is straightforward SFT distillation from either Qwen3-Coder-Next or Qwen2.5-Coder-32B, supplemented with the NVIDIA OpenCodeInstruct dataset (5M pairs, CC BY 4.0, tested at 3B+).
 
 ### Architecture mismatch note
 
-Qwen3.5 uses a fundamentally different architecture from Qwen3 — Gated DeltaNet layers, 512 total experts (10 routed + 1 shared per token), and a **250K vocabulary** (vs Qwen3's 150K). This means **tokenizers are incompatible** — logit-level distillation from Qwen3.5 into Qwen3-4B is not possible. For response-level SFT distillation (the primary approach), this doesn't matter — you're training on text outputs, not logits. But it does close the door on the one technique where same-family matching was a real advantage.
+Qwen3.5 uses a fundamentally different architecture from Qwen3 — Gated DeltaNet layers, 512 total experts (10 routed + 1 shared per token), and a **250K vocabulary** (vs Qwen3's 150K). This means **tokenizers are incompatible** — logit-level distillation from Qwen3.5 into the Qwen3 student (1.7B or 4B) is not possible. For response-level SFT distillation (the primary approach), this doesn't matter — you're training on text outputs, not logits. But it does close the door on the one technique where same-family matching was a real advantage.
 
-If logit distillation proves necessary (e.g., for stabilizing Stage 4 per the Ministral 3B finding), the fallback is **Qwen3-235B-A22B**, which shares the same tokenizer as your Qwen3-4B target.
+If logit distillation proves necessary (e.g., for stabilizing Stage 4 per the Ministral 3B finding), the fallback is **Qwen3-235B-A22B**, which shares the same tokenizer family as the Qwen3-1.7B target.
 
 ### Updated teacher assignment
 
 | Pipeline stage | Target model | Primary teacher | Secondary/fallback | Rationale |
 |---|---|---|---|---|
-| 1 — Task Analysis | Qwen3-4B | Qwen3.5-397B (thinking mode) | — | Best structured output; strong tool use scores |
-| 2 — Relevance | Qwen3-4B | Qwen3.5-397B (non-thinking) | — | Classification; concise output needed |
-| 3 — Symbol Selection | Qwen3-4B | Qwen3.5-397B (non-thinking) | Qwen2.5-Coder-32B for code-specific knowledge | Code comprehension depth |
-| 4 — Plan Generation | Qwen3-4B | **Qwen3.5-397B (thinking mode)** | DeepSeek-V3.2 for cross-teacher filtering | **Critical stage — see Section 3** |
-| 5 — Code Generation | Qwen2.5-Coder-3B | Qwen3-Coder-Next or Qwen2.5-Coder-32B | OpenCodeInstruct dataset | Not the focus of this report |
+| 1 — Task Analysis | Qwen3-1.7B | Qwen3.5-397B (thinking mode) | — | Best structured output; strong tool use scores |
+| 2 — Relevance | Qwen3-0.6B / 1.7B | Qwen3.5-397B (non-thinking) | — | Binary classification (0.6B viable); structured classification (1.7B) |
+| 3 — Symbol Selection | Qwen3-1.7B | Qwen3.5-397B (non-thinking) | Qwen2.5-Coder-32B for code-specific knowledge | Code comprehension depth |
+| 4 — Plan Generation | Qwen3-1.7B | **Qwen3.5-397B (thinking mode)** | DeepSeek-V3.2 for cross-teacher filtering | **Critical stage — see Section 3** |
+| 5 — Code Generation | Qwen3-1.7B | Qwen3-Coder-Next or Qwen2.5-Coder-32B | OpenCodeInstruct dataset | Not the focus of this report |
 
 ---
 
@@ -74,11 +76,11 @@ This is the hardest problem in the pipeline. Planning is hard to distill for thr
 
 **Problem 2: High-dimensional output space.** A plan isn't a classification or a code snippet. It's a structured document specifying which files to change, what changes to make, in what order, with what rationale. The space of "correct" plans for a given task is huge, and many valid plans look completely different from each other. This makes SFT on a single teacher output more fragile than for constrained-output stages.
 
-**Problem 3: Reasoning depth at 4B.** The Ministral 3B team (Mistral, January 2026) found that at 3B scale, vanilla SFT on reasoning traces produced brittle, verbose models. Logit distillation from a teacher was necessary to stabilize training before RL could be applied. At 4B you have slightly more headroom, but this finding is a warning flag for Stage 4 specifically.
+**Problem 3: Reasoning depth at 1.7B.** The Ministral 3B team (Mistral, January 2026) found that at 3B scale, vanilla SFT on reasoning traces produced brittle, verbose models. Logit distillation from a teacher was necessary to stabilize training before RL could be applied. At 1.7B, this risk is amplified — but planning decomposition mitigates it by breaking monolithic plan generation into smaller structured sub-tasks (enumeration, binary judgments, grouping), each within the 1.7B's capability range. This finding remains a warning flag for Stage 4 specifically.
 
 ### 3.1 Plan representation matters enormously
 
-Before generating any training data, the plan schema itself needs careful design. The representation determines what the student model learns — and at 4B, representational clarity is load-bearing.
+Before generating any training data, the plan schema itself needs careful design. The representation determines what the student model learns — and at 1.7B, representational clarity is even more load-bearing than at 4B.
 
 **Recommended plan schema:**
 
@@ -183,7 +185,7 @@ For Stage 4 specifically, the training setup differs from the other stages:
 - This teaches the model to discriminate between plans that work and plans that don't
 
 **Phase 3 (if SFT proves brittle) — Logit distillation stabilization:**
-- Fall back to Qwen3-235B (same tokenizer as Qwen3-4B)
+- Fall back to Qwen3-235B (same tokenizer family as Qwen3-1.7B)
 - Use TAID or GKD for on-policy logit alignment
 - This was the technique that stabilized Ministral 3B
 
@@ -207,7 +209,7 @@ Evidence on capability ceilings:
 - GKD's self-distillation experiments showed student surpassing teacher on GSM8K — but GSM8K has verifiable answers.
 - For planning specifically, there's no published evidence of a distilled student exceeding the teacher, because there's no agreed-upon benchmark for plan quality.
 
-**Practical ceiling estimate:** Expect your 4B planner to reach 60-80% of Qwen3.5's planning quality on initial distillation, improvable to 70-85% with DPO and execution feedback. Beyond that, you'd need either a better teacher, domain-specific RL with execution rewards, or human feedback.
+**Practical ceiling estimate:** Expect a 1.7B planner with decomposed planning to reach 50-75% of Qwen3.5's planning quality on initial distillation, improvable to 65-80% with DPO and execution feedback. (Original 4B estimate was 60-80% / 70-85%.) Planning decomposition partially compensates for the smaller model by reducing per-call complexity. Beyond that, you'd need either a better teacher, domain-specific RL with execution rewards, or human feedback.
 
 The Qwen3.5 upgrade is particularly valuable here because it pushes the teacher ceiling higher — the agentic RL training Alibaba did is exactly the kind of capability that's hardest to reproduce through distillation and most valuable to inherit.
 
@@ -215,7 +217,7 @@ The Qwen3.5 upgrade is particularly valuable here because it pushes the teacher 
 
 ## 4. Distillation Techniques Matched to Each Stage
 
-### Stages 1-3 (Classification/Extraction → Qwen3-4B): Standard SFT
+### Stages 1-3 (Classification/Extraction → Qwen3-1.7B): Standard SFT
 
 These stages have clear correct outputs and constrained output spaces. Standard SFT on teacher-generated input-output pairs is the most efficient approach. Adding DPO or CoT to classification tasks increases inference latency without proportional quality gains.
 
@@ -227,7 +229,7 @@ One exception: for Stage 3 (symbol selection), a curriculum ordering from easy s
 | 2 — Relevance | SFT | 2K-4K | ~3 hrs |
 | 3 — Symbol Selection | SFT + curriculum | 3K-5K | ~4 hrs |
 
-### Stage 4 (Plan Generation → Qwen3-4B): CoT-SFT + DPO + SAD
+### Stage 4 (Plan Generation → Qwen3-1.7B): CoT-SFT + DPO + SAD
 
 See Section 3 above. This is a multi-phase process:
 
@@ -235,7 +237,7 @@ See Section 3 above. This is a multi-phase process:
 2. DPO on execution-ranked preference pairs (1 epoch, ~4 hrs)
 3. Optional logit stabilization via Qwen3-235B if brittle
 
-### Stage 5 (Code Generation → Qwen2.5-Coder-3B): SFT + DPO
+### Stage 5 (Code Generation → Qwen3-1.7B): SFT + DPO
 
 Not the focus. Standard SFT on teacher code + DPO with execution-ranked preferences. NVIDIA OpenCodeInstruct provides 5M pre-made pairs. The Qwen3-Coder-Next-80B-A3B is the strongest available teacher for this stage.
 
@@ -298,7 +300,7 @@ Shumailov et al. (Nature, 2024) showed recursive training on synthetic data caus
 For planning specifically, the collapse risk is higher than for other stages because:
 - Plans are more diverse in valid output space → synthetic data narrows this faster
 - No execution-based filter for plan diversity (only for plan correctness)
-- At 4B, the model has less capacity to maintain distributional diversity
+- At 1.7B, the model has even less capacity to maintain distributional diversity than at 4B
 
 ### Recommended self-improvement timeline
 
@@ -353,7 +355,7 @@ Expect 3-5 useful improvement iterations before diminishing returns. SPIN showed
 Target: 25K-40K high-quality pairs total, with 8K-15K for Stage 4 specifically.
 
 ### Step 5: Per-stage LoRA training
-Train 5 independent LoRA adapters using Unsloth on local 24GB GPU with QLoRA.
+Train independent LoRA adapters using Unsloth on local 24GB GPU with QLoRA. (5 stages; the 1.7B target fits more comfortably on 24GB than the original 4B.)
 
 **Stage 4 specific config:**
 - Rank: 128 (higher than other stages)
@@ -400,7 +402,7 @@ The **execution sandbox** is the most important — it's the bridge that convert
 
 | Risk | Severity | Likelihood | Mitigation |
 |---|---|---|---|
-| **4B model insufficient for planning** | **High** | **Medium** | Logit distillation via Qwen3-235B if SFT brittle; fall back to 7-8B |
+| **1.7B model insufficient for planning** | **High** | **Medium-High** | Planning decomposition reduces per-call complexity; logit distillation via Qwen3-235B if SFT brittle; fall back to 4B or 7-8B for planning stage only |
 | **Plan quality ceiling** | Medium | High | Accept 60-80% of teacher quality; focus on common patterns |
 | Mode collapse in iterative plan improvement | High | Medium | Data accumulation policy; diversity monitoring; bounded iterations |
 | Legal risk from Qwen3.5 distillation | Very low | Very low | Apache 2.0 — unambiguous |
@@ -409,7 +411,7 @@ The **execution sandbox** is the most important — it's the bridge that convert
 | Quality loss from quantization | Low | Low | Q4_K_M retains 95-99% quality |
 | Catastrophic forgetting in per-stage LoRAs | Medium | Low | Per-stage architecture naturally isolates risk |
 
-**The single highest risk is Stage 4 planning quality at 4B scale.** Everything else has known mitigations. If the 4B planner proves insufficient, the recommended escape hatch is moving to Qwen3-8B for that one stage — still fast on consumer hardware, and the per-stage architecture means you only retrain one adapter.
+**The single highest risk is Stage 4 planning quality at 1.7B scale.** Planning decomposition mitigates this by breaking monolithic plan generation into smaller sub-tasks, but the risk remains elevated compared to the original 4B target. Everything else has known mitigations. If the 1.7B planner proves insufficient even with decomposition, the recommended escape hatches are: (1) retain the 4B for planning only, or (2) move to Qwen3-8B for that one stage — still fast on consumer hardware, and the per-stage architecture means you only retrain one adapter.
 
 ---
 

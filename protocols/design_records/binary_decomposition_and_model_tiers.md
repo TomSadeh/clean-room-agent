@@ -2,12 +2,14 @@
 
 Date: 2026-02-27
 
+> **Revision (Feb 2026):** Planning decomposition (see `execute/decomposed_plan.py`) reduced planning to atomic binary sub-tasks and small structured outputs. This makes the 4B reasoning tier likely redundant — the 1.7B handles decomposed planning. The cascade is effectively two tiers: 0.6B (binary classification) → 1.7B (everything else). The 4B tier is under evaluation for elimination.
+
 ## Decision
 
 1. Every pipeline judgment that can be reliably reduced to a binary decision should be.
 2. Binary decisions go to the smallest model that can handle them (0.6B).
-3. Code generation uses Qwen3-1.7B as the base for LoRA fine-tuning.
-4. Three-tier model cascade: 0.6B (binary classification) → 1.7B (code generation + structured classification) → 4B (reasoning/planning).
+3. Code generation and structured classification use Qwen3-1.7B as the base for LoRA fine-tuning.
+4. Two-tier model cascade (revised from three): 0.6B (binary classification) → 1.7B (code generation + structured classification + decomposed planning). The 4B tier is likely redundant given planning decomposition and is under evaluation for elimination.
 
 ## Why Binary Decomposition
 
@@ -59,15 +61,15 @@ With 2x RTX 5090: LoRA fine-tuning the 1.7B takes ~1-2 days. Compare ~7-8 days f
 
 Qwen3-1.7B supports hybrid thinking/non-thinking mode. For code generation steps where chain-of-thought helps (complex edits, multi-file reasoning), thinking mode is available. For simple edits, non-thinking mode saves tokens. This is configurable per-call, no architecture changes needed.
 
-## Three-Tier Model Cascade
+## Model Cascade (Revised)
 
 | Tier | Model | Role | Task type |
 |---|---|---|---|
-| 0 | Qwen3-0.6B | Binary classifier | File relevance (yes/no), simple routing |
-| 1 | Qwen3-1.7B | Code generator + structured classifier | Code edits, symbol classification, plan steps |
-| 2 | Qwen3-4B | Reasoning/planning | Meta-plan decomposition, complex judgment, teacher distillation |
+| 0 | Qwen3-0.6B | Binary classifier | File relevance (yes/no), simple routing, binary dependency judgments |
+| 1 | Qwen3-1.7B | Code generator + structured classifier + decomposed planning | Code edits, symbol classification, plan enumeration/grouping/steps |
+| ~~2~~ | ~~Qwen3-4B~~ | ~~Reasoning/planning~~ | ~~Likely eliminated — planning decomposition reduces each planning call to atomic sub-tasks that 1.7B handles~~ |
 
-The cascade is **volume-inverted**: tier 0 handles the most calls (50+ file judgments per task), tier 1 handles moderate calls (plan steps, implementations), tier 2 handles few calls (meta-plan, adjustment). Compute cost per task decreases because the expensive model is used least.
+The cascade is **volume-inverted**: tier 0 handles the most calls (50+ binary judgments per task including dependency pairs), tier 1 handles moderate calls (plan steps, implementations, structured outputs). With planning decomposition, the binary dependency calls (N*(N-1) per plan level) dominate volume and go to the 0.6B classifier, further reducing the need for a larger reasoning model.
 
 This requires zero code changes. The ModelRouter already supports per-stage model resolution via config.toml:
 
@@ -100,7 +102,7 @@ Binary decisions produce clean training pairs (input, correct_label). No need to
 
 ### Distillation path
 
-Teacher (4B) → student (1.7B for code, 0.6B for classification) is a natural distillation cascade. The teacher produces high-quality judgments during planning; the student models are fine-tuned to replicate those judgments on their specific narrow tasks.
+Teacher (Qwen3.5-397B via API) → student (1.7B for code/planning, 0.6B for classification) is the distillation path. The external teacher produces high-quality judgments during bootstrapping; the student models are fine-tuned to replicate those judgments on their specific narrow tasks. With the 4B tier likely eliminated, the distillation is direct from external teacher to 1.7B/0.6B without an intermediate model.
 
 ## Risks
 

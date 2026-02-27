@@ -125,10 +125,11 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 ```
 
-For fine-tuning on 16GB VRAM, **Unsloth is the most impactful single tool recommendation**. It delivers **2x faster training with 70% less VRAM** through custom Triton kernels, padding-free training, and dynamic 4-bit quantization. Concrete examples: Qwen3-4B trains on just **3.9 GB VRAM** with Unsloth; models that barely fit with standard QLoRA become comfortable.
+For fine-tuning on 16GB VRAM, **Unsloth is the most impactful single tool recommendation**. It delivers **2x faster training with 70% less VRAM** through custom Triton kernels, padding-free training, and dynamic 4-bit quantization. Concrete examples: Qwen3-1.7B trains on ~2–3 GB VRAM with Unsloth; Qwen3-4B on ~3.9 GB; models that barely fit with standard QLoRA become comfortable.
 
 The 16GB VRAM budget enables QLoRA fine-tuning of these models:
 
+- **Qwen3-1.7B**: ~2–4 GB, very comfortable (primary clean-room agent model)
 - **Llama 3.2 3B / Phi-4 Mini 3.8B / Qwen3-4B**: ~4–7 GB, comfortable with room for larger batches
 - **Mistral 7B**: ~6–10 GB in 4-bit, fits with small batch sizes
 - **Llama 3.1 8B**: ~8–12 GB, tight — requires gradient checkpointing and batch_size=1-2

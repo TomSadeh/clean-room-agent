@@ -87,9 +87,9 @@ The loop: work on real tasks -> log everything -> analyze what's weak -> curate 
 
 **Builds**: Plan mode execute stage + implement mode execute stage. Prompt builder, response parser, patch application (git worktree isolation), mandatory test validation, coder retry with failure context, adjustment pass (plan update from diff + test results), refinement handoff to Phase 2, solve orchestrator.
 
-**Core thesis**: Qwen2.5-Coder-3B codes reliably given small enough tasks. The planner (Qwen3-4B) uses the full N-prompt pipeline to decompose work into pieces the coder can't fail on. Planning quality is the bottleneck, not coding capability. The planner uses the same N-prompt pipeline strategy as the coder — arguably the component that most needs curated context.
+**Core thesis**: Qwen3-1.7B codes reliably given small enough tasks. Planning decomposition (atomic binary sub-tasks via `run_binary_judgment()`) reduces the cognitive complexity of each planning call, making the 1.7B sufficient for both planning and coding. Planning quality remains the bottleneck, not coding capability. The planner uses the same N-prompt pipeline strategy as the coder — arguably the component that most needs curated context.
 
-**Orchestration loop**: meta-plan (4B, N-prompt) → for each part: part-plan (4B, N-prompt) → for each step: implement (3B, N-prompt) → test (mandatory) → retry with failure context if tests fail → adjustment (4B, reviews diff + test results, updates plan). Plans, test results, and adjustments all logged to raw DB as training data.
+**Orchestration loop**: meta-plan (1.7B, N-prompt) → for each part: part-plan (1.7B, N-prompt) → for each step: implement (1.7B, N-prompt) → test (mandatory) → retry with failure context if tests fail → adjustment (1.7B, reviews diff + test results, updates plan). Plans, test results, and adjustments all logged to raw DB as training data. Decomposed planning breaks each plan stage into enumeration → grouping → binary dependency sub-tasks.
 
 **CLI commands**: `cra plan`, `cra solve`
 
@@ -125,29 +125,28 @@ Formal validation, benchmark claims, baseline comparison mode.
 
 ---
 
-## 3. Multi-Model Architecture
+## 3. Model Architecture
 
-Two base models, each serving a different role:
+> **Revision (Feb 2026):** Originally specified as two base models (Qwen2.5-Coder-3B + Qwen3-4B). Collapsed to a single generalist model (see `protocols/design_records/single_generalist_model.md`), then to Qwen3-1.7B which benchmarks as a straight upgrade to the 3B coder. Planning decomposition (see `execute/decomposed_plan.py`) reduced cognitive complexity per LLM call to the point where 1.7B handles it. The 4B model is likely redundant and under evaluation for elimination.
 
-- **Qwen2.5-Coder-3B-Instruct** -- coding tasks (code generation, code editing)
-- **Qwen3-4B-Instruct-2507** -- reasoning/planning tasks (task analysis, retrieval judgments, plan generation, enrichment, training planning, data curation)
+Primary model: **Qwen3-1.7B** for code generation, structured classification, and planning (via decomposed sub-tasks). Optional: **Qwen3-0.6B** for high-volume binary classification (scope judgments, routing). Three config roles: `coding`, `reasoning`, `classifier`.
 
 ### 3.1 Model Assignment by Stage
 
 | Stage | Role | Base Model |
 |-------|------|-----------|
-| Task Analysis | reasoning | Qwen3-4B |
-| Scope judgment | reasoning | Qwen3-4B |
-| Precision judgment | reasoning | Qwen3-4B |
-| Execute -- Plan (meta-plan, part-plan) | reasoning | Qwen3-4B |
-| Execute -- Code (step implementation) | coding | Qwen2.5-Coder-3B |
-| Execute -- Adjustment (plan update) | reasoning | Qwen3-4B |
+| Task Analysis | reasoning | Qwen3-1.7B |
+| Scope judgment | classifier | Qwen3-0.6B (falls back to reasoning if classifier not configured) |
+| Precision judgment | reasoning | Qwen3-1.7B |
+| Execute -- Plan (meta-plan, part-plan) | reasoning | Qwen3-1.7B |
+| Execute -- Code (step implementation) | coding | Qwen3-1.7B |
+| Execute -- Adjustment (plan update) | reasoning | Qwen3-1.7B |
 | Testing | deterministic | N/A (test runner) |
-| Enrichment | reasoning | Qwen3-4B |
-| Train-Plan stages | reasoning | Qwen3-4B |
-| Curate-Data stages | reasoning | Qwen3-4B |
+| Enrichment | reasoning | Qwen3-1.7B |
+| Train-Plan stages | reasoning | Qwen3-1.7B |
+| Curate-Data stages | reasoning | Qwen3-1.7B |
 
-**Escape hatch**: If Qwen3-4B proves insufficient for planning (Stage 4), the per-stage architecture allows upgrading that single stage to Qwen3-8B. Only one adapter retrains; all other stages are unaffected.
+With a single primary model, both `coding` and `reasoning` roles resolve to Qwen3-1.7B. The `classifier` role (0.6B) handles high-volume binary decisions where speed matters. Per-stage overrides remain available via `[models.overrides]` in config for future flexibility.
 
 ### 3.2 Model Routing is Config-Only
 
@@ -157,13 +156,13 @@ See [cli-and-config.md](cli-and-config.md) Section 5 for the full config file fo
 
 ### 3.3 Budget Depends on Execute Model
 
-Budget is calculated against the execute model's context window for the current mode. Plan mode budgets against Qwen3-4B; implement mode budgets against Qwen2.5-Coder-3B.
+Budget is calculated against the execute model's context window for the current mode. With a single primary model (1.7B), the budget window is the same across modes (32K).
 
 See [pipeline-and-modes.md](pipeline-and-modes.md) Section 4 for the full budget model.
 
 ### 3.4 LoRA Training Targets
 
-See [training-strategy.md](training-strategy.md) Section 1 for per-stage training targets, techniques, and rank recommendations for both base models.
+See [training-strategy.md](training-strategy.md) Section 1 for per-stage training targets, techniques, and rank recommendations.
 
 ---
 
@@ -247,7 +246,7 @@ What changes per mode:
 
 ### 5.2 Task Analysis
 
-Task analysis is a pipeline preamble, not a `RetrievalStage`. It always runs. Performs deterministic extraction (file/symbol mentions, error patterns, keywords, task type) then an LLM call for intent enrichment. Uses the reasoning model.
+Task analysis is a pipeline preamble, not a `RetrievalStage`. It always runs. Performs deterministic extraction (file/symbol mentions, error patterns, keywords, task type) then an LLM call for intent enrichment. Uses the `reasoning` role.
 
 ### 5.3 Stage Protocol
 
@@ -413,7 +412,7 @@ Core data structures defined in shared modules, used across phases:
 - **Must**: Indexing works without any LLM dependency (`cra index` is deterministic).
 - **Must**: Search-and-replace as the single output format for code generation.
 - **Must**: Plan mode produces structured plan artifacts consumable by implement mode.
-- **Must**: Multi-model routing via config (coding + reasoning models).
+- **Must**: Model routing via config (coding, reasoning, and optional classifier roles).
 - **Must**: Solve orchestrator composes atomic plan/implement passes (meta-plan -> part-plan -> step implementation -> test -> retry if failed -> adjustment).
 - **Must**: Testing is mandatory after every step implementation. No "skip tests" path.
 - **Must**: Coder gets at least one retry with failure context (test output, errors) before escalating to the planner.

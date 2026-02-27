@@ -4,15 +4,17 @@ Date: 2026-02-27
 
 ## Principle
 
-Every distinct cognitive task in the pipeline gets its own LoRA adapter trained on its specific input-output distribution. No adapter trains on mixed distributions. The model tier (0.6B / 1.7B / 4B) is chosen by the minimum capacity needed for the task.
+Every distinct cognitive task in the pipeline gets its own LoRA adapter trained on its specific input-output distribution. No adapter trains on mixed distributions. The model tier (0.6B / 1.7B) is chosen by the minimum capacity needed for the task.
 
-This supersedes the adapter layout in `planning/training-strategy.md` Section 1, which was organized around the old two-model architecture. The three-tier model cascade and scaffold-then-implement pipeline create a finer-grained adapter map.
+> **Revision (Feb 2026):** Planning decomposition reduced per-call cognitive complexity enough that the 4B tier is likely redundant. The cascade is effectively two tiers: 0.6B (binary classification) → 1.7B (everything else). Tier 2 tasks below (originally assigned to 4B) are reassigned to 1.7B with decomposed sub-tasks.
+
+This supersedes the adapter layout in `planning/training-strategy.md` Section 1, which was organized around the old two-model architecture. The two-tier model cascade and scaffold-then-implement pipeline create a finer-grained adapter map.
 
 ## Current Task Inventory
 
-### Tier 2 — 4B (Reasoning / Architecture)
+### Tier 2 → Tier 1 — 1.7B (Reasoning / Architecture, via decomposed sub-tasks)
 
-These tasks require broad context understanding, architectural judgment, or multi-step reasoning.
+> **Revision:** Originally assigned to 4B. Planning decomposition breaks these into atomic sub-tasks (enumeration → grouping → binary deps) that 1.7B handles. These tasks are now Tier 1 (1.7B) with decomposed prompts rather than monolithic ones.
 
 | # | Task | Input | Output | Training signal |
 |---|------|-------|--------|-----------------|
@@ -107,11 +109,11 @@ Each is a binary question: "for this input category, what should happen?" Differ
 
 | Granularity | Adapters | Base models |
 |---|---|---|
-| Current (coarse) | 12 (A1-A12) | 3 |
-| With precision cascade | 14 | 3 |
-| With per-tier scope | 15 | 3 |
-| With plan/scaffold decomposition | ~20 | 3 |
-| Full decomposition | ~25-30 | 3 |
+| Current (coarse) | 12 (A1-A12) | 2 (0.6B + 1.7B) |
+| With precision cascade | 14 | 2 |
+| With per-tier scope | 15 | 2 |
+| With plan/scaffold decomposition | ~20 | 2 |
+| Full decomposition | ~25-30 | 2 |
 
 The right granularity is an empirical question. Start with the 12-adapter map, measure per-task error rates via the audit protocol, and decompose tasks whose error rates are too high. If scope judgment error rate is 15% but co-change relevance is 30% while dependency relevance is 5%, that's a signal to split scope judgment into per-tier adapters and focus training on the co-change adapter.
 

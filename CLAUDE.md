@@ -21,8 +21,8 @@ Instead of stuffing a 200K context window and hoping the model finds what matter
 1. **Three-Database Architecture** - raw (append-only log of all activity and training corpus), curated (verified signals the model reads from), and session (ephemeral per-task working memory). Cold-startable from git history.
 2. **Deterministic Pre-filtering + LLM Judgment** - deterministic methods (AST, deps, git, metadata queries) narrow candidates, then an LLM call per stage evaluates relevance. Not embedding similarity.
 3. **Mode-Parameterized Pipeline** - variable-length sequence of retrieval stages followed by a terminal execute stage. The pipeline structure is constant; what changes per mode is the data source, retrieval stages, and execute output. Modes: Plan (structured plans), Implement (code edits), Train-Plan (training plans), Curate-Data (training datasets).
-4. **Multi-Model Architecture** - two base models: Qwen2.5-Coder-3B for coding, Qwen3-4B for reasoning/planning. Config-only routing, no CLI model flags.
-5. **Per-Stage LoRA Adapters** (Phase 4) - one per pipeline stage, fine-tuned via teacher-student distillation (Qwen3.5-397B as primary teacher) and from logged activity. Planning is the critical path (hardest stage, no ground truth, requires CoT-SFT + DPO). Self-improvement guardrails: plateaus after ~2 iterations at sub-7B scale; sub-6B fails to bootstrap without external teacher signal.
+4. **Model Architecture** - Qwen3-1.7B as the primary model for code generation and structured classification, with an optional Qwen3-0.6B for cheap binary classification (scope judgments). The 4B reasoning model is likely redundant given planning decomposition (Shift 2 below) and is under evaluation for elimination. Config-only routing via three roles (`coding`, `reasoning`, `classifier`), no CLI model flags.
+5. **Per-Stage LoRA Adapters** (Phase 4) - one per pipeline stage, fine-tuned via teacher-student distillation (Qwen3.5-397B as primary teacher) and from logged activity. Planning decomposition (atomic binary sub-tasks via `run_binary_judgment()`) reduces cognitive load per call, enabling 1.7B to handle planning. Self-improvement guardrails: plateaus after ~2 iterations at small scale, but planning decomposition may lower the effective complexity threshold — 1.7B self-improvement is plausible given the reduced per-call demands.
 
 Target: a 32K window at ~100% signal relevance, beating a 200K window at 10-15% utilization.
 
@@ -54,7 +54,7 @@ The pipeline is mode-parameterized: `[Task Analysis] -> [Retrieval Stage 1, ...,
 
 **MVP configuration**: [Task Analysis] -> [Scope, Precision] -> Execute (4 prompts total). Task Analysis (always-run preamble) parses intent and identifies targets. Scope expands from seeds and filters by relevance. Precision extracts symbols and classifies detail levels. This is the initial configuration, not the architecture.
 
-The pipeline architecture (stages, context curation, budget management) is model-agnostic -- nothing in the retrieval or orchestration layers depends on a specific model or provider. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP (Phases 1-3). Above it, a `ModelRouter` resolves which model to call based on (role, stage_name), reading from config. Phase 4 shifts to vLLM (or llama-server) for per-request LoRA adapter routing, and adds remote API backends for teacher model distillation. The external `complete()` interface does not change.
+The pipeline architecture (stages, context curation, budget management) is model-agnostic -- nothing in the retrieval or orchestration layers depends on a specific model or provider. The LLM transport layer (`llm/client.py`) is Ollama-specific for MVP (Phases 1-3). Above it, a `ModelRouter` resolves which model to call based on (role, stage_name) where roles are `coding`, `reasoning`, and optionally `classifier`, reading from config. With a single primary model (1.7B), routing simplifies — both `coding` and `reasoning` may resolve to the same model, with only `classifier` (0.6B) differing for high-volume binary judgments. Phase 4 shifts to vLLM (or llama-server) for per-request LoRA adapter routing, and adds remote API backends for teacher model distillation. The external `complete()` interface does not change.
 
 ## Repository Contents
 
@@ -94,7 +94,7 @@ archive/
     session_<task_id>.sqlite     - ephemeral per-task working memory (created/destroyed per run)
 ```
 
-**Config file** (`.clean_room/config.toml`): Project-level settings created by `cra init`. All model configuration (coding model, reasoning model, per-stage LoRA overrides) lives here -- no CLI model flags. Missing `[models]` section when an LLM-using command runs is a hard error.
+**Config file** (`.clean_room/config.toml`): Project-level settings created by `cra init`. All model configuration (coding, reasoning, and optional classifier roles, per-stage LoRA overrides) lives here -- no CLI model flags. With a single primary model, both coding and reasoning roles may point to the same model (Qwen3-1.7B). Missing `[models]` section when an LLM-using command runs is a hard error.
 
 ## Development Principles
 
@@ -138,10 +138,10 @@ Formal benchmarking and thesis validation are intentionally outside the active P
 
 ## Status
 
-Phase 2 complete (retrieval pipeline with scope, precision, assembly, budget management). Next steps:
+Phase 3 complete (code agent with plan + implement modes, decomposed planning, retrieval audit protocol). Next steps:
 1. ~~Build the knowledge base and indexer (Phase 1)~~ -- DONE
 2. ~~Build the retrieval pipeline (Phase 2)~~ -- DONE
-3. Build the code agent with plan + implement modes (Phase 3) -- MVP boundary
+3. ~~Build the code agent with plan + implement modes (Phase 3)~~ -- DONE (MVP boundary)
 4. Build the self-improvement loop (Phase 4) -- post-MVP
 
 Phase 4's bootstrapping path (synthetic training data from external repos plus open cold-start datasets like OpenCodeInstruct and CommitPackFT) depends only on Phase 1 -- LoRA training can begin before Phases 2-3 are built. The self-improvement path within Phase 4 requires Phase 3 logged data.

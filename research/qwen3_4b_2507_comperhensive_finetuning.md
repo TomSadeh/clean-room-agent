@@ -1,5 +1,7 @@
 # Fine-tuning Qwen3-4B-Instruct-2507: a comprehensive guide
 
+> **Architecture note (Feb 2026):** The 4B model is under evaluation for elimination from the pipeline. Planning decomposition reduced per-call complexity enough that Qwen3-1.7B may handle all roles. This research remains valid for cases where the 4B is retained for complex reasoning, or as a reference for fine-tuning methodology applicable to any Qwen3 model. See `protocols/design_records/binary_decomposition_and_model_tiers.md`.
+
 **Qwen3-4B-Instruct-2507 is one of the most capable small language models available for fine-tuning today, and parameter-efficient methods like QLoRA make it trainable on a single consumer GPU with as little as 5 GB of VRAM.** Independent benchmarks by Distillabs across 8 tasks and 12 models ranked it the top-performing small model for fine-tuning — outperforming even the larger Qwen3-8B. The "2507" release (August 6, 2025) split the original hybrid-thinking Qwen3-4B into separate Instruct and Thinking models, extended native context to **262K tokens**, and significantly improved instruction following and alignment. This guide covers every practical dimension of fine-tuning this model: architecture details, all major adaptation methods, hardware requirements, tooling, tradeoffs, and hard-won community discoveries about gotchas that can silently break your training runs.
 
 ---

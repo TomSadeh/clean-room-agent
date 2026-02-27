@@ -1,8 +1,10 @@
 # Single Generalist Model — Design Record
 
 **Date:** 2026-02-26
-**Status:** Decided
+**Status:** Superseded by Qwen3-1.7B selection (see `binary_decomposition_and_model_tiers.md`)
 **Depends on:** `c_language_choice.md`
+
+> **Note (Feb 2026):** This record decided to collapse two models into a single Qwen3-4B generalist. That decision has been further superseded: Qwen3-1.7B benchmarks as a straight upgrade to the 3B coder, and planning decomposition (atomic binary sub-tasks) reduced cognitive complexity per call enough that 1.7B handles planning. The 4B model is likely redundant. The negative transfer rationale below still holds and is strengthened — it applies even more strongly to the 1.7B generalist, which has cleaner headroom for C specialization than the 4B.
 
 ## Problem Statement
 
@@ -12,7 +14,7 @@ The C language decision (see `c_language_choice.md`) invalidates that assumption
 
 ## Decision
 
-Use a single generalist model for both coding and reasoning roles. The current two-role config structure (`coding` and `reasoning` in `[models]`) is retained — both are set to the same model. When Qwen 3.5 generalist models are released, evaluate those as the unified base.
+Use a single generalist model for both coding and reasoning roles. The current three-role config structure (`coding`, `reasoning`, and optional `classifier` in `[models]`) is retained — `coding` and `reasoning` are set to the same model (Qwen3-1.7B), while `classifier` may use a smaller model (Qwen3-0.6B) for binary judgments.
 
 No code changes required. `ModelRouter` already supports identical model strings for both roles.
 

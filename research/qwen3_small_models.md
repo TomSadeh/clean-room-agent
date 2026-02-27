@@ -105,19 +105,23 @@ Official GGUF from Qwen on HuggingFace. Must set `num_ctx` explicitly in Ollama 
 
 ## Implications for Jane
 
-### Retrieval Stage Classifiers (Primary Use Case)
+> **Architecture revision (Feb 2026):** Planning decomposition (binary judgment per item, multi-stage meta/part plans) reduced per-call complexity enough that 1.7B is now the **primary model for all pipeline roles**, not just a fast classifier. The 4B is likely eliminated — its reasoning advantage over 1.7B is marginal once planning tasks are decomposed into smaller cognitive steps. The 0.6B remains viable for binary classification stages. See `protocols/design_records/binary_decomposition_and_model_tiers.md`.
 
-The scope judgment, precision classification, and routing stages are structured classification tasks with constrained output formats. A 1.7B model fine-tuned on "given these files and this task, which are relevant?" could be fast and cheap:
+### Primary Model for All Pipeline Stages (Revised Role)
 
-- **Scope judgment**: Binary relevant/irrelevant per file with reason. Narrow task. 1.7B with LoRA could match 4B performance on this specific task.
-- **Precision classification**: Four-class (primary/supporting/type_context/excluded) per symbol. Slightly harder but still constrained.
+With planning decomposition, every pipeline stage — including plan generation and code implementation — now consists of smaller, structured sub-tasks (enumeration, binary yes/no judgments, grouping). These decomposed tasks fall within the 1.7B's demonstrated capability range:
+
+- **Scope judgment**: Binary relevant/irrelevant per file with reason. Narrow task. 1.7B with LoRA handles this directly.
+- **Precision classification**: Four-class (primary/supporting/type_context/excluded) per symbol. Still constrained and within 1.7B range.
 - **Routing**: Select from ~5 stage names given task summary. Trivial classification.
+- **Decomposed planning**: Enumeration → binary dependency judgments → grouping. Each sub-call is a structured, bounded task — no single call requires the deep multi-step reasoning that motivated the original 4B selection.
+- **Code implementation**: Search/replace edits guided by a decomposed plan. The plan provides sufficient structure that the implementation calls are bounded.
 
 Inference speed advantage: ~3-4x faster than 4B on same hardware. For the audit protocol's 16 reference tasks, this means audit runs complete faster, tighter iteration loops.
 
-### 0.6B as Cheap Filter
+### 0.6B for Binary Classification
 
-The 0.6B can't generate code, but a fine-tuned 0.6B doing binary relevance filtering on pre-filtered candidates is a much simpler task than general generation. This could serve as a fast pre-filter before the 1.7B or 4B makes the final judgment — a two-stage cascade that reduces total compute.
+The 0.6B can't generate code or plans, but a fine-tuned 0.6B doing binary relevance filtering on pre-filtered candidates is a much simpler task than general generation. With planning decomposition producing many binary yes/no judgment calls, the 0.6B becomes a natural fit for the highest-volume, lowest-complexity stage of the pipeline — binary relevance and binary dependency decisions.
 
 ### Negative Transfer Consideration
 
@@ -129,14 +133,15 @@ With 2x RTX 5090:
 - 1.7B LoRA: ~1-2 days (vs ~7-8 days for 4B). Fast iteration.
 - 0.6B LoRA: ~hours. Can experiment rapidly.
 - The self-improvement loop (Phase 4) benefits enormously from faster training cycles. More iterations per unit time = faster convergence.
+- Eliminating the 4B removes the most compute-intensive training target entirely.
 
-### Model Cascade Architecture
+### Model Architecture (Revised)
 
-Current plan: Qwen2.5-Coder-3B (coding) + Qwen3-4B (reasoning).
+Previous plan: Qwen2.5-Coder-3B (coding) + Qwen3-4B (reasoning).
 
-Revised option: Qwen3-0.6B (fast filter) → Qwen3-1.7B (classification/routing) → Qwen3-4B (reasoning/generation). Three-tier cascade where each model handles the task complexity it can manage. The 0.6B and 1.7B handle the high-volume classification work (many files, many symbols), the 4B handles the low-volume generation work (one plan, one implementation per step).
+Current architecture: **Qwen3-1.7B (primary, all roles)** + **Qwen3-0.6B (optional, binary classification)**. The 4B is likely eliminated — planning decomposition reduced per-call complexity below the threshold where the 4B's additional capacity provides measurable benefit. The two-model architecture is simpler to train, deploy, and maintain than the original three-tier cascade.
 
-This cascade is config-only in the current architecture — the ModelRouter already supports per-stage model resolution. No code changes needed, just config.toml entries.
+This remains config-only in the current architecture — the ModelRouter supports per-stage model resolution. No code changes needed, just config.toml entries.
 
 ### Context Window
 
