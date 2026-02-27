@@ -57,6 +57,45 @@ class TaskQuery:
                 f"task_type must be one of {VALID_TASK_TYPES}, got {self.task_type!r}"
             )
 
+    def to_dict(self) -> dict:
+        """Serialize to dict for snapshot/session storage."""
+        return {
+            "raw_task": self.raw_task,
+            "task_id": self.task_id,
+            "mode": self.mode,
+            "repo_id": self.repo_id,
+            "mentioned_files": self.mentioned_files,
+            "mentioned_symbols": self.mentioned_symbols,
+            "keywords": self.keywords,
+            "error_patterns": self.error_patterns,
+            "task_type": self.task_type,
+            "intent_summary": self.intent_summary,
+            "seed_file_ids": self.seed_file_ids,
+            "seed_symbol_ids": self.seed_symbol_ids,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TaskQuery:
+        """Deserialize from dict.
+
+        All keys are required — missing keys raise KeyError.
+        Corrupt data must not silently produce an incomplete TaskQuery.
+        """
+        return cls(
+            raw_task=data["raw_task"],
+            task_id=data["task_id"],
+            mode=data["mode"],
+            repo_id=data["repo_id"],
+            mentioned_files=data["mentioned_files"],
+            mentioned_symbols=data["mentioned_symbols"],
+            keywords=data["keywords"],
+            error_patterns=data["error_patterns"],
+            task_type=data["task_type"],
+            intent_summary=data["intent_summary"],
+            seed_file_ids=data["seed_file_ids"],
+            seed_symbol_ids=data["seed_symbol_ids"],
+        )
+
 
 VALID_RELEVANCE = ("pending", "relevant", "irrelevant")
 
