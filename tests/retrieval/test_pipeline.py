@@ -302,6 +302,25 @@ class TestRunPipeline:
         assert len(package.files) >= 1
 
     @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
+    def test_malformed_plan_artifact_raises(self, mock_llm_class, pipeline_repo):
+        """F13: plan artifact missing 'affected_files' raises KeyError."""
+        tmp_path, repo_id, fid1, fid2 = pipeline_repo
+        mock_llm_class.return_value = _make_mock_llm_instance()
+        import clean_room_agent.retrieval.scope_stage  # noqa: F401
+        import clean_room_agent.retrieval.precision_stage  # noqa: F401
+
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(json.dumps({"title": "some plan"}))
+
+        budget = BudgetConfig(context_window=32768, reserved_tokens=4096)
+        with pytest.raises(KeyError, match="affected_files"):
+            run_pipeline(
+                raw_task="Fix it", repo_path=tmp_path, stage_names=["scope", "precision"],
+                budget=budget, mode="implement", task_id="test-plan-bad",
+                config=_make_config(), plan_artifact_path=plan_path,
+            )
+
+    @patch("clean_room_agent.retrieval.pipeline.LoggedLLMClient")
     def test_environment_brief_threaded(self, mock_llm_class, pipeline_repo):
         """Environment brief flows through to ContextPackage and task analysis prompt."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo

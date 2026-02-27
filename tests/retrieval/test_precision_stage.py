@@ -24,6 +24,7 @@ from clean_room_agent.retrieval.utils import parse_json_response
 def _mock_llm_with_response(text):
     """Create a mock LLM with standard config and a fixed response."""
     mock_llm = MagicMock()
+    mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
     mock_llm.config.context_window = 32768
     mock_llm.config.max_tokens = 4096
     mock_response = MagicMock()
@@ -126,6 +127,7 @@ class TestClassifySymbols:
 
     def test_empty_candidates(self):
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         task = TaskQuery(raw_task="x", task_id="t1", mode="plan", repo_id=1)
         result = classify_symbols([], task, mock_llm)
         assert result == []
@@ -279,6 +281,7 @@ class TestClassifySymbolsBatching:
         import re
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 512
         mock_llm.config.max_tokens = 128
 

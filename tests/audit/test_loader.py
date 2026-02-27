@@ -111,6 +111,13 @@ task_type = "bug_fix"
 
 [context_requirements]
 must_contain_files = ["a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
+budget_range = [20, 80]
+
+[routing_notes]
+reasoning = ""
 """
         _write_task(tasks_dir, "bad.toml", content)
         with pytest.raises(ValueError, match="missing task.id"):
@@ -124,6 +131,13 @@ task_type = "bug_fix"
 
 [context_requirements]
 must_contain_files = ["a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
+budget_range = [20, 80]
+
+[routing_notes]
+reasoning = ""
 """
         _write_task(tasks_dir, "bad.toml", content)
         with pytest.raises(ValueError, match="missing task.description"):
@@ -137,6 +151,13 @@ description = "No type"
 
 [context_requirements]
 must_contain_files = ["a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
+budget_range = [20, 80]
+
+[routing_notes]
+reasoning = ""
 """
         _write_task(tasks_dir, "bad.toml", content)
         with pytest.raises(ValueError, match="missing task.task_type"):
@@ -151,7 +172,13 @@ task_type = "bug_fix"
 
 [context_requirements]
 must_contain_files = ["a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
 budget_range = 50
+
+[routing_notes]
+reasoning = ""
 """
         _write_task(tasks_dir, "bad.toml", content)
         with pytest.raises(ValueError, match="budget_range must be a two-element array"):
@@ -166,7 +193,13 @@ task_type = "bug_fix"
 
 [context_requirements]
 must_contain_files = ["a.py"]
+should_contain_files = []
+must_not_contain = []
+must_contain_information = []
 budget_range = [20, 50, 80]
+
+[routing_notes]
+reasoning = ""
 """
         _write_task(tasks_dir, "bad.toml", content)
         with pytest.raises(ValueError, match="budget_range must be a two-element array"):

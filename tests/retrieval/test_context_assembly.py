@@ -479,6 +479,7 @@ class TestRefilterAssembly:
         ]
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         # LLM returns only auth.py to keep
@@ -520,6 +521,7 @@ class TestRefilterAssembly:
         ]
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         mock_response = MagicMock()
@@ -655,6 +657,7 @@ class TestAssemblyDecisions:
 
         # LLM refilter keeps both files (bad decision — together they exceed budget)
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         mock_response = MagicMock()
@@ -694,6 +697,7 @@ class TestAssemblyDecisions:
         ]
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         mock_response = MagicMock()
@@ -766,6 +770,7 @@ class TestRefilterFailFast:
         ]
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         mock_response = MagicMock()
@@ -799,6 +804,7 @@ class TestRefilterFailFast:
         ]
 
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         mock_llm.config.context_window = 32768
         mock_llm.config.max_tokens = 4096
         mock_response = MagicMock()

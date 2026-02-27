@@ -121,6 +121,24 @@ class TestModelRouter:
         mc = router.resolve("coding")
         assert mc.temperature == 0.0
 
+    def test_missing_temperature_raises(self):
+        """F5: config missing 'temperature' key raises KeyError."""
+        config = {k: v for k, v in self.config.items() if k != "temperature"}
+        with pytest.raises(KeyError):
+            ModelRouter(config)
+
+    def test_temperature_missing_subkey_raises(self):
+        """F6: temperature dict missing 'coding' key raises KeyError."""
+        config = {**self.config, "temperature": {"reasoning": 0.0, "classifier": 0.0}}
+        with pytest.raises(KeyError):
+            ModelRouter(config)
+
+    def test_temperature_missing_classifier_raises(self):
+        """F7: temperature dict missing 'classifier' key raises KeyError."""
+        config = {**self.config, "temperature": {"coding": 0.0, "reasoning": 0.0}}
+        with pytest.raises(KeyError):
+            ModelRouter(config)
+
     def test_override_inherits_role_temperature(self):
         config = {
             **self.config,

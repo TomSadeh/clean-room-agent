@@ -173,6 +173,7 @@ class TestResolveSeeds:
 def _mock_llm(response_text):
     """Create a mock LLM with proper config for R3 budget validation."""
     mock = MagicMock()
+    mock.flush = MagicMock()  # F14: explicit _require_logged_client contract
     resp = MagicMock()
     resp.text = response_text
     mock.complete.return_value = resp

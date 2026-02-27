@@ -183,6 +183,7 @@ class TestExpandScope:
 def _mock_llm_with_response(text):
     """Create a mock LLM with standard config and a fixed response."""
     mock_llm = MagicMock()
+    mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
     mock_llm.config.context_window = 32768
     mock_llm.config.max_tokens = 4096
     mock_response = MagicMock()
@@ -226,6 +227,7 @@ class TestJudgeScope:
 
     def test_empty_candidates(self):
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         task = TaskQuery(raw_task="fix it", task_id="t1", mode="plan", repo_id=1)
         result = judge_scope([], task, mock_llm)
         assert result == []
@@ -262,6 +264,7 @@ class TestJudgeScopeBatching:
     def test_batch_boundary(self):
         """WU6: large candidate sets are split into batches, all get judged."""
         mock_llm = MagicMock()
+        mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         # Configure a tiny context window to force batching
         mock_llm.config = MagicMock()
         mock_llm.config.context_window = 512

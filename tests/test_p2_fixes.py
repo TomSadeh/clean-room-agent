@@ -68,6 +68,10 @@ class TestBoundsChecks:
                 "max_adjustment_rounds": 3,
                 "git_workflow": False,
                 "max_cumulative_diff_chars": -1,
+                "documentation_pass": False,
+                "scaffold_enabled": False,
+                "scaffold_compiler": "gcc",
+                "scaffold_compiler_flags": "-c -fsyntax-only -Wall",
             },
         }
         with pytest.raises(RuntimeError, match="positive integer"):
@@ -92,6 +96,10 @@ class TestBoundsChecks:
                 "max_adjustment_rounds": 3,
                 "git_workflow": False,
                 "max_cumulative_diff_chars": 0,
+                "documentation_pass": False,
+                "scaffold_enabled": False,
+                "scaffold_compiler": "gcc",
+                "scaffold_compiler_flags": "-c -fsyntax-only -Wall",
             },
         }
         with pytest.raises(RuntimeError, match="positive integer"):

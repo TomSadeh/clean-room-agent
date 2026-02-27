@@ -134,6 +134,34 @@ class TestBuildEnvironmentBrief:
         brief = build_environment_brief(config, kb, repo_id=1)
         assert brief.test_framework == ""
 
+    def test_missing_testing_section_raises(self):
+        """F1: config missing 'testing' key raises KeyError."""
+        kb = self._make_mock_kb()
+        config = {"environment": {"coding_style": "development"}}
+        with pytest.raises(KeyError):
+            build_environment_brief(config, kb, repo_id=1)
+
+    def test_missing_test_command_raises(self):
+        """F2: testing config missing 'test_command' raises KeyError."""
+        kb = self._make_mock_kb()
+        config = {"testing": {}, "environment": {"coding_style": "development"}}
+        with pytest.raises(KeyError):
+            build_environment_brief(config, kb, repo_id=1)
+
+    def test_missing_environment_section_raises(self):
+        """F3: config missing 'environment' key raises KeyError."""
+        kb = self._make_mock_kb()
+        config = {"testing": {"test_command": "pytest"}}
+        with pytest.raises(KeyError):
+            build_environment_brief(config, kb, repo_id=1)
+
+    def test_missing_coding_style_raises(self):
+        """F4: environment config missing 'coding_style' raises KeyError."""
+        kb = self._make_mock_kb()
+        config = {"testing": {"test_command": "pytest"}, "environment": {}}
+        with pytest.raises(KeyError):
+            build_environment_brief(config, kb, repo_id=1)
+
     def test_no_python_no_runtime(self):
         kb = self._make_mock_kb({"typescript": 20}, file_count=20)
         config = {"testing": {"test_command": ""}, "environment": {"coding_style": "development"}}

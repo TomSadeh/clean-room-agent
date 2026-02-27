@@ -29,6 +29,7 @@ from clean_room_agent.retrieval.stage import StageContext
 def _mock_llm_with_response(text):
     """Create a mock LLM with standard config and a fixed response."""
     mock_llm = MagicMock()
+    mock_llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
     mock_llm.config.context_window = 32768
     mock_llm.config.max_tokens = 4096
     mock_response = MagicMock()
@@ -240,6 +241,7 @@ class TestJudgeSimilarity:
         task = TaskQuery(raw_task="dedup", task_id="t1", mode="plan", repo_id=1)
         # LLM with very small context to force batching
         llm = MagicMock()
+        llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         llm.config.context_window = 500
         llm.config.max_tokens = 200
         # Return empty but valid response each time
@@ -316,6 +318,7 @@ class TestSimilarityStageIntegration:
         task = TaskQuery(raw_task="test", task_id="t1", mode="plan", repo_id=1)
         context = StageContext(task=task, repo_id=1, repo_path="/tmp")
         llm = MagicMock()
+        llm.flush = MagicMock()  # F14: explicit _require_logged_client contract
         kb = MagicMock()
 
         stage = SimilarityStage()

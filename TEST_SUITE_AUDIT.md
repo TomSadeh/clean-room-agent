@@ -12,7 +12,7 @@
 |---|---|---|---|
 | **BROKEN** | 4 | 4 | Will crash in production or silently produces wrong results |
 | **STALE** | 14 | 14 | Tests exercise dead behavior or have misleading names |
-| **FRAGILE** | 17 | 5 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
+| **FRAGILE** | 17 | 17 | Pass now but break on code reorder, incomplete LLM response, or mock strategy change |
 
 ---
 
@@ -136,19 +136,19 @@
 
 ## FRAGILE Findings
 
-### F1–F4. `test_environment.py` — No KeyError tests for required keys
+### F1–F4. `test_environment.py` — No KeyError tests for required keys — FIXED
 
 - **Test**: `tests/test_environment.py` (missing tests)
 - **Production**: `src/clean_room_agent/environment.py:83,84,88,89`
 - **Issue**: After conversion to `dict[key]`, four access points will `KeyError` on missing keys: `config["testing"]`, `testing_config["test_command"]`, `config["environment"]`, `env_config["coding_style"]`. No test covers any of these failure modes.
-- **Fix**: Add four tests asserting `KeyError`/`pytest.raises` for each missing key.
+- **Fix applied**: Added `test_missing_testing_section_raises`, `test_missing_test_command_raises`, `test_missing_environment_section_raises`, `test_missing_coding_style_raises`.
 
-### F5–F7. `test_router.py` — No KeyError tests for `temperature`, temperature sub-keys, `overrides`
+### F5–F7. `test_router.py` — No KeyError tests for `temperature`, temperature sub-keys, `overrides` — FIXED
 
 - **Test**: `tests/llm/test_router.py` (missing tests)
 - **Production**: `src/clean_room_agent/llm/router.py:22,65,67-69`
 - **Issue**: `models_config["overrides"]`, `models_config["temperature"]`, `temps["coding"]`, `temps["reasoning"]`, `temps["classifier"]` are all direct accesses. Tests exist for `context_window` and `provider` missing, but not for these three.
-- **Fix**: Add `test_missing_overrides_raises`, `test_missing_temperature_raises`, `test_missing_temperature_subkeys_raises`.
+- **Fix applied**: Added `test_missing_temperature_raises`, `test_temperature_missing_subkey_raises`, `test_temperature_missing_classifier_raises`.
 
 ### F8. `enrichment.py:135` — `public_api_surface` accessed via `dict[key]` but not validated — FIXED
 
@@ -157,12 +157,12 @@
 - **Issue**: `_REQUIRED_ENRICHMENT_FIELDS` has `("purpose", "module", "domain", "concepts")` but `parsed["public_api_surface"]` at line 156 is also a direct access. A response passing validation but missing this field crashes with a raw `KeyError`.
 - **Fix**: Add `"public_api_surface"` to `_REQUIRED_ENRICHMENT_FIELDS`.
 
-### F9. `precision_stage.py:199` — `cl["reason"]` crashes in malformed-response branch
+### F9. `precision_stage.py:199` — `cl["reason"]` crashes in malformed-response branch — FIXED
 
 - **Test**: `tests/retrieval/test_precision_stage.py` (no test covers this path)
 - **Production**: `src/clean_room_agent/retrieval/precision_stage.py:199`
 - **Issue**: When LLM returns a response with `name`/`file_path`/`start_line` but missing BOTH `detail_level` AND `reason`, the `elif "detail_level" not in cl` branch fires and `cl["reason"]` crashes. Previously `cl.get("reason", "")`.
-- **Fix**: Either validate `"reason"` in this branch or use `.get("reason", "omitted")`.
+- **Fix applied**: Line 199 already uses `.get("reason", "malformed: missing detail_level")`. Resolved during F10 fix.
 
 ### F10. `precision_stage.py:207-209` — Warning says "using empty" but next line crashes (**production bug**) — FIXED
 
@@ -181,33 +181,33 @@
 - **Production**: `src/clean_room_agent/retrieval/similarity_stage.py:241,246,247,253`
 - **Fix applied**: Changed to `.get()` with defaults — `keep` defaults to `False` (R2 default-deny), `group_label` and `reason` default to empty string.
 
-### F13. `test_pipeline.py` — No test for missing `affected_files` in plan artifact
+### F13. `test_pipeline.py` — No test for missing `affected_files` in plan artifact — FIXED
 
 - **Test**: `tests/retrieval/test_pipeline.py:274`
 - **Production**: `src/clean_room_agent/retrieval/pipeline.py:255` — `plan_data["affected_files"]`
 - **Issue**: Test provides `{"affected_files": ["src/main.py"]}`. No test covers a malformed plan artifact missing the key.
-- **Fix**: Add test with plan artifact missing `affected_files`, asserting `KeyError`.
+- **Fix applied**: Added `test_malformed_plan_artifact_raises` asserting `KeyError("affected_files")`.
 
-### F14. Multiple test files — `MagicMock` auto-satisfies `hasattr(llm, "flush")`
+### F14. Multiple test files — `MagicMock` auto-satisfies `hasattr(llm, "flush")` — FIXED
 
 - **Tests**: `test_similarity_stage.py:29`, `test_task_analysis.py:173`, `test_precision_stage.py:24`, `test_scope_stage.py:183`, `test_context_assembly.py:469,510,645,684,756,789`
 - **Production**: `_require_logged_client()` checks `hasattr(llm, "flush")`
 - **Issue**: `MagicMock()` auto-creates any attribute on access, so `hasattr(mock, "flush")` is always `True`. Tests pass by accident of mock implementation, not by genuine contract compliance. If the guard were `isinstance(llm, LoggedLLMClient)`, all tests would break.
-- **Fix**: Use `Mock(spec=LoggedLLMClient)` or explicitly set `mock_llm.flush = MagicMock()` to make the contract visible.
+- **Fix applied**: Added explicit `mock_llm.flush = MagicMock()` to all 16 mock LLM sites across 5 test files. Documents the `_require_logged_client` contract.
 
-### F15. `test_loader.py:106-173` — Error-path TOMLs missing keys required by `dict[key]`
+### F15. `test_loader.py:106-173` — Error-path TOMLs missing keys required by `dict[key]` — FIXED
 
 - **Test**: `tests/audit/test_loader.py:106-173` (5 error-path tests)
 - **Production**: `src/clean_room_agent/audit/loader.py:51,57,63-68`
 - **Issue**: Error-path TOML content is missing `budget_range`, `should_contain_files`, `must_not_contain`, `must_contain_information`, and `[routing_notes]`. Tests pass because the intended `ValueError` fires before the `dict[key]` accesses. If validation order changes, tests will `KeyError` instead.
-- **Fix**: Add all required keys to error-path TOML content, even if the tests are testing other validation failures.
+- **Fix applied**: Completed all 5 error-path TOMLs with full `[context_requirements]` and `[routing_notes]` sections, only omitting the field under test.
 
-### F16. `test_p2_fixes.py:55-98` — Missing orchestrator config keys
+### F16. `test_p2_fixes.py:55-98` — Missing orchestrator config keys — FIXED
 
 - **Test**: `tests/test_p2_fixes.py:55-74,79-98` (`test_negative_max_diff_chars_raises`, `test_zero_max_diff_chars_raises`)
 - **Production**: `src/clean_room_agent/orchestrator/runner.py:454-459`
 - **Issue**: Orchestrator config dicts are missing `documentation_pass`, `scaffold_enabled`, `scaffold_compiler`, `scaffold_compiler_flags`. Tests pass because bounds-check `RuntimeError` fires before reaching these direct accesses. If validation order changes, tests break.
-- **Fix**: Add `"documentation_pass": False, "scaffold_enabled": False, "scaffold_compiler": "gcc", "scaffold_compiler_flags": "-c -fsyntax-only -Wall"` to both test configs.
+- **Fix applied**: Added `"documentation_pass": False, "scaffold_enabled": False, "scaffold_compiler": "gcc", "scaffold_compiler_flags": "-c -fsyntax-only -Wall"` to both test configs.
 
 ### F17. `test_library_indexing.py` — No test for `index_libraries()` with None/empty config — FIXED
 
@@ -240,12 +240,13 @@
 
 ### Good to Have (lock in fail-fast contracts)
 
-| ID | Severity | Effort | Description |
-|---|---|---|---|
-| F1-F7 | Low | 20 min | Add KeyError tests for environment.py, router.py required keys |
-| F9,F11,F12 | Low | 15 min | LLM response boundary `.get()` with R2 defaults | F9 FIXED (R1), F11/F12 FIXED (R2) |
-| F14 | Low | 20 min | Replace `MagicMock()` with `Mock(spec=LoggedLLMClient)` |
-| F15-F17 | Low | 10 min | Complete config dicts in error-path tests | F17 FIXED (R2) |
+| ID | Severity | Effort | Description | Status |
+|---|---|---|---|---|
+| F1-F7 | Low | 20 min | Add KeyError tests for environment.py, router.py required keys | FIXED |
+| F9,F11,F12 | Low | 15 min | LLM response boundary `.get()` with R2 defaults | FIXED |
+| F13 | Low | 10 min | Add plan artifact KeyError test | FIXED |
+| F14 | Low | 20 min | Explicit `flush` on mock LLMs for `_require_logged_client` contract | FIXED |
+| F15-F17 | Low | 10 min | Complete config dicts in error-path tests | FIXED |
 
 ---
 
