@@ -9,7 +9,7 @@ from clean_room_agent.knowledge_base.models import RefSectionMeta
 
 # Domain keywords — checked against title + first ~500 chars of content
 _DOMAIN_KEYWORDS: dict[str, list[str]] = {
-    "pointers": ["pointer", "address", "dereference", "indirection", "&", "->"],
+    "pointers": ["pointer", "address", "dereference", "indirection", "->"],
     "memory_management": [
         "malloc", "calloc", "realloc", "free", "alloc", "memory",
         "heap", "stack", "storage duration",
@@ -58,7 +58,7 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "assert", "abort", "exit",
     ],
     "bit_operations": [
-        "bitwise", "bit", "shift", "mask", "xor", "and", "or",
+        "bitwise", "bit", "shift", "mask", "xor",
         "complement", "twos complement",
     ],
 }
@@ -161,7 +161,7 @@ def _detect_c_standard(content: str) -> str | None:
         standards.append("C17")
     if "c11" in text or "_generic" in text or "_atomic" in text:
         standards.append("C11")
-    if "c99" in text or "restrict" in text or "inline" in text:
+    if "c99" in text or re.search(r"\brestrict\b", text) or re.search(r"\binline\b", text):
         standards.append("C99")
     if "c89" in text or "c90" in text or "ansi c" in text:
         standards.append("C89")

@@ -32,7 +32,7 @@ class TraceLogger:
         self._task_id = new_id
 
     def log_calls(
-        self, stage_name: str, call_type: str, calls: list[dict], model: str = "",
+        self, stage_name: str, call_type: str, calls: list[dict], model: str,
     ) -> None:
         """Record a batch of flushed call dicts from LoggedLLMClient.flush()."""
         for call in calls:

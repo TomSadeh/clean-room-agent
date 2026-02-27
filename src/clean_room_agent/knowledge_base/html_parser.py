@@ -6,7 +6,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
-from clean_room_agent.knowledge_base.models import RefSection
+from clean_room_agent.knowledge_base.models import RefSection, title_to_path
 
 
 # ============================================================
@@ -229,7 +229,7 @@ def parse_crafting_interpreters(html_dir: Path) -> list[RefSection]:
             ordering += 1
 
         for i, sec in enumerate(sub_sections):
-            sec_path = _title_to_path(sec["title"])
+            sec_path = title_to_path(sec["title"])
             sections.append(RefSection(
                 title=sec["title"],
                 section_path=f"{ch_path}/{sec_path}",
@@ -430,10 +430,3 @@ def parse_cppreference(ref_dir: Path) -> list[RefSection]:
         ordering += 1
 
     return sections
-
-
-def _title_to_path(title: str) -> str:
-    """Convert a heading title to a URL-safe path segment."""
-    path = re.sub(r"[^a-z0-9]+", "_", title.lower())
-    path = re.sub(r"_+", "_", path).strip("_")
-    return path[:60]

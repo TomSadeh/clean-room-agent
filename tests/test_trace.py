@@ -36,7 +36,7 @@ class TestTraceLogger:
         """Log a single call, verify stage name, response, and system prompt details tag."""
         out = tmp_path / "trace.md"
         logger = TraceLogger(out, task_id="task-001", task_description="basic test")
-        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.log_calls("scope", "retrieval", [_make_call()], model="test-model")
         path = logger.finalize()
 
         content = path.read_text(encoding="utf-8")
@@ -56,6 +56,7 @@ class TestTraceLogger:
             "precision",
             "classification",
             [_make_call(thinking="Let me reason step by step about this problem")],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -71,6 +72,7 @@ class TestTraceLogger:
             "scope",
             "retrieval",
             [_make_call(error="Connection timed out after 30s")],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -99,11 +101,13 @@ class TestTraceLogger:
                 _make_call(prompt_tokens=100, completion_tokens=50, elapsed_ms=200),
                 _make_call(prompt_tokens=150, completion_tokens=75, elapsed_ms=300),
             ],
+            model="test-model",
         )
         logger.log_calls(
             "precision",
             "classification",
             [_make_call(prompt_tokens=80, completion_tokens=40, elapsed_ms=150)],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -125,6 +129,7 @@ class TestTraceLogger:
             "scope",
             "retrieval",
             [_make_call(prompt_tokens=None, completion_tokens=None)],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -137,7 +142,7 @@ class TestTraceLogger:
         """Finalize creates file and parent directories for nested path."""
         out = tmp_path / "deep" / "nested" / "dir" / "trace.md"
         logger = TraceLogger(out, task_id="task-007", task_description="mkdir test")
-        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.log_calls("scope", "retrieval", [_make_call()], model="test-model")
         path = logger.finalize()
 
         assert path.exists()
@@ -155,16 +160,19 @@ class TestTraceLogger:
             "task_analysis",
             "analysis",
             [_make_call(response="Parsed task intent")],
+            model="test-model",
         )
         logger.log_calls(
             "scope",
             "retrieval",
             [_make_call(response="Found 5 relevant files")],
+            model="test-model",
         )
         logger.log_calls(
             "precision",
             "classification",
             [_make_call(response="Classified symbols at detail levels")],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -193,6 +201,7 @@ class TestTraceLogger:
             "scope",
             "retrieval",
             [_make_call(system="sys</details>tem", prompt="pro</details>mpt", response="res</details>ponse")],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -216,6 +225,7 @@ class TestTraceLogger:
             "scope",
             "retrieval",
             [_make_call(response=response_with_backticks)],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -235,6 +245,7 @@ class TestTraceLogger:
             "scope",
             "retrieval",
             [_make_call(system=None)],
+            model="test-model",
         )
         path = logger.finalize()
 
@@ -249,7 +260,7 @@ class TestTraceLogger:
         """Calling finalize() twice should raise RuntimeError (4-P1-4)."""
         out = tmp_path / "trace.md"
         logger = TraceLogger(out, task_id="task-double", task_description="double finalize")
-        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.log_calls("scope", "retrieval", [_make_call()], model="test-model")
         logger.finalize()
         with pytest.raises(RuntimeError, match="already called"):
             logger.finalize()
@@ -259,7 +270,7 @@ class TestTraceLogger:
         out = tmp_path / "trace.md"
         logger = TraceLogger(out, task_id="temp-id", task_description="update test")
         logger.update_task_id("real-task-id-123")
-        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.log_calls("scope", "retrieval", [_make_call()], model="test-model")
         path = logger.finalize()
 
         content = path.read_text(encoding="utf-8")
@@ -270,7 +281,7 @@ class TestTraceLogger:
         """Trace header should include a Generated timestamp (4-P2-2)."""
         out = tmp_path / "trace.md"
         logger = TraceLogger(out, task_id="task-ts", task_description="timestamp test")
-        logger.log_calls("scope", "retrieval", [_make_call()])
+        logger.log_calls("scope", "retrieval", [_make_call()], model="test-model")
         path = logger.finalize()
 
         content = path.read_text(encoding="utf-8")

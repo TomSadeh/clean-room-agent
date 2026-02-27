@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 
 
 @dataclasses.dataclass
@@ -39,3 +40,12 @@ class RefSectionMeta:
     c_standard: str | None = None  # e.g. "C89", "C99", "C11"
     header: str | None = None  # e.g. "<stdlib.h>"
     related_functions: str | None = None  # comma-separated
+
+
+def title_to_path(title: str) -> str:
+    """Convert a heading title to a URL-safe path segment."""
+    # Lowercase, replace spaces/special chars with underscores
+    path = re.sub(r"[^a-z0-9]+", "_", title.lower())
+    # Strip leading/trailing underscores, collapse runs
+    path = re.sub(r"_+", "_", path).strip("_")
+    return path[:60]  # Limit length

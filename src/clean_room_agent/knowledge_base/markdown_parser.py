@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from clean_room_agent.knowledge_base.models import RefSection
+from clean_room_agent.knowledge_base.models import RefSection, title_to_path
 
 
 # CERT C rule pattern: "- RULEnn-C: description"
@@ -139,7 +139,7 @@ def parse_pdf_markdown(text: str, source_file: str = "") -> list[RefSection]:
 
             level = len(m.group(1))
             title = m.group(2).strip()
-            path = _title_to_path(title)
+            path = title_to_path(title)
 
             # Pop stack to find parent
             while heading_stack and heading_stack[-1][0] >= level:
@@ -171,10 +171,3 @@ def parse_pdf_markdown(text: str, source_file: str = "") -> list[RefSection]:
     return sections
 
 
-def _title_to_path(title: str) -> str:
-    """Convert a heading title to a URL-safe path segment."""
-    # Lowercase, replace spaces/special chars with underscores
-    path = re.sub(r"[^a-z0-9]+", "_", title.lower())
-    # Strip leading/trailing underscores, collapse runs
-    path = re.sub(r"_+", "_", path).strip("_")
-    return path[:60]  # Limit length

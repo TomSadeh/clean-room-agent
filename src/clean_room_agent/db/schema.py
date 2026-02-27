@@ -175,6 +175,7 @@ def create_curated_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_adapter_stage_active ON adapter_metadata(stage_name, active);
         CREATE INDEX IF NOT EXISTS idx_ref_sections_source ON ref_sections(source_id);
         CREATE INDEX IF NOT EXISTS idx_ref_sections_parent ON ref_sections(parent_section_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ref_sections_source_path ON ref_sections(source_id, section_path);
         CREATE INDEX IF NOT EXISTS idx_ref_section_metadata_domain ON ref_section_metadata(domain);
     """)
 

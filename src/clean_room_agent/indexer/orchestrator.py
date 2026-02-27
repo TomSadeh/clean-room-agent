@@ -13,6 +13,7 @@ from clean_room_agent.extractors.dependencies import resolve_dependencies
 from clean_room_agent.extractors.git_extractor import extract_git_history, get_remote_url
 from clean_room_agent.indexer.file_scanner import scan_repo
 from clean_room_agent.indexer.library_scanner import _DEFAULT_LIBRARY_MAX_FILE_SIZE
+from clean_room_agent.constants import language_from_extension
 from clean_room_agent.parsers.registry import get_parser
 
 logger = logging.getLogger(__name__)
@@ -498,15 +499,22 @@ def index_libraries(
                     queries.clear_file_children(curated_conn, existing_map[lf.relative_path][0])
                     is_changed = True
 
+                # Detect language from extension
+                language = language_from_extension(lf.relative_path)
+                if language is None:
+                    logger.warning("Unsupported extension for library file %s, skipping", lf.relative_path)
+                    total_parse_errors += 1
+                    continue
+
                 # Upsert file record
                 file_id = queries.upsert_file(
-                    curated_conn, repo_id, lf.relative_path, "python",
+                    curated_conn, repo_id, lf.relative_path, language,
                     content_hash, lf.size_bytes, file_source="library",
                 )
 
                 # Parse symbols and docstrings
                 try:
-                    parser = get_parser("python")
+                    parser = get_parser(language)
                     parsed = parser.parse(content, lf.relative_path)
                 except Exception as e:
                     total_parse_errors += 1

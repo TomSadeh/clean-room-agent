@@ -296,13 +296,15 @@ def _rollback_part(
                 rollback_edits(cp, repo_path)
             except (RuntimeError, OSError) as e:
                 rollback_errors.append(str(e))
-        if rollback_errors:
-            raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
 
     # A6: Mark affected run_attempts as rolled back in raw DB
+    # Must happen before any raise — DB should reflect reality even on partial failure
     mark_part_attempts_rolled_back(raw_conn, task_id, part_id)
     raw_conn.commit()
     logger.info("Rollback: marked run_attempts as rolled back for part %s", part_id)
+
+    if git is None and rollback_errors:
+        raise RuntimeError(f"Rollback partially failed: {rollback_errors}")
 
 
 def _topological_sort(items, get_id, get_deps):
