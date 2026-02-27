@@ -225,3 +225,34 @@ This is a large item — blocked until the DB is actually populated on real repo
 ## Commit 46b2b5f Code Review (Remaining)
 
 - [ ] **5-P2-6: No integration test for `run_single_pass` git lifecycle**
+
+---
+
+## Commit 4f6a8df Code Review — KB Indexer (2026-02-27)
+
+### S1 (P0): Silent catch-all in indexer loop — tracebacks lost
+- File: `src/clean_room_agent/knowledge_base/indexer.py:108-122`
+- `except Exception` catches parse/insert errors, appends error string, continues.
+  Traceback is lost. Violates fail-fast coding style.
+- Repo indexer (`indexer/orchestrator.py`) has `continue_on_error` flag — KB indexer
+  should follow the same pattern.
+
+### S2 (P1): Raw SQL in indexer bypasses query layer
+- File: `src/clean_room_agent/knowledge_base/indexer.py:241-249`
+- Two raw DELETE statements for bridge files bypass `db/queries.py`.
+- Need `delete_bridge_files_for_source(conn, source_name)` in queries.py.
+
+### S3 (P1): `_read_file_source` accesses `kb._conn` directly
+- File: `src/clean_room_agent/retrieval/context_assembly.py:443`
+- Calls `get_ref_section_content_by_file_id(kb._conn, fid)` instead of
+  `kb.get_ref_section_content(fid)` — the public method added in the same commit.
+
+### Deferred (P2-P3)
+- S4: C standard detection false positives (`restrict`, `inline`)
+- S5: Domain tie-breaking is arbitrary (dict order)
+- S6: No minimum threshold for domain assignment
+- S7: Short keyword substring matches are noisy (`&`, `or`)
+- S10: Missing UNIQUE constraint on `ref_sections(source_id, section_path)`
+- S8: Section heading regex may miss OCR-garbled case
+- S9: PDF timeout is a magic number
+- S11: `_title_to_path` duplicated in markdown_parser.py and html_parser.py

@@ -210,6 +210,114 @@ class TestInsertSource:
         conn.close()
 
 
+class TestContinueOnError:
+    """Test continue_on_error flag (S1: fail-fast vs continue)."""
+
+    def _make_temp_db(self, tmp_path):
+        db_dir = tmp_path / ".clean_room"
+        db_dir.mkdir(parents=True)
+        db_path = db_dir / "curated.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        create_curated_schema(conn)
+        conn.commit()
+        conn.close()
+        return tmp_path
+
+    def test_default_raises_on_parse_error(self, tmp_path, monkeypatch):
+        """Default (continue_on_error=False) raises RuntimeError on parse failure."""
+        repo_path = self._make_temp_db(tmp_path)
+        kb_path = tmp_path / "kb"
+        (kb_path / "knr2").mkdir(parents=True)
+        # Create a file so the source dir exists but parsing will fail
+        (kb_path / "knr2" / "knr2_clean.txt").write_text("", encoding="utf-8")
+
+        # Monkey-patch _parse_source to raise
+        def _bad_parse(name, config, source_dir):
+            raise ValueError("simulated parse failure")
+
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._parse_source", _bad_parse,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to parse source knr2"):
+            index_knowledge_base(kb_path, repo_path, sources=["knr2"])
+
+    def test_continue_on_error_collects_parse_errors(self, tmp_path, monkeypatch):
+        """continue_on_error=True logs and collects errors instead of raising."""
+        repo_path = self._make_temp_db(tmp_path)
+        kb_path = tmp_path / "kb"
+        (kb_path / "knr2").mkdir(parents=True)
+        (kb_path / "knr2" / "knr2_clean.txt").write_text("", encoding="utf-8")
+
+        def _bad_parse(name, config, source_dir):
+            raise ValueError("simulated parse failure")
+
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._parse_source", _bad_parse,
+        )
+
+        result = index_knowledge_base(
+            kb_path, repo_path, sources=["knr2"], continue_on_error=True,
+        )
+        assert result.sources_indexed == 0
+        assert len(result.errors) == 1
+        assert "Parse error for knr2" in result.errors[0]
+
+    def test_default_raises_on_insert_error(self, tmp_path, monkeypatch):
+        """Default (continue_on_error=False) raises RuntimeError on insert failure."""
+        repo_path = self._make_temp_db(tmp_path)
+        kb_path = tmp_path / "kb"
+        (kb_path / "knr2").mkdir(parents=True)
+        (kb_path / "knr2" / "knr2_clean.txt").write_text("", encoding="utf-8")
+
+        # Return valid sections from parse, but make insert fail
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._parse_source",
+            lambda name, config, source_dir: [
+                RefSection(
+                    title="T", section_path="s1", content="c",
+                    section_type="section", ordering=0,
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._insert_source",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("simulated insert failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to insert source knr2"):
+            index_knowledge_base(kb_path, repo_path, sources=["knr2"])
+
+    def test_continue_on_error_collects_insert_errors(self, tmp_path, monkeypatch):
+        """continue_on_error=True logs and collects insert errors."""
+        repo_path = self._make_temp_db(tmp_path)
+        kb_path = tmp_path / "kb"
+        (kb_path / "knr2").mkdir(parents=True)
+        (kb_path / "knr2" / "knr2_clean.txt").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._parse_source",
+            lambda name, config, source_dir: [
+                RefSection(
+                    title="T", section_path="s1", content="c",
+                    section_type="section", ordering=0,
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            "clean_room_agent.knowledge_base.indexer._insert_source",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("simulated insert failure")),
+        )
+
+        result = index_knowledge_base(
+            kb_path, repo_path, sources=["knr2"], continue_on_error=True,
+        )
+        assert result.sources_indexed == 0
+        assert len(result.errors) == 1
+        assert "Insert error for knr2" in result.errors[0]
+
+
 @pytest.mark.skipif(
     not (_KB_DIR / "knr2").exists() or not (_KB_DIR / "cert_c").exists(),
     reason="Reference sources not available",

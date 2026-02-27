@@ -133,8 +133,9 @@ def enrich(repo_path, promote):
 @click.argument("repo_path", default=".", type=click.Path(exists=True))
 @click.option("--kb-path", default=None, type=click.Path(exists=True), help="Path to knowledge_base/c_references.")
 @click.option("--sources", default=None, help="Comma-separated source names (e.g. knr2,cert_c).")
+@click.option("--continue-on-error", is_flag=True, help="Log parse/insert errors and continue.")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output.")
-def index_kb(repo_path, kb_path, sources, verbose):
+def index_kb(repo_path, kb_path, sources, continue_on_error, verbose):
     """Index knowledge base reference material (C books, standards, API docs)."""
     import logging
     from pathlib import Path
@@ -163,7 +164,7 @@ def index_kb(repo_path, kb_path, sources, verbose):
                 f"Available: {', '.join(sorted(SOURCE_REGISTRY))}"
             )
 
-    result = index_knowledge_base(kb, repo, sources=source_list)
+    result = index_knowledge_base(kb, repo, sources=source_list, continue_on_error=continue_on_error)
 
     click.echo(f"Knowledge base indexing complete")
     click.echo(f"  Sources indexed: {result.sources_indexed}")

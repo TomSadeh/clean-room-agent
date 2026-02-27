@@ -437,9 +437,7 @@ def _read_file_source(
 
     # Knowledge base bridge files: read from ref_sections table
     if path.startswith("kb/") and kb is not None:
-        from clean_room_agent.db.queries import get_ref_section_content_by_file_id
-
-        content = get_ref_section_content_by_file_id(kb._conn, fid)
+        content = kb.get_ref_section_content(fid)
         if content is not None:
             return content
         logger.warning("KB section not found for file_id=%d path=%s", fid, path)

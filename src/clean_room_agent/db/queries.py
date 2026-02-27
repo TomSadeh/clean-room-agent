@@ -304,6 +304,26 @@ def delete_ref_sections_for_source(conn: sqlite3.Connection, source_id: int) -> 
     return cursor.rowcount
 
 
+def delete_bridge_files_for_source(conn: sqlite3.Connection, source_name: str) -> int:
+    """Delete bridge files and their metadata for a knowledge base source.
+
+    Deletes child-first (file_metadata before files) to maintain referential integrity.
+    Scoped to file_source='knowledge_base' with path prefix 'kb/{source_name}/'.
+    Returns the number of files rows deleted.
+    """
+    pattern = f"kb/{source_name}/%"
+    conn.execute(
+        "DELETE FROM file_metadata WHERE file_id IN "
+        "(SELECT id FROM files WHERE file_source = 'knowledge_base' AND path LIKE ?)",
+        (pattern,),
+    )
+    cursor = conn.execute(
+        "DELETE FROM files WHERE file_source = 'knowledge_base' AND path LIKE ?",
+        (pattern,),
+    )
+    return cursor.rowcount
+
+
 def get_ref_section_content_by_file_id(
     conn: sqlite3.Connection,
     file_id: int,

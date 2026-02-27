@@ -10,6 +10,7 @@ from pathlib import Path
 
 from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db.queries import (
+    delete_bridge_files_for_source,
     delete_ref_sections_for_source,
     insert_ref_section,
     insert_ref_section_metadata,
@@ -84,6 +85,7 @@ def index_knowledge_base(
     kb_path: Path,
     repo_path: Path,
     sources: list[str] | None = None,
+    continue_on_error: bool = False,
 ) -> KBIndexResult:
     """Index knowledge base reference sources into curated DB.
 
@@ -91,6 +93,8 @@ def index_knowledge_base(
         kb_path: Path to knowledge_base/c_references/ directory.
         repo_path: Repository root (for DB connection).
         sources: Optional list of source names to index. Defaults to all.
+        continue_on_error: If False (default), re-raise parse/insert errors with
+            context. If True, log with traceback and continue.
     """
     start = time.monotonic()
     result = KBIndexResult()
@@ -112,8 +116,10 @@ def index_knowledge_base(
         try:
             sections = _parse_source(name, config, source_dir)
         except Exception as e:
+            if not continue_on_error:
+                raise RuntimeError(f"Failed to parse source {name}: {e}") from e
+            logger.exception("Failed to parse source %s", name)
             result.errors.append(f"Parse error for {name}: {e}")
-            logger.warning("Failed to parse source %s: %s", name, e)
             continue
 
         if not sections:
@@ -132,8 +138,10 @@ def index_knowledge_base(
                 name, n_sections, n_bridge,
             )
         except Exception as e:
+            if not continue_on_error:
+                raise RuntimeError(f"Failed to insert source {name}: {e}") from e
+            logger.exception("Failed to insert source %s", name)
             result.errors.append(f"Insert error for {name}: {e}")
-            logger.warning("Failed to insert source %s: %s", name, e)
 
     result.duration_ms = int((time.monotonic() - start) * 1000)
     return result
@@ -270,15 +278,7 @@ def _insert_source(
         delete_ref_sections_for_source(conn, source_id)
 
         # Also delete existing bridge files for this source
-        conn.execute(
-            "DELETE FROM file_metadata WHERE file_id IN "
-            "(SELECT id FROM files WHERE file_source = 'knowledge_base' AND path LIKE ?)",
-            (f"kb/{name}/%",),
-        )
-        conn.execute(
-            "DELETE FROM files WHERE file_source = 'knowledge_base' AND path LIKE ?",
-            (f"kb/{name}/%",),
-        )
+        delete_bridge_files_for_source(conn, name)
 
         # Get or create repo record for bridge files
         repo_id = upsert_repo(conn, str(repo_path), None)
