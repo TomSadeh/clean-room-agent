@@ -124,6 +124,7 @@ def create_default_config(repo_path: Path) -> Path:
         '# scaffold_enabled = false  # C-only: generate compilable scaffolds before implementing\n'
         '# scaffold_compiler = "gcc"  # compiler for scaffold validation\n'
         '# scaffold_compiler_flags = "-c -fsyntax-only -Wall"  # compiler flags for scaffold validation\n'
+        '# decomposed_planning = false  # Multi-stage meta-plan/part-plan decomposition\n'
         '\n'
         '# [retrieval]\n'
         '# max_deps = 30\n'

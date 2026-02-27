@@ -3,9 +3,13 @@
 import pytest
 
 from clean_room_agent.execute.dataclasses import (
+    ChangePoint,
+    ChangePointEnumeration,
     MetaPlan,
     MetaPlanPart,
     OrchestratorResult,
+    PartGroup,
+    PartGrouping,
     PartPlan,
     PatchEdit,
     PatchResult,
@@ -14,6 +18,8 @@ from clean_room_agent.execute.dataclasses import (
     PlanStep,
     PassResult,
     StepResult,
+    SymbolTarget,
+    SymbolTargetEnumeration,
     ValidationResult,
 )
 
@@ -434,3 +440,195 @@ class TestOrchestratorResult:
     def test_from_dict_missing_key(self):
         with pytest.raises(ValueError, match="missing required key"):
             OrchestratorResult.from_dict({"task_id": "t1"})
+
+
+# -- Decomposed planning dataclass tests --
+
+
+class TestChangePoint:
+    def test_basic(self):
+        cp = ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="Fix bug")
+        assert cp.file_path == "a.py"
+        assert cp.change_type == "modify"
+
+    def test_empty_file_path_raises(self):
+        with pytest.raises(ValueError, match="file_path must be non-empty"):
+            ChangePoint(file_path="", symbol="foo", change_type="modify", rationale="r")
+
+    def test_empty_symbol_raises(self):
+        with pytest.raises(ValueError, match="symbol must be non-empty"):
+            ChangePoint(file_path="a.py", symbol="", change_type="modify", rationale="r")
+
+    def test_round_trip(self):
+        cp = ChangePoint(file_path="a.py", symbol="foo", change_type="add", rationale="New function")
+        restored = ChangePoint.from_dict(cp.to_dict())
+        assert restored.file_path == cp.file_path
+        assert restored.symbol == cp.symbol
+        assert restored.change_type == cp.change_type
+        assert restored.rationale == cp.rationale
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            ChangePoint.from_dict({"file_path": "a.py", "symbol": "foo"})
+
+
+class TestChangePointEnumeration:
+    def _make_enum(self):
+        return ChangePointEnumeration(
+            task_summary="Fix validation",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="validate", change_type="modify", rationale="Fix"),
+            ],
+        )
+
+    def test_basic(self):
+        enum = self._make_enum()
+        assert enum.task_summary == "Fix validation"
+        assert len(enum.change_points) == 1
+
+    def test_empty_change_points_raises(self):
+        with pytest.raises(ValueError, match="change_points must be non-empty"):
+            ChangePointEnumeration(task_summary="t", change_points=[])
+
+    def test_empty_summary_raises(self):
+        with pytest.raises(ValueError, match="task_summary must be non-empty"):
+            ChangePointEnumeration(
+                task_summary="",
+                change_points=[ChangePoint(file_path="a.py", symbol="f", change_type="modify", rationale="r")],
+            )
+
+    def test_round_trip(self):
+        enum = self._make_enum()
+        restored = ChangePointEnumeration.from_dict(enum.to_dict())
+        assert restored.task_summary == enum.task_summary
+        assert len(restored.change_points) == 1
+        assert restored.change_points[0].file_path == "a.py"
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            ChangePointEnumeration.from_dict({"task_summary": "t"})
+
+
+class TestPartGroup:
+    def test_basic(self):
+        pg = PartGroup(id="p1", description="Part 1", change_point_indices=[0, 1])
+        assert pg.id == "p1"
+        assert pg.change_point_indices == [0, 1]
+        assert pg.affected_files == []
+
+    def test_with_affected_files(self):
+        pg = PartGroup(
+            id="p1", description="Part 1",
+            change_point_indices=[0], affected_files=["a.py"],
+        )
+        assert pg.affected_files == ["a.py"]
+
+    def test_empty_id_raises(self):
+        with pytest.raises(ValueError, match="id must be non-empty"):
+            PartGroup(id="", description="d", change_point_indices=[0])
+
+    def test_empty_indices_raises(self):
+        with pytest.raises(ValueError, match="change_point_indices must be non-empty"):
+            PartGroup(id="p1", description="d", change_point_indices=[])
+
+    def test_round_trip(self):
+        pg = PartGroup(id="p1", description="d", change_point_indices=[0, 2], affected_files=["a.py"])
+        restored = PartGroup.from_dict(pg.to_dict())
+        assert restored.id == pg.id
+        assert restored.change_point_indices == [0, 2]
+        assert restored.affected_files == ["a.py"]
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            PartGroup.from_dict({"id": "p1"})
+
+    def test_from_dict_validates_list_type(self):
+        with pytest.raises(ValueError, match="must be a list"):
+            PartGroup.from_dict({
+                "id": "p1", "description": "d",
+                "change_point_indices": "not a list",
+            })
+
+
+class TestPartGrouping:
+    def test_basic(self):
+        pg = PartGrouping(
+            parts=[PartGroup(id="p1", description="d", change_point_indices=[0])],
+        )
+        assert len(pg.parts) == 1
+
+    def test_empty_parts_raises(self):
+        with pytest.raises(ValueError, match="parts must be non-empty"):
+            PartGrouping(parts=[])
+
+    def test_round_trip(self):
+        pg = PartGrouping(
+            parts=[
+                PartGroup(id="p1", description="d1", change_point_indices=[0]),
+                PartGroup(id="p2", description="d2", change_point_indices=[1]),
+            ],
+        )
+        restored = PartGrouping.from_dict(pg.to_dict())
+        assert len(restored.parts) == 2
+        assert restored.parts[0].id == "p1"
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            PartGrouping.from_dict({})
+
+
+class TestSymbolTarget:
+    def test_basic(self):
+        st = SymbolTarget(file_path="a.py", symbol="foo", action="modify", rationale="Fix")
+        assert st.file_path == "a.py"
+        assert st.action == "modify"
+
+    def test_empty_symbol_raises(self):
+        with pytest.raises(ValueError, match="symbol must be non-empty"):
+            SymbolTarget(file_path="a.py", symbol="", action="modify", rationale="r")
+
+    def test_round_trip(self):
+        st = SymbolTarget(file_path="a.py", symbol="foo", action="add", rationale="New")
+        restored = SymbolTarget.from_dict(st.to_dict())
+        assert restored.file_path == st.file_path
+        assert restored.symbol == st.symbol
+        assert restored.action == st.action
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            SymbolTarget.from_dict({"file_path": "a.py"})
+
+
+class TestSymbolTargetEnumeration:
+    def _make_enum(self):
+        return SymbolTargetEnumeration(
+            part_id="p1",
+            targets=[SymbolTarget(file_path="a.py", symbol="foo", action="modify", rationale="Fix")],
+        )
+
+    def test_basic(self):
+        enum = self._make_enum()
+        assert enum.part_id == "p1"
+        assert len(enum.targets) == 1
+
+    def test_empty_targets_raises(self):
+        with pytest.raises(ValueError, match="targets must be non-empty"):
+            SymbolTargetEnumeration(part_id="p1", targets=[])
+
+    def test_empty_part_id_raises(self):
+        with pytest.raises(ValueError, match="part_id must be non-empty"):
+            SymbolTargetEnumeration(
+                part_id="",
+                targets=[SymbolTarget(file_path="a.py", symbol="f", action="modify", rationale="r")],
+            )
+
+    def test_round_trip(self):
+        enum = self._make_enum()
+        restored = SymbolTargetEnumeration.from_dict(enum.to_dict())
+        assert restored.part_id == enum.part_id
+        assert len(restored.targets) == 1
+        assert restored.targets[0].symbol == "foo"
+
+    def test_from_dict_missing_key(self):
+        with pytest.raises(ValueError, match="missing required key"):
+            SymbolTargetEnumeration.from_dict({"part_id": "p1"})

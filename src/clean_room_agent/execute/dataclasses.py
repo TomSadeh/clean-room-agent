@@ -132,6 +132,78 @@ class PartPlan(_SerializableMixin):
     _NON_EMPTY = ("part_id", "task_summary", "steps", "rationale")
 
 
+# -- Decomposed planning data structures --
+
+
+@dataclass
+class ChangePoint(_SerializableMixin):
+    """A single file/symbol that needs to change, identified during enumeration."""
+    file_path: str
+    symbol: str
+    change_type: str  # "modify", "add", "delete"
+    rationale: str
+
+    _REQUIRED = ("file_path", "symbol", "change_type", "rationale")
+    _NON_EMPTY = ("file_path", "symbol", "change_type", "rationale")
+
+
+@dataclass
+class ChangePointEnumeration(_SerializableMixin):
+    """Result of the change point enumeration stage."""
+    task_summary: str
+    change_points: list[ChangePoint]
+
+    _REQUIRED = ("task_summary", "change_points")
+    _NESTED = {"change_points": ChangePoint}
+    _NON_EMPTY = ("task_summary", "change_points")
+
+
+@dataclass
+class PartGroup(_SerializableMixin):
+    """A logical grouping of change points into a part."""
+    id: str
+    description: str
+    change_point_indices: list[int]
+    affected_files: list[str] = field(default_factory=list)
+
+    _REQUIRED = ("id", "description", "change_point_indices")
+    _VALIDATE_LISTS = ("change_point_indices", "affected_files")
+    _NON_EMPTY = ("id", "description", "change_point_indices")
+
+
+@dataclass
+class PartGrouping(_SerializableMixin):
+    """Result of the part grouping stage."""
+    parts: list[PartGroup]
+
+    _REQUIRED = ("parts",)
+    _NESTED = {"parts": PartGroup}
+    _NON_EMPTY = ("parts",)
+
+
+@dataclass
+class SymbolTarget(_SerializableMixin):
+    """A specific symbol targeted for modification within a part."""
+    file_path: str
+    symbol: str
+    action: str  # "modify", "add", "delete"
+    rationale: str
+
+    _REQUIRED = ("file_path", "symbol", "action", "rationale")
+    _NON_EMPTY = ("file_path", "symbol", "action", "rationale")
+
+
+@dataclass
+class SymbolTargetEnumeration(_SerializableMixin):
+    """Result of the symbol targeting stage for a single part."""
+    part_id: str
+    targets: list[SymbolTarget]
+
+    _REQUIRED = ("part_id", "targets")
+    _NESTED = {"targets": SymbolTarget}
+    _NON_EMPTY = ("part_id", "targets")
+
+
 @dataclass
 class PlanAdjustment(_SerializableMixin):
     """Revised plan steps after an adjustment pass."""

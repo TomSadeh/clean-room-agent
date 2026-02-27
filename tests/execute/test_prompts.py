@@ -10,6 +10,7 @@ from clean_room_agent.execute.dataclasses import (
 )
 from clean_room_agent.execute.prompts import (
     SYSTEM_PROMPTS,
+    build_decomposed_plan_prompt,
     build_implement_prompt,
     build_plan_prompt,
 )
@@ -322,5 +323,82 @@ class TestBuildTestImplementPrompt:
 
     def test_system_prompts_dict_complete(self):
         """SYSTEM_PROMPTS dict covers all expected pass types."""
-        expected = {"meta_plan", "part_plan", "test_plan", "adjustment", "implement", "test_implement", "documentation", "scaffold", "function_implement"}
+        expected = {
+            "meta_plan", "part_plan", "test_plan", "adjustment",
+            "implement", "test_implement", "documentation",
+            "scaffold", "function_implement",
+            "change_point_enum", "part_grouping", "part_dependency",
+            "symbol_targeting", "step_dependency", "step_design",
+        }
         assert set(SYSTEM_PROMPTS.keys()) == expected
+
+
+class TestBuildDecomposedPlanPrompt:
+    def test_change_point_enum(self, context_package, model_config):
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Add validation",
+            pass_type="change_point_enum", model_config=model_config,
+        )
+        assert system == SYSTEM_PROMPTS["change_point_enum"]
+        assert "Add validation" in user
+        assert "src/main.py" in user
+
+    def test_part_grouping_with_prior_output(self, context_package, model_config):
+        prior = '[{"index": 0, "file_path": "a.py", "symbol": "foo"}]'
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Add validation",
+            pass_type="part_grouping", model_config=model_config,
+            prior_stage_output=prior,
+        )
+        assert system == SYSTEM_PROMPTS["part_grouping"]
+        assert "<prior_analysis>" in user
+        assert "a.py" in user
+
+    def test_step_design(self, context_package, model_config):
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Implement part 1",
+            pass_type="step_design", model_config=model_config,
+        )
+        assert system == SYSTEM_PROMPTS["step_design"]
+
+    def test_symbol_targeting_with_diff(self, context_package, model_config):
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Part description",
+            pass_type="symbol_targeting", model_config=model_config,
+            cumulative_diff="--- a/file.py\n+++ b/file.py",
+        )
+        assert system == SYSTEM_PROMPTS["symbol_targeting"]
+        assert "<prior_changes>" in user
+
+    def test_unknown_pass_type_raises(self, context_package, model_config):
+        with pytest.raises(ValueError, match="Unknown plan pass_type"):
+            build_decomposed_plan_prompt(
+                context_package, "task",
+                pass_type="invalid", model_config=model_config,
+            )
+
+    def test_budget_overflow_raises(self, context_package, small_model_config):
+        with pytest.raises(ValueError, match="R3.*prompt too large"):
+            build_decomposed_plan_prompt(
+                context_package, "task" * 1000,
+                pass_type="change_point_enum", model_config=small_model_config,
+            )
+
+    def test_prior_output_and_diff_both_present(self, context_package, model_config):
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Part desc",
+            pass_type="step_design", model_config=model_config,
+            prior_stage_output='[{"symbol": "foo"}]',
+            cumulative_diff="diff content",
+        )
+        assert "<prior_analysis>" in user
+        assert "<prior_changes>" in user
+
+    def test_different_task_adds_current_objective(self, context_package, model_config):
+        """When task_description differs from raw_task, adds Current Objective."""
+        system, user = build_decomposed_plan_prompt(
+            context_package, "Different objective",
+            pass_type="change_point_enum", model_config=model_config,
+        )
+        assert "# Current Objective" in user
+        assert "Different objective" in user

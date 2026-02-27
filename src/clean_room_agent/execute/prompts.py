@@ -119,6 +119,86 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "use a search string that matches the insertion point or create file content\n"
         "- For new code insertion, use a search string that matches the insertion point context"
     ),
+    "change_point_enum": (
+        "You are Jane, a change point analyst. Given a codebase context and task description, "
+        "enumerate every file and symbol that needs to change.\n\n"
+        "Output a JSON object with exactly these fields:\n"
+        "- task_summary: string — concise summary of the task\n"
+        "- change_points: array of objects, each with:\n"
+        "  - file_path: string — path to the file\n"
+        "  - symbol: string — function, class, or section name (use \"module\" for module-level changes)\n"
+        "  - change_type: one of \"modify\", \"add\", \"delete\"\n"
+        "  - rationale: string — why this change is needed\n\n"
+        "Rules:\n"
+        "- List every file and symbol that must change — do not group or summarize\n"
+        "- One entry per symbol. A file may appear multiple times with different symbols\n"
+        "- For new files, use change_type \"add\" with the intended top-level symbol\n"
+        "- Output only valid JSON, no markdown fencing or extra text"
+    ),
+    "part_grouping": (
+        "You are Jane, a task decomposition planner. Given a list of change points "
+        "(files and symbols that need to change), group them into logical implementation parts.\n\n"
+        "Output a JSON object with exactly these fields:\n"
+        "- parts: array of objects, each with:\n"
+        "  - id: string — unique identifier (e.g. \"p1\", \"p2\")\n"
+        "  - description: string — what this part accomplishes\n"
+        "  - change_point_indices: array of integers — indices into the change point list (0-based)\n"
+        "  - affected_files: array of file paths this part will modify\n\n"
+        "Rules:\n"
+        "- Every change point index must be assigned to exactly one part\n"
+        "- No index may appear in multiple parts\n"
+        "- Parts should be independently testable where possible\n"
+        "- Output only valid JSON, no markdown fencing or extra text"
+    ),
+    "part_dependency": (
+        "You are Jane, a dependency analyst. You will be given two parts of a task decomposition. "
+        "Determine whether the second part depends on the first part.\n\n"
+        "Part B depends on Part A if B requires A's changes to exist before B can be implemented. "
+        "If they are independent or could be done in either order, the answer is no.\n\n"
+        "Answer with exactly one word: \"yes\" or \"no\""
+    ),
+    "symbol_targeting": (
+        "You are Jane, a symbol-level planner. Given a part description and its affected files, "
+        "identify the specific symbols that need modification.\n\n"
+        "Output a JSON object with exactly these fields:\n"
+        "- part_id: string — the ID of the part\n"
+        "- targets: array of objects, each with:\n"
+        "  - file_path: string — path to the file\n"
+        "  - symbol: string — function, class, or section name\n"
+        "  - action: one of \"modify\", \"add\", \"delete\"\n"
+        "  - rationale: string — what change to make and why\n\n"
+        "Rules:\n"
+        "- Be specific: name exact functions, classes, or methods\n"
+        "- For new code, describe the symbol to create\n"
+        "- Output only valid JSON, no markdown fencing or extra text"
+    ),
+    "step_dependency": (
+        "You are Jane, a dependency analyst. You will be given two implementation steps. "
+        "Determine whether the second step depends on the first step.\n\n"
+        "Step B depends on Step A if B requires A's changes to exist before B can be implemented. "
+        "If they are independent or could be done in either order, the answer is no.\n\n"
+        "Answer with exactly one word: \"yes\" or \"no\""
+    ),
+    "step_design": (
+        "You are Jane, a detailed step planner. Given a codebase context, a specific part description, "
+        "and the symbol targets for this part, break the part into small implementation steps.\n\n"
+        "Output a JSON object with exactly these fields:\n"
+        "- part_id: string — the ID of the part being planned\n"
+        "- task_summary: string — concise summary of this part's goal\n"
+        "- steps: array of objects, each with:\n"
+        "  - id: string — unique identifier (e.g. \"s1\", \"s2\")\n"
+        "  - description: string — what this step accomplishes\n"
+        "  - target_files: array of file paths this step will modify\n"
+        "  - target_symbols: array of function/class names to modify\n"
+        "  - depends_on: array — leave empty (dependencies determined separately)\n"
+        "- rationale: string — why this step breakdown was chosen\n\n"
+        "Rules:\n"
+        "- Steps must be small enough for reliable single-pass code generation\n"
+        "- Each step should modify at most 2-3 files\n"
+        "- Do not include code — only describe the changes\n"
+        "- Leave depends_on as empty arrays — dependencies are determined in a separate pass\n"
+        "- Output only valid JSON"
+    ),
     "scaffold": (
         "You are Jane, a C code architect. Given a plan with implementation steps, "
         "generate a complete compilable scaffold.\n\n"
@@ -175,7 +255,10 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
 }
 
-_PLAN_PASS_TYPES = frozenset({"meta_plan", "part_plan", "test_plan", "adjustment"})
+_PLAN_PASS_TYPES = frozenset({
+    "meta_plan", "part_plan", "test_plan", "adjustment",
+    "change_point_enum", "part_grouping", "symbol_targeting", "step_design",
+})
 
 _IMPLEMENT_STEP_HEADERS: dict[str, str] = {
     "implement": "Step to Implement",
@@ -238,6 +321,49 @@ def build_plan_prompt(
                 test_section += f"Failing tests: {', '.join(tr.failing_tests)}\n"
         test_section += "</test_results>\n"
         parts.append(test_section)
+
+    user = "".join(parts)
+
+    # R3: Budget validation
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, pass_type)
+
+    return system, user
+
+
+def build_decomposed_plan_prompt(
+    context: ContextPackage,
+    task_description: str,
+    *,
+    pass_type: str,
+    model_config: ModelConfig,
+    prior_stage_output: str | None = None,
+    cumulative_diff: str | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for a decomposed plan pass.
+
+    Like build_plan_prompt() but accepts prior_stage_output rendered in
+    <prior_analysis> tags for passes that consume output from a prior
+    enumeration pass.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If pass_type is unknown or prompt exceeds budget.
+    """
+    if pass_type not in _PLAN_PASS_TYPES:
+        raise ValueError(f"Unknown plan pass_type: {pass_type!r}")
+    system = SYSTEM_PROMPTS[pass_type]
+
+    parts = [context.to_prompt_text()]
+    if task_description != context.task.raw_task:
+        parts.append(f"\n# Current Objective\n{task_description}\n")
+
+    if prior_stage_output:
+        parts.append(f"\n<prior_analysis>\n{prior_stage_output}\n</prior_analysis>\n")
+
+    if cumulative_diff:
+        parts.append(f"\n<prior_changes>\n{cumulative_diff}\n</prior_changes>\n")
 
     user = "".join(parts)
 

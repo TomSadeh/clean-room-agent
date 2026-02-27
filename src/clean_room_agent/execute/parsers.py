@@ -6,12 +6,15 @@ import re
 from collections import deque
 
 from clean_room_agent.execute.dataclasses import (
+    ChangePointEnumeration,
     MetaPlan,
     MetaPlanPart,
+    PartGrouping,
     PartPlan,
     PatchEdit,
     PlanAdjustment,
     PlanStep,
+    SymbolTargetEnumeration,
 )
 from clean_room_agent.retrieval.utils import parse_json_response
 
@@ -38,6 +41,14 @@ def parse_plan_response(text: str, pass_type: str) -> MetaPlan | PartPlan | Plan
         return PartPlan.from_dict(data)
     elif pass_type == "adjustment":
         return PlanAdjustment.from_dict(data)
+    elif pass_type == "change_point_enum":
+        return ChangePointEnumeration.from_dict(data)
+    elif pass_type == "part_grouping":
+        return PartGrouping.from_dict(data)
+    elif pass_type == "symbol_targeting":
+        return SymbolTargetEnumeration.from_dict(data)
+    elif pass_type == "step_design":
+        return PartPlan.from_dict(data)
     else:
         raise ValueError(f"Unknown pass_type: {pass_type!r}")
 
@@ -190,5 +201,53 @@ def validate_plan(plan: MetaPlan | PartPlan) -> list[str]:
 
     if sorted_count != len(id_set):
         warnings.append(f"Circular dependency detected among {label}s")
+
+    return warnings
+
+
+def validate_part_grouping(grouping: PartGrouping, total_change_points: int) -> list[str]:
+    """Validate that a PartGrouping covers all change points exactly once.
+
+    Checks:
+    - Every index in [0, total_change_points) assigned to exactly one part
+    - No duplicate indices across parts
+    - No out-of-range indices
+    - Part IDs unique
+
+    Returns list of warnings (empty = valid).
+    """
+    warnings = []
+
+    # Check part ID uniqueness
+    part_ids = [p.id for p in grouping.parts]
+    if len(part_ids) != len(set(part_ids)):
+        seen: set[str] = set()
+        for pid in part_ids:
+            if pid in seen:
+                warnings.append(f"Duplicate part ID: {pid!r}")
+            seen.add(pid)
+
+    # Collect all assigned indices and check for duplicates / out-of-range
+    all_indices: list[int] = []
+    seen_indices: set[int] = set()
+    for part in grouping.parts:
+        for idx in part.change_point_indices:
+            if idx < 0 or idx >= total_change_points:
+                warnings.append(
+                    f"Part {part.id!r} references out-of-range index {idx} "
+                    f"(valid range: 0-{total_change_points - 1})"
+                )
+            if idx in seen_indices:
+                warnings.append(
+                    f"Index {idx} assigned to multiple parts (duplicate in {part.id!r})"
+                )
+            seen_indices.add(idx)
+            all_indices.append(idx)
+
+    # Check coverage: every index must be assigned
+    expected = set(range(total_change_points))
+    missing = expected - seen_indices
+    if missing:
+        warnings.append(f"Unassigned change point indices: {sorted(missing)}")
 
     return warnings

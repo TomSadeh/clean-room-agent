@@ -43,6 +43,7 @@ from clean_room_agent.execute.dataclasses import (
     StepResult,
 )
 from clean_room_agent.execute.documentation import run_documentation_pass
+from clean_room_agent.execute.decomposed_plan import decomposed_meta_plan, decomposed_part_plan
 from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.execute.patch import apply_edits, rollback_edits
 from clean_room_agent.execute.plan import execute_plan
@@ -64,6 +65,12 @@ logger = logging.getLogger(__name__)
 # Cap cumulative diff at ~12,500 tokens (4 chars/token).  Oldest entries are
 # truncated first so the most recent changes remain visible to the model.
 _MAX_CUMULATIVE_DIFF_CHARS = 50_000
+
+
+def _use_decomposed_planning(config: dict) -> bool:
+    """Check if decomposed planning is enabled. Optional, default False."""
+    orch = config.get("orchestrator", {})
+    return bool(orch.get("decomposed_planning", False))
 
 
 def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
@@ -631,10 +638,13 @@ def run_orchestrator(
         )
 
         with LoggedLLMClient(reasoning_config) as llm:
-            meta_plan = execute_plan(
-                context, task, llm,
-                pass_type="meta_plan",
-            )
+            if _use_decomposed_planning(config):
+                meta_plan = decomposed_meta_plan(context, task, llm)
+            else:
+                meta_plan = execute_plan(
+                    context, task, llm,
+                    pass_type="meta_plan",
+                )
             _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan", trace_logger)
 
         meta_task_run_id = _get_task_run_id(raw_conn, sub_task_id)
@@ -685,11 +695,17 @@ def run_orchestrator(
                 )
 
                 with LoggedLLMClient(reasoning_config) as llm:
-                    part_plan = execute_plan(
-                        part_context, part.description, llm,
-                        pass_type="part_plan",
-                        cumulative_diff=cumulative_diff or None,
-                    )
+                    if _use_decomposed_planning(config):
+                        part_plan = decomposed_part_plan(
+                            part_context, part.description, part.id, llm,
+                            cumulative_diff=cumulative_diff or None,
+                        )
+                    else:
+                        part_plan = execute_plan(
+                            part_context, part.description, llm,
+                            pass_type="part_plan",
+                            cumulative_diff=cumulative_diff or None,
+                        )
                     _flush_llm_calls(llm, raw_conn, sub_task_id, "execute_plan", "execute_plan", trace_logger)
 
                 part_task_run_id = _get_task_run_id(raw_conn, sub_task_id)

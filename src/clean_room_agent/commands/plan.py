@@ -29,6 +29,7 @@ def run_plan(
     from clean_room_agent.db.connection import get_connection
     from clean_room_agent.db.raw_queries import insert_retrieval_llm_call
     from clean_room_agent.execute.dataclasses import PlanArtifact
+    from clean_room_agent.execute.decomposed_plan import decomposed_meta_plan
     from clean_room_agent.execute.plan import execute_plan
     from clean_room_agent.llm.client import LoggedLLMClient
     from clean_room_agent.llm.router import ModelRouter
@@ -68,12 +69,16 @@ def run_plan(
 
         # Phase 3: execute plan
         # Flush LLM records even if execute_plan raises (T28 traceability)
+        decomposed = bool(config.get("orchestrator", {}).get("decomposed_planning", False))
         with LoggedLLMClient(reasoning_config) as llm:
             try:
-                meta_plan = execute_plan(
-                    package, task, llm,
-                    pass_type="meta_plan",
-                )
+                if decomposed:
+                    meta_plan = decomposed_meta_plan(package, task, llm)
+                else:
+                    meta_plan = execute_plan(
+                        package, task, llm,
+                        pass_type="meta_plan",
+                    )
             finally:
                 raw_conn = get_connection("raw", repo_path=repo)
                 try:

@@ -3,15 +3,20 @@
 import pytest
 
 from clean_room_agent.execute.dataclasses import (
+    ChangePointEnumeration,
     MetaPlan,
     MetaPlanPart,
+    PartGroup,
+    PartGrouping,
     PartPlan,
     PlanAdjustment,
     PlanStep,
+    SymbolTargetEnumeration,
 )
 from clean_room_agent.execute.parsers import (
     parse_implement_response,
     parse_plan_response,
+    validate_part_grouping,
     validate_plan,
 )
 
@@ -343,4 +348,121 @@ class TestValidatePlan:
             rationale="r",
         )
         warnings = validate_plan(plan)
+        assert warnings == []
+
+
+class TestParsePlanResponseChangePointEnum:
+    def test_valid(self):
+        text = '''{
+            "task_summary": "Fix validation",
+            "change_points": [
+                {"file_path": "a.py", "symbol": "validate", "change_type": "modify", "rationale": "Fix bug"}
+            ]
+        }'''
+        result = parse_plan_response(text, "change_point_enum")
+        assert isinstance(result, ChangePointEnumeration)
+        assert result.task_summary == "Fix validation"
+        assert len(result.change_points) == 1
+        assert result.change_points[0].symbol == "validate"
+
+    def test_missing_field_raises(self):
+        text = '{"task_summary": "t"}'
+        with pytest.raises(ValueError, match="missing required key"):
+            parse_plan_response(text, "change_point_enum")
+
+
+class TestParsePlanResponsePartGrouping:
+    def test_valid(self):
+        text = '''{
+            "parts": [
+                {"id": "p1", "description": "Part 1", "change_point_indices": [0, 1], "affected_files": ["a.py"]}
+            ]
+        }'''
+        result = parse_plan_response(text, "part_grouping")
+        assert isinstance(result, PartGrouping)
+        assert len(result.parts) == 1
+        assert result.parts[0].change_point_indices == [0, 1]
+
+    def test_missing_field_raises(self):
+        text = '{}'
+        with pytest.raises(ValueError, match="missing required key"):
+            parse_plan_response(text, "part_grouping")
+
+
+class TestParsePlanResponseSymbolTargeting:
+    def test_valid(self):
+        text = '''{
+            "part_id": "p1",
+            "targets": [
+                {"file_path": "a.py", "symbol": "foo", "action": "modify", "rationale": "Fix"}
+            ]
+        }'''
+        result = parse_plan_response(text, "symbol_targeting")
+        assert isinstance(result, SymbolTargetEnumeration)
+        assert result.part_id == "p1"
+        assert len(result.targets) == 1
+
+    def test_missing_field_raises(self):
+        text = '{"part_id": "p1"}'
+        with pytest.raises(ValueError, match="missing required key"):
+            parse_plan_response(text, "symbol_targeting")
+
+
+class TestParsePlanResponseStepDesign:
+    def test_valid(self):
+        text = '''{
+            "part_id": "p1",
+            "task_summary": "Implement part",
+            "steps": [{"id": "s1", "description": "Do thing"}],
+            "rationale": "Because"
+        }'''
+        result = parse_plan_response(text, "step_design")
+        assert isinstance(result, PartPlan)
+        assert result.part_id == "p1"
+
+
+class TestValidatePartGrouping:
+    def test_valid_full_coverage(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0, 1]),
+            PartGroup(id="p2", description="d2", change_point_indices=[2]),
+        ])
+        warnings = validate_part_grouping(grouping, 3)
+        assert warnings == []
+
+    def test_missing_index(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0]),
+        ])
+        warnings = validate_part_grouping(grouping, 3)
+        assert any("Unassigned" in w for w in warnings)
+
+    def test_duplicate_index(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0]),
+            PartGroup(id="p2", description="d2", change_point_indices=[0, 1]),
+        ])
+        warnings = validate_part_grouping(grouping, 2)
+        assert any("duplicate" in w.lower() or "multiple" in w.lower() for w in warnings)
+
+    def test_out_of_range_index(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0, 5]),
+        ])
+        warnings = validate_part_grouping(grouping, 2)
+        assert any("out-of-range" in w for w in warnings)
+
+    def test_duplicate_part_ids(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0]),
+            PartGroup(id="p1", description="d2", change_point_indices=[1]),
+        ])
+        warnings = validate_part_grouping(grouping, 2)
+        assert any("Duplicate part ID" in w for w in warnings)
+
+    def test_single_part_all_indices(self):
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0, 1, 2]),
+        ])
+        warnings = validate_part_grouping(grouping, 3)
         assert warnings == []
