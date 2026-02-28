@@ -4,47 +4,47 @@ Remaining findings from code reviews and audits. Completed items removed — see
 
 ---
 
-## Audit — Fail-Fast Violations (2026-02-26)
+## Transparency Audit — 2026-02-28 (commits dfdc871..10f7f12)
 
-### ~~A1. `except OSError: pass` in patch.py temp cleanup~~ — DONE
-### ~~A2. Schema migrations catch `OperationalError` with bare `pass`~~ — DONE
-### ~~A3. Library scanner `except OSError: return` with no logging~~ — DONE
+All Critical, High, and Medium findings fixed. Low findings fixed except L9.
+Fixed in commits 1691294, 41428bc, f2b77c6, de92e51.
 
-### ~~A4. Pipeline `except Exception` wraps ~250 lines~~ — DONE
-### ~~A5. Archive session `except Exception` swallows all errors~~ — DONE
-### ~~A6. `_git_cleanup` single `except Exception` leaves repo in unknown state~~ — DONE
+### Critical — FIXED
 
-### ~~A7. Detail level falls back to `"type_context"` (violates R2)~~ — DONE
-### ~~A8. Hardcoded defaults for coding_style~~ — BY DESIGN (supplementary, not core logic)
-### ~~A9. Validator timeout defaults to 120 seconds~~ — DONE
+- **C1** catch-and-continue on KB pattern selection — removed try/except
+- **C2** catch-and-continue on error classification — removed try/except
 
-### ~~A10. 3-level config fallback chain for context_window~~ — DONE
+### High — FIXED
 
-### ~~A11. Task type falls back to `"unknown"`~~ — DONE
-### ~~A12. Precision JSON fields fall back to empty strings~~ — DONE
-### ~~A13. Library scanner config falls back to empty name/path~~ — DONE
+- **H1** magic-number truncation in compiler_error_classifier — replaced with `budget_truncate()`
+- **H2** `_FAILURE_MESSAGE_CAP` silent truncation — replaced with `budget_truncate()`
+- **H3** `_ROOT_CAUSE_DIFF_CAP_CHARS` silent truncation — replaced with `budget_truncate(keep="tail")`
+- **H4** defensive index guard hiding bad indices — removed, let IndexError propagate
 
----
+### Medium — FIXED (except M5, M8)
 
-## Audit — Transparency (2026-02-26)
+- **M1** `.get(pg.id, [])` → direct key lookup
+- **M2** `.get(key, False)` → direct key lookup in dependency stages
+- **M3** `.get(file_path, "")` → raises ValueError with available keys
+- **M4** default `logic_error` without warning → added R2 warning log
+- **M5** DEFERRED — cross-cutting `error_category` field on StepResult, high blast radius
+- **M6** `_classify_failure` silent unknown → added R2 warning log
+- **M7** no fail-fast on all-omitted judgments → added ValueError checks
+- **M8** NOT A VIOLATION — `require_environment_config` correctly returns Optional default
+- **M9** bare KeyError → `.get()` + None check + KeyError with context message
+- **M10** `[:200]` log truncation → removed, logs full error
 
-### ~~A14. File read failures not recorded in assembly_decisions~~ — DONE
+### Low — FIXED (except L9)
 
----
-
-## Audit — Deduplication (2026-02-26)
-
-### ~~A15. R3 budget validation repeated in 6 places~~ — DONE
-### ~~A16. JSON structure validation repeated in 4 places~~ — BY DESIGN (fundamentally different operations)
-### ~~A17. File extension constants scattered across 7-8 locations~~ — DONE
-
----
-
-## P3 — Low
-
-### ~~T72. Python/TS/JS signature extraction falls back to string split (R4)~~ — DONE
-### ~~T73. Grammatical error in TEST_IMPLEMENT_SYSTEM prompt~~ — DONE
-### ~~T74. `_topological_sort()` gives unhelpful errors on malformed items~~ — DONE
+- **L1** 80-char rationale truncation → removed
+- **L2** deferred SYSTEM_PROMPTS imports → moved to module-level
+- **L3** `startswith("#include")` heuristic → documented as acceptable for scaffold code
+- **L4** `.get(0, False)` → direct key lookup
+- **L5** dead `FAILURE_CATEGORY_RUNTIME` → removed + docstring updated
+- **L6** undocumented `"raw_response"` source → removed from docstring
+- **L7** subsumed by M9 fix
+- **L8** test mock `system=None` default → removed
+- **L9** DEFERRED — config template comment is sufficient; cli-and-config.md is archived
 
 ---
 
@@ -58,37 +58,11 @@ Steps 1-4, 8 done (context dataclass, init/cleanup, diff update, rollback). Step
 deferred (`_run_plan_stage()`, `_execute_code_step()`, `_execute_test_loop()`). Step 9
 partial (init/cleanup done, body reduction blocked on steps 5-7).
 
-#### ~~R2. Consolidate `run_single_pass()` with `run_orchestrator()`~~ — DONE
-#### ~~R3. Extract CLI command logic into `commands/` package~~ — DONE
-#### ~~R4. Decompose `_do_index()` in indexer/orchestrator.py~~ — DONE
-#### ~~R5. Collapse system prompt constants in prompts.py~~ — DONE
-
-### Code Simplification / Deduplication
-
-#### ~~R6. Shared batched judgment runner for retrieval stages~~ — DONE
-#### ~~R7. Deduplicate validation logic in patch.py~~ — DONE
-#### ~~R8. Extract `db/helpers.py` for shared DB utilities~~ — DONE
-#### ~~R9. Use NamedTuple for scope stage candidates~~ — DONE
-#### ~~R10. Flatten deep nesting in TS/JS parser~~ — DONE
-#### ~~R11. Simplify TS/JS variable symbol extraction~~ — DONE
-#### ~~R12. Add `_NON_EMPTY` validation to `_SerializableMixin`~~ — DONE
-#### ~~R13. Row converter boilerplate in query/api.py~~ — DONE
-#### ~~R14. Scope stage dedup pattern repeated 3 times~~ — DONE
-#### ~~R15. Use `__getattr__` delegation in EnvironmentLLMClient~~ — DONE
-
-### Fail-Fast / Transparency Violations
-
-#### ~~R16. Silent exception swallowing in library_scanner.py~~ — DONE
-#### ~~R17. Library symbol detail downgrade violates R1~~ — DONE
-#### ~~R18. Assembly refilter silent fallback~~ — DONE
-
 ### LLM Enhancement Opportunities (Deferred — new LLM calls, separate feature pass)
 
 #### R19. Task-aware budget tie-breaking in context assembly
 #### R20. LLM-ranked dependency ordering in scope stage
 #### R21. Docstring-based pre-filter in precision stage
-
-### ~~R22. Consistent R2 default-deny handler across stages~~ — DONE
 
 ---
 
@@ -197,24 +171,16 @@ This is a large item — blocked until the DB is actually populated on real repo
 - [ ] **2-P2-3: `_SKIP_DIRS` not configurable**
   - File: `src/clean_room_agent/indexer/library_scanner.py:13`
 
-- [ ] ~~**2-P2-4: `index_libraries` hardcodes `language="python"`**~~ — DONE
-
 - [ ] **2-P2-6: No CLI test for `cra index-libraries` command**
 
 ### Feature 3: Git Workflow Integration
-
-- [ ] ~~**3-P1-3: LIFO rollback error abandons remaining parts**~~ — DONE (DB cleanup before raise)
 
 - [ ] **3-P2-8: No integration test for orchestrator git/LIFO fallback path**
 
 ### Feature 4: Pipeline Trace Log — P2
 
-- [ ] ~~**4-P2-1: `model` parameter defaults to empty string**~~ — DONE
-
 - [ ] **4-P2-3: Large traces could consume significant memory**
   - File: `src/clean_room_agent/trace.py:15,22-34`
-
-- [ ] ~~**4-P2-4: `_make_trace_logger` imports Path redundantly**~~ — NOT A BUG — Path is only imported inside the function (deferred conditional), not at module level. No redundancy.
 
 ---
 
@@ -226,16 +192,8 @@ This is a large item — blocked until the DB is actually populated on real repo
 
 ## Commit 4f6a8df Code Review — KB Indexer (2026-02-27)
 
-### ~~S1 (P0): Silent catch-all in indexer loop — tracebacks lost~~ — DONE
-### ~~S2 (P1): Raw SQL in indexer bypasses query layer~~ — DONE
-### ~~S3 (P1): `_read_file_source` accesses `kb._conn` directly~~ — DONE
-
 ### Deferred (P2-P3)
-- ~~S4: C standard detection false positives (`restrict`, `inline`)~~ — DONE (word-boundary regex)
 - S5: Domain tie-breaking is arbitrary (dict order)
 - S6: No minimum threshold for domain assignment
-- ~~S7: Short keyword substring matches are noisy (`&`, `or`)~~ — DONE (removed from domain keywords)
-- ~~S10: Missing UNIQUE constraint on `ref_sections(source_id, section_path)`~~ — DONE
 - S8: Section heading regex may miss OCR-garbled case
 - S9: PDF timeout is a magic number
-- ~~S11: `_title_to_path` duplicated in markdown_parser.py and html_parser.py~~ — DONE (shared in models.py)
