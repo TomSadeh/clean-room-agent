@@ -57,6 +57,7 @@ These tasks produce multi-line structured or code output. Highest per-call compl
 | A20 | **Adjustment** | `adjustment` | Test failures + prior changes + remaining steps | Revised step sequence | Did revised steps succeed? |
 | A21 | **Documentation** | `documentation` | Source file + task context | Docstring/comment edits | AST-based doc verification pass |
 | A22 | **Refilter** | (refilter) | File list with sizes + budget | Subset of files to keep | Did execute succeed with the kept subset? |
+| A23 | **File enrichment** | `ENRICHMENT_SYSTEM` | Source file + symbol list + docstrings | JSON: purpose, module, domain, concepts, public_api_surface, complexity_notes | Did enrichment improve scope/precision recall? |
 
 ### Monolithic Alternatives (configurable, same output types)
 
@@ -82,9 +83,46 @@ The following decompositions from the original design record are **now implement
 | Precision → 3-pass binary cascade | **Done** | `retrieval/precision.py`: pass1 (relevance) → pass2 (primary) → pass3 (supporting) |
 | Per-function implementation (scaffold path) | **Done** | `orchestrator/runner.py`: per-stub loop with `execute_function_implement()` |
 
-## Further Decomposition
+## Decomposition-First Principle
 
-The 22-task inventory above reflects the current code. Further decomposition is not planned — it is triggered by measured per-task error rates from the audit protocol. If a specific task's error rate is disproportionately high, that task is a decomposition candidate. No speculative decomposition roadmap.
+The default is maximally decomposed. Every task should be broken into the smallest cognitive units that can stand alone. The escalation path is *composing* tasks back together into a single call on a larger model — only if decomposition fails to maintain coherence across the pieces.
+
+This is the same logic as the model cascade: start at 0.6B, escalate to 1.7B only if needed. Start decomposed, batch up only if needed. Decomposed tasks are cheaper to train, cheaper to run, easier to audit, and produce cleaner training data. The cost of decomposition (latency from sequential calls, potential loss of cross-item coherence) is what you measure and react to — not the cost of keeping things monolithic.
+
+**When to compose back up**: if a decomposed task's error rate is high *and* the errors stem from cross-item coherence loss (e.g., part grouping decisions that need to see all change points simultaneously), that task is a composition candidate — merge sub-tasks into a single call on the 1.7B. If errors stem from per-item difficulty, the answer is better training data, not composition.
+
+### Decomposition Roadmap
+
+Opportunities identified from code review (2026-02-28). Organized by implementation priority.
+
+**Tier 1 — Decompose now** (clearest wins, implement before Phase 4 training):
+
+| Task | Current | Decomposition | Pattern |
+|---|---|---|---|
+| **A11** part grouping | 1.7B: produce clustered groups | Pairwise binary: "same part?" → union-find → deterministic descriptions | Deterministic enum → N×binary 0.6B → deterministic post-process |
+| **A20** adjustment | 1.7B: revise all steps at once | Binary viability per step + binary root cause per (failure, step) pair + binary "need new step?" → finalize | Deterministic enum → N×binary 0.6B → focused 1.7B finalize |
+| **A18** function implement (retry) | 1.7B: blind retry with compiler error | Add binary error classification: "missing include vs. logic error vs. missing definition?" → route recovery | +1 binary 0.6B call on retry path only |
+
+**Tier 2 — Decompose next** (high value, more implementation complexity):
+
+| Task | Current | Decomposition |
+|---|---|---|
+| **A15** step design | 1.7B: produce full step sequence | Enumerate symbols (deterministic) → binary cohesion "same step?" per pair → finalize descriptions |
+| **A13** interface enum | 1.7B: enumerate types + functions + includes | Binary per candidate: "needed?" (0.6B) → generate signatures/purposes for survivors (1.7B, reduced scope) |
+| **A22** refilter | 1.7B: select files to keep | Binary per file: "essential?" → binary per drop candidate: "downgrade instead?" → deterministic budget math |
+
+**Tier 3 — Conditional** (decompose only if error rates warrant):
+
+| Task | Condition |
+|---|---|
+| **A19** test implement | If test quality < target |
+| **A12** symbol targeting | If A13 is decomposed — binary per existing symbol, 1.7B only for new symbols |
+| **A16** header gen | If compile failure > 15% |
+| **A17** implement | If failure > 5% |
+| **A21** documentation | If quality < 70% |
+| **A23** file enrichment | If enrichment quality is poor — each of 6 JSON fields could be a separate call |
+
+**Not decomposable**: A1-A9 (already atomic), A10 (must identify new symbols), A14 (generative synthesis).
 
 ## Tier Assignment Summary
 
@@ -92,9 +130,9 @@ The 22-task inventory above reflects the current code. Further decomposition is 
 |---|---|---|---|---|
 | 0 (candidate) | 0.6B | Binary judgment | A1, A2, A3, A4, A5, A6, A7, A8, A9 | 9 (all currently on 1.7B via reasoning/classifier roles) |
 | 1 | 1.7B | Structured enum | A10, A11, A12, A13, A14 | 5 |
-| 1 | 1.7B | Design/generation | A15, A16, A17, A18, A19, A20, A21, A22 | 8 |
+| 1 | 1.7B | Design/generation | A15, A16, A17, A18, A19, A20, A21, A22, A23 | 9 |
 
-All 9 binary tasks (A1-A9) are candidates for 0.6B. Each produces a single yes/no verdict. If 0.6B proves reliable, 9 of 22 adapters move to the smaller model — reducing total 1.7B inference load by ~40%.
+All 9 binary tasks (A1-A9) are candidates for 0.6B. Each produces a single yes/no verdict. If 0.6B proves reliable, 9 of 23 adapters move to the smaller model. Post-decomposition roadmap, the binary count will grow further as Tier 1-2 decompositions convert structured/generation sub-tasks into binary calls.
 
 ## Training Data Sources (per adapter)
 
@@ -124,11 +162,11 @@ Phase 4 uses vLLM (or llama-server) for per-request LoRA routing. The adapter ma
 
 Config-only. No code changes needed to add or remove adapters. The ModelRouter already resolves per-stage, just needs adapter_path added to ModelConfig.
 
-With 22 adapters across 2 base models, concurrent adapter loading becomes a practical concern. vLLM's `--lora-modules` allows multiple adapters loaded simultaneously. Adapter weights are small (~20-50 MB each), so 13 adapters on 1.7B adds ~260-650 MB — manageable on 24 GB VRAM.
+With 23 adapters across 2 base models (growing as decomposition roadmap executes), concurrent adapter loading becomes a practical concern. vLLM's `--lora-modules` allows multiple adapters loaded simultaneously. Adapter weights are small (~20-50 MB each) — manageable on 24 GB VRAM.
 
 ## Open Questions
 
 1. **0.6B reliability threshold.** All 9 binary tasks are natural 0.6B candidates, but 0.6B reliability on yes/no needs empirical validation. All use the same `run_binary_judgment()` call pattern, so migration is mechanical — change the LLM role from `reasoning`/`classifier` to `classifier` (pointing at 0.6B).
-2. **Minimum training examples per adapter.** With 22 adapters, some tasks (A10 change_point_enum, A11 part_grouping) produce only 1 example per task run. Teacher distillation is the volume multiplier for scarce tasks.
-3. **Adapter interference during serving.** With 13 adapters on the 1.7B and 9 on the 0.6B, memory overhead on both models must be measured. Grouping adapters by pipeline phase (retrieval adapters loaded during retrieval, execute adapters loaded during execution) could halve the concurrent adapter count.
+2. **Minimum training examples per adapter.** With 23+ adapters, some tasks (A10 change_point_enum, A11 part_grouping) produce only 1 example per task run. Teacher distillation is the volume multiplier for scarce tasks. Post-decomposition, new binary sub-tasks inherit the high-volume characteristic of Pattern 1.
+3. **Adapter interference during serving.** Adapter count grows as decomposition roadmap executes. Grouping adapters by pipeline phase (retrieval adapters loaded during retrieval, execute adapters loaded during execution) manages concurrent count.
 4. **Shared vs. separate adapters for precision passes.** Precision passes 1-3 (A2-A4) share the same base structure (task + symbol → binary) but ask different questions. Empirical question: does a single "precision" adapter with the pass number in the prompt work as well as 3 separate adapters? Fewer adapters = more training data per adapter.
