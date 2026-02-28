@@ -329,6 +329,7 @@ class TestBuildTestImplementPrompt:
             "scaffold", "function_implement",
             "change_point_enum", "part_grouping", "part_dependency",
             "symbol_targeting", "step_dependency", "step_design",
+            "interface_enum", "header_gen", "kb_pattern_relevance",
         }
         assert set(SYSTEM_PROMPTS.keys()) == expected
 

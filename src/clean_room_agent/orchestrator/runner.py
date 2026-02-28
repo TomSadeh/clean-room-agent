@@ -44,10 +44,12 @@ from clean_room_agent.execute.dataclasses import (
 )
 from clean_room_agent.execute.documentation import run_documentation_pass
 from clean_room_agent.execute.decomposed_plan import decomposed_meta_plan, decomposed_part_plan
+from clean_room_agent.execute.decomposed_scaffold import decomposed_scaffold, select_kb_patterns_for_function
 from clean_room_agent.execute.implement import execute_implement, execute_test_implement
 from clean_room_agent.execute.patch import apply_edits, rollback_edits
 from clean_room_agent.execute.plan import execute_plan
 from clean_room_agent.execute.scaffold import (
+    compile_single_file,
     execute_function_implement,
     execute_scaffold,
     extract_function_stubs,
@@ -73,6 +75,14 @@ def _use_decomposed_planning(config: dict) -> bool:
     if "decomposed_planning" not in orch:
         logger.debug("decomposed_planning not in config, defaulting to False")
     return bool(orch.get("decomposed_planning", False))
+
+
+def _use_decomposed_scaffold(config: dict) -> bool:
+    """Check if decomposed scaffold is enabled. Supplementary, default False."""
+    orch = config.get("orchestrator", {})
+    if "decomposed_scaffold" not in orch:
+        logger.debug("decomposed_scaffold not in config, defaulting to False")
+    return bool(orch.get("decomposed_scaffold", False))
 
 
 def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
@@ -750,24 +760,44 @@ def run_orchestrator(
                     trace_logger=trace_logger,
                 )
 
+                use_decomposed = _use_decomposed_scaffold(config)
+
                 with LoggedLLMClient(reasoning_config) as scaffold_llm:
-                    scaffold_result = execute_scaffold(
-                        scaffold_context, part_plan, scaffold_llm,
-                        cumulative_diff=cumulative_diff or None,
-                    )
+                    if use_decomposed:
+                        scaffold_result = decomposed_scaffold(
+                            scaffold_context, part_plan, scaffold_llm,
+                            repo_path=repo_path,
+                            cumulative_diff=cumulative_diff or None,
+                        )
+                    else:
+                        scaffold_result = execute_scaffold(
+                            scaffold_context, part_plan, scaffold_llm,
+                            cumulative_diff=cumulative_diff or None,
+                        )
                     _flush_llm_calls(
                         scaffold_llm, raw_conn, sub_task_id,
                         "execute_scaffold", "execute_scaffold", trace_logger,
                     )
 
-                # execute_scaffold raises ValueError on parse failure — no success check.
-                if not scaffold_result.edits:
-                    raise RuntimeError(
-                        f"Scaffold generation produced no edits for part {part.id}"
+                if use_decomposed:
+                    # Decomposed scaffold writes files directly — no apply_edits.
+                    # Verify files were created.
+                    all_scaffold_paths = scaffold_result.header_files + scaffold_result.source_files
+                    if not all_scaffold_paths:
+                        raise RuntimeError(
+                            f"Decomposed scaffold produced no files for part {part.id}"
+                        )
+                    scaffold_patch = PatchResult(
+                        success=True,
+                        files_modified=all_scaffold_paths,
                     )
-
-                # Apply scaffold edits (raises on failure — no success flag check needed)
-                scaffold_patch = apply_edits(scaffold_result.edits, repo_path)
+                else:
+                    # Monolithic scaffold — apply edits as before
+                    if not scaffold_result.edits:
+                        raise RuntimeError(
+                            f"Scaffold generation produced no edits for part {part.id}"
+                        )
+                    scaffold_patch = apply_edits(scaffold_result.edits, repo_path)
 
                 # Validate compilation
                 all_scaffold_files = scaffold_result.header_files + scaffold_result.source_files
@@ -834,49 +864,132 @@ def run_orchestrator(
                     if sf_path.exists():
                         scaffold_content[sf] = sf_path.read_text(encoding="utf-8", errors="replace")
 
+                # KB pattern selection (decomposed scaffold mode only)
+                use_kb = use_decomposed and scaffold_context is not None
+
                 for stub_idx, stub in enumerate(scaffold_result.function_stubs):
                     sub_task_id = f"{task_id}:func_impl:{part.id}:{stub.name}"
                     step_key = f"{part.id}:func:{stub.name}"
                     func_result = None
+                    func_success = False
 
-                    try:
-                        with LoggedLLMClient(coding_config) as func_llm:
-                            func_result = execute_function_implement(
-                                stub, scaffold_content, func_llm,
+                    # Select KB patterns if decomposed scaffold is enabled
+                    kb_patterns: list[str] | None = None
+                    if use_kb:
+                        try:
+                            with LoggedLLMClient(coding_config) as kb_llm:
+                                kb_patterns = select_kb_patterns_for_function(
+                                    stub, scaffold_context, kb_llm,
+                                )
+                                _flush_llm_calls(
+                                    kb_llm, raw_conn, sub_task_id,
+                                    "select_kb_patterns", "select_kb_patterns",
+                                    trace_logger,
+                                )
+                        except (ValueError, RuntimeError, OSError) as e:
+                            logger.warning(
+                                "KB pattern selection failed for %s (continuing without): %s",
+                                stub.name, e,
                             )
-                            _flush_llm_calls(
-                                func_llm, raw_conn, sub_task_id,
-                                "execute_function_implement", "execute_function_implement",
-                                trace_logger,
-                            )
+                            kb_patterns = None
 
-                        # Both raise on failure — no success flag checks.
-                        patch_result = apply_edits(func_result.edits, repo_path)
-                        code_patch_results.append(patch_result)
-                        steps_completed += 1
-                        step_final_outcomes[step_key] = True
+                    # Compile-and-retry loop
+                    compiler_error: str | None = None
+                    pre_impl_content: dict[str, str] | None = None
 
-                        # Update scaffold_content with the new implementation
-                        for edit in func_result.edits:
-                            if edit.file_path in scaffold_content:
-                                sf_path = repo_path / edit.file_path
-                                if sf_path.exists():
-                                    scaffold_content[edit.file_path] = sf_path.read_text(
-                                        encoding="utf-8", errors="replace"
+                    for attempt in range(max_retries + 1):
+                        suffix = f":retry_{attempt}" if attempt > 0 else ""
+                        attempt_task_id = f"{sub_task_id}{suffix}"
+
+                        try:
+                            # Save pre-implementation state on first attempt
+                            if attempt == 0:
+                                pre_impl_content = {
+                                    k: v for k, v in scaffold_content.items()
+                                    if k == stub.file_path
+                                }
+
+                            with LoggedLLMClient(coding_config) as func_llm:
+                                func_result = execute_function_implement(
+                                    stub, scaffold_content, func_llm,
+                                    kb_patterns=kb_patterns if attempt == 0 else None,
+                                    compiler_error=compiler_error,
+                                )
+                                _flush_llm_calls(
+                                    func_llm, raw_conn, attempt_task_id,
+                                    "execute_function_implement", "execute_function_implement",
+                                    trace_logger,
+                                )
+
+                            # Apply edits (raises on failure)
+                            patch_result = apply_edits(func_result.edits, repo_path)
+
+                            # Update scaffold_content with the new implementation
+                            for edit in func_result.edits:
+                                if edit.file_path in scaffold_content:
+                                    sf_path_obj = repo_path / edit.file_path
+                                    if sf_path_obj.exists():
+                                        scaffold_content[edit.file_path] = sf_path_obj.read_text(
+                                            encoding="utf-8", errors="replace"
+                                        )
+
+                            # Per-function compilation check (if decomposed scaffold)
+                            if use_decomposed:
+                                compiled, comp_error = compile_single_file(
+                                    stub.file_path, repo_path,
+                                    compiler=scaffold_compiler,
+                                    flags=scaffold_compiler_flags,
+                                )
+                                if not compiled:
+                                    logger.warning(
+                                        "Function %s compile failed (attempt %d/%d): %s",
+                                        stub.name, attempt + 1, max_retries + 1,
+                                        comp_error[:200],
                                     )
+                                    if attempt < max_retries:
+                                        # Keep failed code in place — compiler error
+                                        # references line numbers in current file
+                                        compiler_error = comp_error
+                                        continue
+                                    else:
+                                        # All retries exhausted — rollback to stub
+                                        if pre_impl_content:
+                                            for fpath, content in pre_impl_content.items():
+                                                (repo_path / fpath).write_text(
+                                                    content, encoding="utf-8",
+                                                )
+                                                scaffold_content[fpath] = content
+                                        logger.error(
+                                            "Function %s failed compilation after %d attempts, rolled back",
+                                            stub.name, max_retries + 1,
+                                        )
+                                        func_success = False
+                                        break
 
-                        cumulative_diff, commit_sha = _update_cumulative_diff(
-                            git, cumulative_diff, func_result.edits,
-                            f"cra: {part.id}:func:{stub.name}",
-                            max_diff_chars,
-                        )
-                    except (ValueError, RuntimeError, OSError) as e:
+                            # Success path
+                            code_patch_results.append(patch_result)
+                            steps_completed += 1
+                            func_success = True
+
+                            cumulative_diff, commit_sha = _update_cumulative_diff(
+                                git, cumulative_diff, func_result.edits,
+                                f"cra: {part.id}:func:{stub.name}",
+                                max_diff_chars,
+                            )
+                            break  # Exit retry loop on success
+
+                        except (ValueError, RuntimeError, OSError) as e:
+                            logger.error(
+                                "Function implement failed for %s (attempt %d): %s",
+                                stub.name, attempt + 1, e,
+                            )
+                            if attempt >= max_retries:
+                                func_success = False
+                                break
+
+                    step_final_outcomes[step_key] = func_success
+                    if not func_success:
                         all_code_steps_ok = False
-                        step_final_outcomes[step_key] = False
-                        logger.error(
-                            "Function implement failed for %s: %s",
-                            stub.name, e,
-                        )
 
                     if func_result is not None:
                         code_step_results.append(func_result)
@@ -884,7 +997,7 @@ def run_orchestrator(
                     pass_results.append(PassResult(
                         pass_type="function_implement",
                         task_run_id=None,
-                        success=step_final_outcomes[step_key],
+                        success=func_success,
                         artifact=func_result,
                     ))
 

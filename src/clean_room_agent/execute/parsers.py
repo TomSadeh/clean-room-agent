@@ -7,6 +7,7 @@ from collections import deque
 
 from clean_room_agent.execute.dataclasses import (
     ChangePointEnumeration,
+    InterfaceEnumeration,
     MetaPlan,
     MetaPlanPart,
     PartGrouping,
@@ -51,6 +52,32 @@ def parse_plan_response(text: str, pass_type: str) -> MetaPlan | PartPlan | Plan
         return PartPlan.from_dict(data)
     else:
         raise ValueError(f"Unknown pass_type: {pass_type!r}")
+
+
+def parse_scaffold_response(text: str, pass_type: str) -> InterfaceEnumeration:
+    """Parse a decomposed scaffold LLM response into a typed dataclass.
+
+    Args:
+        text: Raw LLM response text (may include markdown fencing).
+        pass_type: Must be "interface_enum".
+
+    Raises:
+        ValueError: On malformed JSON, missing required fields, or unknown pass_type.
+    """
+    if pass_type != "interface_enum":
+        raise ValueError(f"Unknown scaffold pass_type: {pass_type!r}")
+
+    data = parse_json_response(text, context=f"{pass_type} scaffold")
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object for {pass_type}, got {type(data).__name__}")
+
+    result = InterfaceEnumeration.from_dict(data)
+    if not result.functions:
+        raise ValueError(
+            "InterfaceEnumeration has no functions — scaffold requires at least "
+            "one function to generate stubs"
+        )
+    return result
 
 
 # Regex for finding <edit file="...">...</edit> blocks.

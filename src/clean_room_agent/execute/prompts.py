@@ -199,6 +199,50 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "- Leave depends_on as empty arrays — dependencies are determined in a separate pass\n"
         "- Output only valid JSON"
     ),
+    "interface_enum": (
+        "You are Jane, a C interface designer. Given a codebase context and a part plan, "
+        "enumerate all types and function signatures needed for this part.\n\n"
+        "Output a JSON object with exactly these fields:\n"
+        "- types: array of objects, each with:\n"
+        "  - name: string — type name (e.g. \"HashEntry\")\n"
+        "  - kind: one of \"struct\", \"enum\", \"typedef\", \"union\"\n"
+        "  - fields_description: string — describe the fields/members\n"
+        "  - file_path: string — which .h file this type belongs in\n"
+        "- functions: array of objects, each with:\n"
+        "  - name: string — function name\n"
+        "  - return_type: string — C return type\n"
+        "  - params: string — C parameter list (e.g. \"const char *key, int value\")\n"
+        "  - purpose: string — what this function does (becomes the docstring contract)\n"
+        "  - file_path: string — which .h file declares this\n"
+        "  - source_file: string — which .c file implements this\n"
+        "- includes: array of strings — system headers needed (e.g. \"stdlib.h\", \"string.h\")\n\n"
+        "Rules:\n"
+        "- Every function that will be implemented must appear in the functions list\n"
+        "- Group related types and functions into the same .h file\n"
+        "- The purpose field is the implementation contract — be precise about behavior, "
+        "edge cases, ownership semantics, and return values\n"
+        "- Output only valid JSON, no markdown fencing or extra text"
+    ),
+    "header_gen": (
+        "You are Jane, a C header file generator. Given an interface specification, "
+        "generate a single .h header file.\n\n"
+        "Output ONLY the raw C header file content. No XML tags, no markdown fencing, "
+        "no explanation — just the C code that would be written to the .h file.\n\n"
+        "Requirements:\n"
+        "- #include guard using the filename (e.g. HASH_TABLE_H for hash_table.h)\n"
+        "- All #include directives for system headers\n"
+        "- All struct/enum/typedef/union definitions with field comments\n"
+        "- All function declarations with parameter names and docstring comments\n"
+        "- Docstring comments must describe behavior, return values, error conditions, "
+        "and preconditions\n"
+        "- The header must compile with gcc -fsyntax-only"
+    ),
+    "kb_pattern_relevance": (
+        "You are a relevance classifier. You will be given a knowledge base section "
+        "and a function to implement. Determine whether the KB section contains "
+        "patterns, techniques, or examples relevant to implementing this function.\n\n"
+        "Answer with exactly one word: \"yes\" or \"no\""
+    ),
     "scaffold": (
         "You are Jane, a C code architect. Given a plan with implementation steps, "
         "generate a complete compilable scaffold.\n\n"
@@ -259,6 +303,8 @@ _PLAN_PASS_TYPES = frozenset({
     "meta_plan", "part_plan", "test_plan", "adjustment",
     "change_point_enum", "part_grouping", "symbol_targeting", "step_design",
 })
+
+_SCAFFOLD_PASS_TYPES = frozenset({"interface_enum", "header_gen"})
 
 _IMPLEMENT_STEP_HEADERS: dict[str, str] = {
     "implement": "Step to Implement",
@@ -361,6 +407,57 @@ def build_decomposed_plan_prompt(
 
     if prior_stage_output:
         parts.append(f"\n<prior_analysis>\n{prior_stage_output}\n</prior_analysis>\n")
+
+    if cumulative_diff:
+        parts.append(f"\n<prior_changes>\n{cumulative_diff}\n</prior_changes>\n")
+
+    user = "".join(parts)
+
+    # R3: Budget validation
+    validate_prompt_budget(user, system, model_config.context_window, model_config.max_tokens, pass_type)
+
+    return system, user
+
+
+def build_decomposed_scaffold_prompt(
+    context: ContextPackage,
+    task_description: str,
+    *,
+    pass_type: str,
+    model_config: ModelConfig,
+    prior_stage_output: str | None = None,
+    cumulative_diff: str | None = None,
+    kb_patterns: list[str] | None = None,
+) -> tuple[str, str]:
+    """Build system and user prompts for a decomposed scaffold pass.
+
+    Like build_decomposed_plan_prompt() but for scaffold stages
+    (interface_enum, header_gen). Accepts prior_stage_output in
+    <prior_analysis> tags and optional KB patterns.
+
+    Returns:
+        (system_prompt, user_prompt)
+
+    Raises:
+        ValueError: If pass_type is unknown or prompt exceeds budget.
+    """
+    if pass_type not in _SCAFFOLD_PASS_TYPES:
+        raise ValueError(f"Unknown scaffold pass_type: {pass_type!r}")
+    system = SYSTEM_PROMPTS[pass_type]
+
+    parts = [context.to_prompt_text()]
+    if task_description != context.task.raw_task:
+        parts.append(f"\n# Current Objective\n{task_description}\n")
+
+    if prior_stage_output:
+        parts.append(f"\n<prior_analysis>\n{prior_stage_output}\n</prior_analysis>\n")
+
+    if kb_patterns:
+        patterns_section = "\n<reference_patterns>\n"
+        for i, pattern in enumerate(kb_patterns):
+            patterns_section += f"--- Pattern {i+1} ---\n{pattern}\n"
+        patterns_section += "</reference_patterns>\n"
+        parts.append(patterns_section)
 
     if cumulative_diff:
         parts.append(f"\n<prior_changes>\n{cumulative_diff}\n</prior_changes>\n")
@@ -536,6 +633,9 @@ def build_function_implement_prompt(
     stub: "FunctionStub",
     scaffold_content: dict[str, str],
     model_config: ModelConfig,
+    *,
+    kb_patterns: list[str] | None = None,
+    compiler_error: str | None = None,
 ) -> tuple[str, str]:
     """Build system and user prompts for per-function implementation.
 
@@ -543,6 +643,8 @@ def build_function_implement_prompt(
         stub: The function stub to implement.
         scaffold_content: dict mapping file_path -> full scaffold source.
         model_config: Model config for budget validation.
+        kb_patterns: Optional KB pattern content for reference.
+        compiler_error: Optional compiler error from a previous failed attempt.
 
     Returns:
         (system_prompt, user_prompt)
@@ -574,6 +676,24 @@ def build_function_implement_prompt(
         parts.append(f"Contract:\n{stub.docstring}\n")
     if stub.dependencies:
         parts.append(f"May call: {', '.join(stub.dependencies)}\n")
+
+    # KB reference patterns (decomposed scaffold mode)
+    if kb_patterns:
+        patterns_section = "\n<reference_patterns>\n"
+        for i, pattern in enumerate(kb_patterns):
+            patterns_section += f"--- Pattern {i+1} ---\n{pattern}\n"
+        patterns_section += "</reference_patterns>\n"
+        parts.append(patterns_section)
+
+    # Compiler error from previous failed attempt (retry mode)
+    if compiler_error:
+        parts.append(
+            f"\n<compiler_error>\n"
+            f"The previous implementation failed to compile. Fix the error below.\n"
+            f"Do NOT rewrite from scratch — fix the specific issue.\n\n"
+            f"{compiler_error}\n"
+            f"</compiler_error>\n"
+        )
 
     user = "".join(parts)
 

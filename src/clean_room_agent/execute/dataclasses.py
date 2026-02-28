@@ -238,6 +238,47 @@ class PlanAdjustment(_SerializableMixin):
     _NON_EMPTY = ("rationale",)
 
 
+# -- Decomposed scaffold data structures --
+
+
+@dataclass
+class InterfaceType(_SerializableMixin):
+    """A type declaration identified during interface enumeration."""
+    name: str           # e.g. "HashEntry"
+    kind: str           # "struct" | "enum" | "typedef" | "union"
+    fields_description: str
+    file_path: str      # which .h file
+
+    _REQUIRED = ("name", "kind", "fields_description", "file_path")
+    _NON_EMPTY = ("name", "kind", "file_path")
+
+
+@dataclass
+class InterfaceFunction(_SerializableMixin):
+    """A function signature identified during interface enumeration."""
+    name: str
+    return_type: str
+    params: str         # C parameter list text
+    purpose: str        # becomes the docstring
+    file_path: str      # which .h declares this
+    source_file: str    # which .c implements this
+
+    _REQUIRED = ("name", "return_type", "params", "purpose", "file_path", "source_file")
+    _NON_EMPTY = ("name", "return_type", "file_path", "source_file")
+
+
+@dataclass
+class InterfaceEnumeration(_SerializableMixin):
+    """Result of the interface enumeration stage of decomposed scaffold."""
+    types: list[InterfaceType]
+    functions: list[InterfaceFunction]
+    includes: list[str]  # system headers needed (e.g. "stdlib.h")
+
+    _REQUIRED = ("types", "functions", "includes")
+    _NESTED = {"types": InterfaceType, "functions": InterfaceFunction}
+    _VALIDATE_LISTS = ("includes",)
+
+
 # -- User-facing plan format --
 
 @dataclass

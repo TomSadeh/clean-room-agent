@@ -143,16 +143,7 @@ def extract_function_stubs(
 
     Requires tree-sitter-c grammar. Raises ImportError if not installed.
     """
-    try:
-        import tree_sitter_c as tsc
-        from tree_sitter import Language, Parser
-    except ImportError as e:
-        raise ImportError(
-            "tree-sitter-c is required for scaffold stub extraction. "
-            "Install with: pip install tree-sitter-c"
-        ) from e
-
-    parser = Parser(Language(tsc.language()))
+    parser = get_c_parser()
     stubs: list[FunctionStub] = []
 
     for source_file in source_files:
@@ -165,9 +156,9 @@ def extract_function_stubs(
         tree = parser.parse(source_bytes)
 
         # Find the corresponding header file (same basename, .h extension)
-        header_file = _find_header_for_source(source_file)
+        header_file = find_header_for_source(source_file)
 
-        for node in _iter_function_definitions(tree.root_node):
+        for node in iter_function_definitions(tree.root_node):
             body_node = node.child_by_field_name("body")
             if body_node is None:
                 continue
@@ -178,7 +169,7 @@ def extract_function_stubs(
 
             # Extract function name from declarator
             declarator = node.child_by_field_name("declarator")
-            func_name = _extract_function_name(declarator, source_bytes)
+            func_name = extract_function_name(declarator, source_bytes)
             if not func_name:
                 continue
 
@@ -206,21 +197,69 @@ def extract_function_stubs(
     return stubs
 
 
+def compile_single_file(
+    file_path: str,
+    repo_path: Path,
+    *,
+    compiler: str = "gcc",
+    flags: str = "-c -fsyntax-only -Wall",
+) -> tuple[bool, str]:
+    """Compile a single .c file and return (success, error_output).
+
+    Extracted from validate_scaffold_compilation() for per-function use.
+    Returns (True, "") on success, (False, stderr) on failure.
+    """
+    compiler_path = shutil.which(compiler)
+    if compiler_path is None:
+        raise RuntimeError(
+            f"Scaffold compiler {compiler!r} not found on PATH. "
+            f"Install it or set scaffold_enabled = false in config."
+        )
+
+    full_path = repo_path / file_path
+    if not full_path.exists():
+        return False, f"{file_path}: file not found"
+
+    cmd = [compiler_path] + flags.split() + [str(full_path)]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(repo_path),
+        )
+        if result.returncode != 0:
+            return False, result.stderr
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, f"{file_path}: compilation timed out"
+
+
 def execute_function_implement(
     stub: FunctionStub,
     scaffold_content: dict[str, str],
     llm: LoggedLLMClient,
+    *,
+    kb_patterns: list[str] | None = None,
+    compiler_error: str | None = None,
 ) -> StepResult:
     """Implement one function body from its scaffold stub.
 
     Context per call: header file(s) + source file containing the stub +
     the stub's docstring. Much smaller context than full ContextPackage.
 
+    Args:
+        kb_patterns: Optional KB pattern content for reference.
+        compiler_error: Optional compiler error from a previous failed attempt.
+
     Raises ValueError on parse failure — caller handles logging to raw DB.
     """
     system, user = build_function_implement_prompt(
         stub, scaffold_content,
         model_config=llm.config,
+        kb_patterns=kb_patterns,
+        compiler_error=compiler_error,
     )
 
     response = llm.complete(user, system=system)
@@ -252,10 +291,26 @@ def is_c_part(part_plan: PartPlan) -> bool:
     )
 
 
-# -- Internal helpers --
+# -- Helpers (public for reuse by decomposed_scaffold.py) --
 
 
-def _find_header_for_source(source_file: str) -> str | None:
+def get_c_parser():
+    """Create and return a tree-sitter Parser configured for C.
+
+    Raises ImportError if tree-sitter-c is not installed.
+    """
+    try:
+        import tree_sitter_c as tsc
+        from tree_sitter import Language, Parser
+    except ImportError as e:
+        raise ImportError(
+            "tree-sitter-c is required for scaffold operations. "
+            "Install with: pip install tree-sitter-c"
+        ) from e
+    return Parser(Language(tsc.language()))
+
+
+def find_header_for_source(source_file: str) -> str | None:
     """Find header file corresponding to a .c source file."""
     if source_file.endswith(".c"):
         header = source_file[:-2] + ".h"
@@ -263,15 +318,15 @@ def _find_header_for_source(source_file: str) -> str | None:
     return None
 
 
-def _iter_function_definitions(node):
+def iter_function_definitions(node):
     """Yield all function_definition nodes in the tree."""
     if node.type == "function_definition":
         yield node
     for child in node.children:
-        yield from _iter_function_definitions(child)
+        yield from iter_function_definitions(child)
 
 
-def _extract_function_name(declarator, source_bytes: bytes) -> str | None:
+def extract_function_name(declarator, source_bytes: bytes) -> str | None:
     """Extract the function name from a declarator node."""
     if declarator is None:
         return None
@@ -292,6 +347,11 @@ def _extract_function_name(declarator, source_bytes: bytes) -> str | None:
                     return source_bytes[c.start_byte:c.end_byte].decode("utf-8")
             break
     return None
+
+
+# Backwards-compatible aliases for internal callers
+_find_header_for_source = find_header_for_source
+_extract_function_name = extract_function_name
 
 
 def _extract_preceding_comment(func_node, source_bytes: bytes) -> str:
