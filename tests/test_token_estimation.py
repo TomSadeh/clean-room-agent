@@ -1,10 +1,13 @@
 """Tests for token_estimation.py constants and budget validation (A15)."""
 
+import logging
+
 import pytest
 
 from clean_room_agent.token_estimation import (
     CHARS_PER_TOKEN,
     CHARS_PER_TOKEN_CONSERVATIVE,
+    budget_truncate,
     check_prompt_budget,
     validate_prompt_budget,
 )
@@ -102,3 +105,78 @@ class TestValidatePromptBudget:
         system = "b" * 300
         with pytest.raises(ValueError, match=r"200 tokens.*available 70"):
             validate_prompt_budget(prompt, system, 100, 30, "x")
+
+
+class TestBudgetTruncate:
+    """Tests for budget_truncate(): budget-aware content truncation."""
+
+    def test_no_op_when_content_fits(self):
+        """Content shorter than budget passes through unchanged."""
+        content = "short text"
+        result = budget_truncate(
+            content, 1000, 100,
+            max_content_fraction=0.5, stage_name="test",
+        )
+        assert result == content
+
+    def test_head_truncation(self):
+        """Default keep='head' truncates from the end."""
+        # Budget = (1000 - 100) * 3 * 0.5 = 1350 chars
+        content = "x" * 2000
+        result = budget_truncate(
+            content, 1000, 100,
+            max_content_fraction=0.5, stage_name="test",
+        )
+        expected_len = int((1000 - 100) * CHARS_PER_TOKEN_CONSERVATIVE * 0.5)
+        assert len(result) == expected_len
+        assert result == "x" * expected_len
+
+    def test_tail_truncation(self):
+        """keep='tail' truncates from the beginning."""
+        content = "A" * 500 + "B" * 500
+        # Budget = (1000 - 100) * 3 * 0.2 = 540 chars
+        result = budget_truncate(
+            content, 1000, 100,
+            max_content_fraction=0.2, stage_name="test", keep="tail",
+        )
+        expected_len = int((1000 - 100) * CHARS_PER_TOKEN_CONSERVATIVE * 0.2)
+        assert len(result) == expected_len
+        # Should keep the tail (B's)
+        assert result.endswith("B" * min(500, expected_len))
+
+    def test_zero_budget_raises_value_error(self):
+        """Non-positive budget is a programming error — fail fast."""
+        with pytest.raises(ValueError, match="non-positive budget"):
+            budget_truncate(
+                "content", 100, 100,  # available = 0
+                max_content_fraction=0.5, stage_name="test",
+            )
+
+    def test_warning_logged_on_truncation(self, caplog):
+        """Truncation events must be logged for traceability."""
+        content = "x" * 2000
+        with caplog.at_level(logging.WARNING):
+            budget_truncate(
+                content, 1000, 100,
+                max_content_fraction=0.5, stage_name="my_stage",
+            )
+        assert any("my_stage" in r.message and "truncated" in r.message for r in caplog.records)
+
+    def test_no_warning_when_no_truncation(self, caplog):
+        """No warning when content fits within budget."""
+        with caplog.at_level(logging.WARNING):
+            budget_truncate(
+                "short", 10000, 100,
+                max_content_fraction=0.5, stage_name="test",
+            )
+        assert not any("truncated" in r.message for r in caplog.records)
+
+    def test_exact_boundary_no_truncation(self):
+        """Content exactly at budget limit passes through."""
+        max_chars = int((1000 - 100) * CHARS_PER_TOKEN_CONSERVATIVE * 0.5)
+        content = "x" * max_chars
+        result = budget_truncate(
+            content, 1000, 100,
+            max_content_fraction=0.5, stage_name="test",
+        )
+        assert result == content

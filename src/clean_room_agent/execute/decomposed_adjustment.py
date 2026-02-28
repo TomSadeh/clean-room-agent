@@ -28,7 +28,7 @@ from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import ContextPackage
-from clean_room_agent.token_estimation import validate_prompt_budget
+from clean_room_agent.token_estimation import budget_truncate, validate_prompt_budget
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,6 @@ _PATCH_PATTERNS = [
     re.compile(r"Patch.*failed|search.*not found|could not find", re.I),
 ]
 
-_FAILURE_MESSAGE_CAP = 500
-
-
 def _classify_failure(text: str) -> str:
     """Classify failure text into a category using regex patterns.
 
@@ -78,11 +75,14 @@ def _classify_failure(text: str) -> str:
 
 def extract_failure_signals(
     prior_results: list[StepResult] | None,
+    context_window: int,
+    max_tokens: int,
 ) -> list[FailureSignal]:
     """Deterministically extract and categorize failure messages from step results.
 
     No LLM calls. Uses regex patterns against error_info and raw_response
-    to classify failures into categories.
+    to classify failures into categories. Truncates messages via budget_truncate
+    so downstream prompts stay within budget.
 
     Returns empty list if prior_results is None or all steps succeeded.
     """
@@ -95,7 +95,10 @@ def extract_failure_signals(
             continue
 
         if not sr.success and sr.error_info:
-            msg = sr.error_info[:_FAILURE_MESSAGE_CAP]
+            msg = budget_truncate(
+                sr.error_info, context_window, max_tokens,
+                max_content_fraction=0.2, stage_name="failure_signal_extraction",
+            )
             category = _classify_failure(sr.error_info)
             signals.append(FailureSignal(
                 category=category, message=msg, source="error_info",
@@ -183,9 +186,6 @@ def _run_step_viability(
 # Stage 3: Binary root cause attribution
 # ---------------------------------------------------------------------------
 
-_ROOT_CAUSE_DIFF_CAP_CHARS = 2000  # ~500 tokens for 0.6B binary prompt
-
-
 def _format_root_cause_pair(pair: tuple[tuple[int, FailureSignal], PlanStep]) -> str:
     """Format a (failure, step) pair for root cause binary judgment."""
     (fail_idx, fs), step = pair
@@ -237,10 +237,14 @@ def _run_root_cause_attribution(
 
     system_prompt = SYSTEM_PROMPTS["adjustment_root_cause"]
 
-    # Truncate diff for 0.6B binary prompts
+    # Budget-aware diff truncation for 0.6B binary prompts
     diff_context = ""
     if cumulative_diff:
-        capped_diff = cumulative_diff[-_ROOT_CAUSE_DIFF_CAP_CHARS:]
+        capped_diff = budget_truncate(
+            cumulative_diff, llm.config.context_window, llm.config.max_tokens,
+            max_content_fraction=0.3, stage_name="adjustment_root_cause_diff",
+            keep="tail",
+        )
         diff_context = f"Prior changes (most recent):\n<prior_changes>{capped_diff}</prior_changes>\n"
 
     verdict_map, _omitted = run_binary_judgment(
@@ -347,23 +351,21 @@ def _build_finalize_prompt(
     has_root_causes = False
     for step_id, fail_indices in verdicts.root_causes.items():
         for fi in fail_indices:
-            if fi < len(verdicts.failure_signals):
-                fs = verdicts.failure_signals[fi]
-                verdict_lines.append(
-                    f"- {step_id} caused failure [{fi}]: [{fs.category}] {fs.message}"
-                )
-                has_root_causes = True
+            fs = verdicts.failure_signals[fi]
+            verdict_lines.append(
+                f"- {step_id} caused failure [{fi}]: [{fs.category}] {fs.message}"
+            )
+            has_root_causes = True
     if not has_root_causes:
         verdict_lines.append("- (none)")
 
     verdict_lines.append("\nNew steps needed for:")
     if verdicts.new_steps_needed:
         for fi in verdicts.new_steps_needed:
-            if fi < len(verdicts.failure_signals):
-                fs = verdicts.failure_signals[fi]
-                verdict_lines.append(
-                    f"- Failure [{fi}]: [{fs.category}] {fs.message} -- unattributed, needs new step"
-                )
+            fs = verdicts.failure_signals[fi]
+            verdict_lines.append(
+                f"- Failure [{fi}]: [{fs.category}] {fs.message} -- unattributed, needs new step"
+            )
     else:
         verdict_lines.append("- (none)")
     verdict_lines.append("</adjustment_verdicts>")
@@ -469,7 +471,9 @@ def decomposed_adjustment(
         )
 
     # Stage 1: Deterministic failure extraction
-    failure_signals = extract_failure_signals(prior_results)
+    failure_signals = extract_failure_signals(
+        prior_results, llm.config.context_window, llm.config.max_tokens,
+    )
 
     # Edge case: no failures -> return steps unchanged
     if not failure_signals:

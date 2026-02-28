@@ -101,22 +101,22 @@ def _make_steps(*ids_and_descs):
 
 class TestExtractFailureSignals:
     def test_extract_none_prior_results_returns_empty(self):
-        assert extract_failure_signals(None) == []
+        assert extract_failure_signals(None, 32768, 4096) == []
 
     def test_extract_no_failures_returns_empty(self):
         results = [StepResult(success=True)]
-        assert extract_failure_signals(results) == []
+        assert extract_failure_signals(results, 32768, 4096) == []
 
     def test_extract_success_result_returns_empty(self):
         results = [StepResult(success=True, error_info=None)]
-        assert extract_failure_signals(results) == []
+        assert extract_failure_signals(results, 32768, 4096) == []
 
     def test_extract_compile_error_categorization(self):
         results = [StepResult(
             success=False,
             error_info="error: implicit declaration of function 'hash_init'",
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_COMPILE
         assert signals[0].source == "error_info"
@@ -126,7 +126,7 @@ class TestExtractFailureSignals:
             success=False,
             error_info="gcc: error: no input files",
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_COMPILE
 
@@ -135,7 +135,7 @@ class TestExtractFailureSignals:
             success=False,
             error_info="test_insert FAILED: assertion hash_size == 3 failed",
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_TEST
 
@@ -144,7 +144,7 @@ class TestExtractFailureSignals:
             success=False,
             error_info="could not find search text in hash_table.c",
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_PATCH
 
@@ -153,7 +153,7 @@ class TestExtractFailureSignals:
             success=False,
             error_info=None,
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_UNKNOWN
         assert signals[0].source == "step_failed"
@@ -163,7 +163,7 @@ class TestExtractFailureSignals:
             success=False,
             error_info="some completely novel error type",
         )]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_UNKNOWN
 
@@ -173,16 +173,28 @@ class TestExtractFailureSignals:
             StepResult(success=True),
             StepResult(success=False, error_info="test_bar FAILED"),
         ]
-        signals = extract_failure_signals(results)
+        signals = extract_failure_signals(results, 32768, 4096)
         assert len(signals) == 2
         assert signals[0].category == FAILURE_CATEGORY_COMPILE
         assert signals[1].category == FAILURE_CATEGORY_TEST
 
     def test_extract_truncates_long_messages(self):
+        """Budget-aware truncation: fraction=0.2, context=1000, max_tokens=100.
+        Budget = (1000 - 100) * 3 * 0.2 = 540 chars. 1000-char msg gets truncated.
+        """
         long_msg = "x" * 1000
         results = [StepResult(success=False, error_info=long_msg)]
-        signals = extract_failure_signals(results)
-        assert len(signals[0].message) == 500
+        signals = extract_failure_signals(results, 1000, 100)
+        expected_len = int((1000 - 100) * 3 * 0.2)
+        assert len(signals[0].message) == expected_len
+        assert expected_len < 1000
+
+    def test_extract_no_truncation_when_budget_sufficient(self):
+        """With large context window, messages pass through untouched."""
+        msg = "error: foo bar" * 10
+        results = [StepResult(success=False, error_info=msg)]
+        signals = extract_failure_signals(results, 32768, 4096)
+        assert signals[0].message == msg
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +498,33 @@ class TestBuildFinalizePrompt:
             context_package, "fix", verdicts, steps, None,
         )
         assert "needs new step" in prompt
+
+    def test_build_prompt_invalid_failure_index_raises(self, context_package):
+        """H4: Invalid failure index in root_causes raises IndexError."""
+        steps = _make_steps(("s1", "Init"))
+        signals = [FailureSignal("compile_error", "error: foo", "error_info")]
+        verdicts = AdjustmentVerdicts(
+            step_viability={"s1": True},
+            root_causes={"s1": [999]},  # invalid index
+            new_steps_needed=[], failure_signals=signals,
+        )
+        with pytest.raises(IndexError):
+            _build_finalize_prompt(
+                context_package, "fix", verdicts, steps, None,
+            )
+
+    def test_build_prompt_invalid_new_step_index_raises(self, context_package):
+        """H4: Invalid failure index in new_steps_needed raises IndexError."""
+        steps = _make_steps(("s1", "Init"))
+        signals = [FailureSignal("compile_error", "error: foo", "error_info")]
+        verdicts = AdjustmentVerdicts(
+            step_viability={"s1": True}, root_causes={},
+            new_steps_needed=[999], failure_signals=signals,
+        )
+        with pytest.raises(IndexError):
+            _build_finalize_prompt(
+                context_package, "fix", verdicts, steps, None,
+            )
 
 
 # ---------------------------------------------------------------------------

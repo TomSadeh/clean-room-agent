@@ -16,7 +16,7 @@ from clean_room_agent.execute.dataclasses import CompilerErrorClassification, Fu
 from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
-from clean_room_agent.token_estimation import validate_prompt_budget
+from clean_room_agent.token_estimation import budget_truncate, validate_prompt_budget
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,10 @@ def _resolve_missing_include(
     Raises ValueError if LLM returns unparseable output.
     """
     system = SYSTEM_PROMPTS["error_which_include"]
-    truncated = comp_error[:800] if len(comp_error) > 800 else comp_error
+    truncated = budget_truncate(
+        comp_error, llm.config.context_window, llm.config.max_tokens,
+        max_content_fraction=0.5, stage_name="error_which_include",
+    )
 
     validate_prompt_budget(
         truncated, system,
@@ -265,8 +268,11 @@ def classify_compiler_error(
         )
         return det_result
 
-    # Truncate error for binary prompts (keep it small for 0.6B)
-    truncated_error = comp_error[:500] if len(comp_error) > 500 else comp_error
+    # Budget-aware truncation for binary prompts (keep it small for 0.6B)
+    truncated_error = budget_truncate(
+        comp_error, llm.config.context_window, llm.config.max_tokens,
+        max_content_fraction=0.3, stage_name="error_classify_binary",
+    )
 
     # Build shared task context
     task_context = (
