@@ -40,7 +40,7 @@ def parse_plan_response(text: str, pass_type: str) -> MetaPlan | PartPlan | Plan
         return PartPlan.from_dict(data)
     elif pass_type == "test_plan":
         return PartPlan.from_dict(data)
-    elif pass_type == "adjustment":
+    elif pass_type in ("adjustment", "adjustment_finalize"):
         return PlanAdjustment.from_dict(data)
     elif pass_type == "change_point_enum":
         return ChangePointEnumeration.from_dict(data)

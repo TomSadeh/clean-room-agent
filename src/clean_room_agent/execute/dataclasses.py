@@ -238,6 +238,32 @@ class PlanAdjustment(_SerializableMixin):
     _NON_EMPTY = ("rationale",)
 
 
+# -- Decomposed adjustment data structures --
+
+
+@dataclass
+class FailureSignal(_SerializableMixin):
+    """A single categorized failure extracted from a StepResult."""
+    category: str     # "compile_error", "test_failure", "patch_failure", "runtime_error", "unknown"
+    message: str      # the raw failure text (truncated if necessary)
+    source: str       # "error_info", "raw_response", or "step_failed"
+
+    _REQUIRED = ("category", "message", "source")
+    _NON_EMPTY = ("category", "message", "source")
+
+
+@dataclass
+class AdjustmentVerdicts(_SerializableMixin):
+    """Aggregated binary verdicts from the decomposed adjustment sub-tasks."""
+    step_viability: dict[str, bool]         # step_id -> still valid?
+    root_causes: dict[str, list[int]]       # step_id -> [failure_indices it caused]
+    new_steps_needed: list[int]             # failure_indices that need new steps
+    failure_signals: list[FailureSignal]    # the extracted failures (for context)
+
+    _REQUIRED = ("step_viability", "root_causes", "new_steps_needed", "failure_signals")
+    _NESTED = {"failure_signals": FailureSignal}
+
+
 # -- Decomposed scaffold data structures --
 
 

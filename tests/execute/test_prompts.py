@@ -330,6 +330,8 @@ class TestBuildTestImplementPrompt:
             "change_point_enum", "part_grouping", "part_grouping_binary", "part_dependency",
             "symbol_targeting", "step_dependency", "step_design",
             "interface_enum", "header_gen", "kb_pattern_relevance",
+            "adjustment_step_viability", "adjustment_root_cause",
+            "adjustment_new_step", "adjustment_finalize",
         }
         assert set(SYSTEM_PROMPTS.keys()) == expected
 

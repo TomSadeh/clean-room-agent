@@ -43,6 +43,7 @@ from clean_room_agent.execute.dataclasses import (
     StepResult,
 )
 from clean_room_agent.execute.documentation import run_documentation_pass
+from clean_room_agent.execute.decomposed_adjustment import decomposed_adjustment
 from clean_room_agent.execute.decomposed_plan import decomposed_meta_plan, decomposed_part_plan
 from clean_room_agent.execute.decomposed_scaffold import decomposed_scaffold, select_kb_patterns_for_function
 from clean_room_agent.execute.implement import execute_implement, execute_test_implement
@@ -91,6 +92,14 @@ def _use_decomposed_scaffold(config: dict) -> bool:
     if "decomposed_scaffold" not in orch:
         logger.debug("decomposed_scaffold not in config, defaulting to False")
     return bool(orch.get("decomposed_scaffold", False))
+
+
+def _use_decomposed_adjustment(config: dict) -> bool:
+    """Check if decomposed adjustment is enabled. Supplementary, default False."""
+    orch = config.get("orchestrator", {})
+    if "decomposed_adjustment" not in orch:
+        logger.debug("decomposed_adjustment not in config, defaulting to False")
+    return bool(orch.get("decomposed_adjustment", False))
 
 
 def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
@@ -1152,12 +1161,21 @@ def run_orchestrator(
                             )
 
                             with LoggedLLMClient(reasoning_config) as adj_llm:
-                                adjustment = execute_plan(
-                                    adj_context, remaining_desc, adj_llm,
-                                    pass_type="adjustment",
-                                    prior_results=[step_result] if step_result else None,
-                                    cumulative_diff=cumulative_diff or None,
-                                )
+                                if _use_decomposed_adjustment(config):
+                                    remaining = sorted_steps[step_idx + 1:]
+                                    adjustment = decomposed_adjustment(
+                                        adj_context, remaining_desc, adj_llm,
+                                        prior_results=[step_result] if step_result else None,
+                                        remaining_steps=remaining,
+                                        cumulative_diff=cumulative_diff or None,
+                                    )
+                                else:
+                                    adjustment = execute_plan(
+                                        adj_context, remaining_desc, adj_llm,
+                                        pass_type="adjustment",
+                                        prior_results=[step_result] if step_result else None,
+                                        cumulative_diff=cumulative_diff or None,
+                                    )
                                 _flush_llm_calls(adj_llm, raw_conn, adj_sub_task_id, "execute_adjust", "execute_adjust", trace_logger)
 
                             adj_task_run_id = _get_task_run_id(raw_conn, adj_sub_task_id)

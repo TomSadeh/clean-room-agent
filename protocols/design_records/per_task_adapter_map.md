@@ -30,6 +30,9 @@ All judgment tasks use `run_binary_judgment()` — one LLM call per candidate, p
 | A7 | **Step dependency** | `step_dependency` | Step A description + Step B description | yes/no | Was the dependency edge correct? | reasoning | Fail-fast (ValueError) |
 | A8 | **KB pattern relevance** | `kb_pattern_relevance` | Function stub + KB section (first 500 chars) | yes/no | Did selected KB patterns improve implementation? | coding | R2 default-deny |
 | A9 | **Routing** | `ROUTING_BINARY_SYSTEM` | Task summary + stage name + description | yes/no | Did selected stages produce useful output? | (orchestrator) | R2 default-deny |
+| A20a | **Step viability** | `adjustment_step_viability` | Failure signals + single step description | yes/no | Was the step correctly kept/dropped? | classifier | R2 default-deny (all-omitted → ValueError) |
+| A20b | **Root cause attribution** | `adjustment_root_cause` | Single failure + single step + cumulative_diff (capped) | yes/no | Was attribution correct? | classifier | R2 default-deny (not_attributed) |
+| A20c | **New step detection** | `adjustment_new_step` | Unattributed failure + remaining steps summary | yes/no | Did new steps resolve unattributed failures? | classifier | R2 default-deny (no_new_step) |
 
 ### Pattern 3 — Structured Enumeration (single call, structured output)
 
@@ -54,7 +57,7 @@ These tasks produce multi-line structured or code output. Highest per-call compl
 | A17 | **Implement (per-step)** | `implement` | Curated context + step description | Search/replace code edits | Did edits apply cleanly? Did validation pass? |
 | A18 | **Function implement** | `function_implement` | Scaffold + function stub + KB patterns + compiler error (if retry) | Function body | Compiles? Passes function-level tests? |
 | A19 | **Test implement** | `test_implement` | Context + test step description | Test code edits | Tests compile? Tests catch known-bad implementations? |
-| A20 | **Adjustment** | `adjustment` | Test failures + prior changes + remaining steps | Revised step sequence | Did revised steps succeed? |
+| A20d | **Adjustment finalize** | `adjustment_finalize` | Binary verdicts (A20a-c) + remaining steps + cumulative_diff | Revised step sequence (PlanAdjustment) | Did revised steps succeed? (reduced complexity vs. monolithic A20) |
 | A21 | **Documentation** | `documentation` | Source file + task context | Docstring/comment edits | AST-based doc verification pass |
 | A22 | **Refilter** | (refilter) | File list with sizes + budget | Subset of files to keep | Did execute succeed with the kept subset? |
 | A23 | **File enrichment** | `ENRICHMENT_SYSTEM` | Source file + symbol list + docstrings | JSON: purpose, module, domain, concepts, public_api_surface, complexity_notes | Did enrichment improve scope/precision recall? |
@@ -68,6 +71,7 @@ When decomposed planning/scaffold is disabled (`orchestrator.decomposed_planning
 | M1 | **Meta-plan** (monolithic) | A10 + A11 + A6 | MetaPlan (parts with dependency edges) |
 | M2 | **Part-plan** (monolithic) | A12 + A15 + A7 | PartPlan (steps with dependency edges) |
 | M3 | **Scaffold** (monolithic) | A13 + A16 + stubs | ScaffoldResult (headers + stubs as PatchEdits) |
+| M4 | **Adjustment** (monolithic) | A20a + A20b + A20c + A20d | PlanAdjustment (revised step sequence) |
 
 These are not separate adapter targets — they're the pre-decomposition versions of the same tasks. If decomposition is active (the default path), they are unused.
 
@@ -82,6 +86,7 @@ The following decompositions from the original design record are **now implement
 | Scaffold → interface enum + header gen + deterministic stubs | **Done** | `execute/decomposed_scaffold.py`: `decomposed_scaffold()` |
 | Precision → 3-pass binary cascade | **Done** | `retrieval/precision.py`: pass1 (relevance) → pass2 (primary) → pass3 (supporting) |
 | Per-function implementation (scaffold path) | **Done** | `orchestrator/runner.py`: per-stub loop with `execute_function_implement()` |
+| Adjustment → failure extract + binary viability + binary root cause + binary new step + finalize | **Done** | `execute/decomposed_adjustment.py`: `decomposed_adjustment()` |
 
 ## Decomposition-First Principle
 
@@ -100,7 +105,7 @@ Opportunities identified from code review (2026-02-28). Organized by implementat
 | Task | Current | Decomposition | Pattern |
 |---|---|---|---|
 | **A11** part grouping | ~~1.7B: produce clustered groups~~ **Done** | Pairwise binary: "same part?" → union-find → deterministic descriptions | Deterministic enum → N×binary 0.6B → deterministic post-process |
-| **A20** adjustment | 1.7B: revise all steps at once | Binary viability per step + binary root cause per (failure, step) pair + binary "need new step?" → finalize | Deterministic enum → N×binary 0.6B → focused 1.7B finalize |
+| **A20** adjustment | ~~1.7B: revise all steps at once~~ **Done** | Binary viability per step + binary root cause per (failure, step) pair + binary "need new step?" → finalize | Deterministic enum → N×binary 0.6B → focused 1.7B finalize |
 | **A18** function implement (retry) | 1.7B: blind retry with compiler error | Add binary error classification: "missing include vs. logic error vs. missing definition?" → route recovery | +1 binary 0.6B call on retry path only |
 
 **Tier 2 — Decompose next** (high value, more implementation complexity):
