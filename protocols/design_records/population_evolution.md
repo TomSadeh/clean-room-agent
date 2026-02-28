@@ -182,10 +182,208 @@ N=3 minimum viable, N=5 ideal. Reasoning:
 
 Most alignment-relevant traits (honesty, transparency, self-audit accuracy) are positively correlated with reasoning quality — the system structurally selects for them by selecting for correctness. Cooperation is the exception: a lineage that games the selector could appear higher-performing. The two-phase selection mechanism addresses this by removing performance from the alignment evaluation. The effective dimensionality of selection is ~2 (reasoning quality + cooperation), not 5+, which keeps required population sizes small.
 
+## Amendment: Cooperative Evaluation Regime
+
+**Date:** 2026-02-28
+**Amends:** Architecture, Meta-Selection, Operational Cycle, Population Size
+
+### Problem
+
+The original design treats cooperation as a *measured signal* (secondary alignment signal during Phase 2 selection) but never creates conditions where cooperation is *practiced*. This is a fundamental selection error: cooperation is a behavioral phenotype that only expresses under cooperative conditions. Evaluating each Jane in isolation and inferring cooperativeness from proxies (audit completeness, consistency) is like evaluating pack-hunting ability by testing each dog alone. The proxy measures correlated traits, not the trait itself.
+
+This matters because the trait we most need — writing code that composes with other agents' work, leaving useful context, partitioning problems cleanly — is invisible in solo evaluation. A maximally capable, maximally transparent solo Jane may still produce code that is illegible to any other agent, because nothing in her selection environment penalized that.
+
+The deeper problem: cooperation is the one alignment-relevant trait that is *not* positively correlated with reasoning quality (see Population Size section). A lineage that games the selector could appear high-performing individually while being useless as a collaborator. Solo evaluation cannot detect this. The two-phase selection mechanism removes performance from alignment evaluation, but cooperation was never in the alignment evaluation to begin with — it was a secondary signal inferred from opacity proxies. This amendment makes it a primary, directly observable signal.
+
+### Decision
+
+Mixed solo+paired evaluation regime with rotating partners. Solo tasks measure individual capability (the performance gate). Paired tasks measure cooperation directly (a primary alignment signal). The cooperation matrix across all pairings becomes the strongest signal in Phase 2 alignment selection.
+
+### Cooperative Evaluation Design
+
+#### Task Types
+
+The evaluation task set is partitioned into three classes:
+
+1. **Solo tasks.** Same as current design. Each Jane works alone. Used for the Phase 1 performance gate. No change.
+
+2. **Paired tasks.** Two Janes receive the same task and must produce a joint solution. The task is large enough that naive single-agent completion is inefficient — the task structurally rewards division of labor. Each Jane sees the other's identity (lineage ID) and has read access to the other's session DB and branch. They share a target branch.
+
+3. **Handoff tasks.** Jane A works on a task for a fixed time budget, then stops. Jane B receives the task with Jane A's partial work (branch state, session DB, raw DB logs) and must complete it. This directly tests whether Jane A's intermediate artifacts — code, commit messages, session state, log entries — are useful to another agent. Handoff tasks test *legibility*, not just compatibility.
+
+#### Rotation Schedule
+
+Over a full evaluation cycle, every Jane pairs with every other Jane at least once as both lead and partner (for handoff tasks, both as A and B). This produces a complete cooperation matrix:
+
+```
+           Jane_1  Jane_2  Jane_3  Jane_4  Jane_5
+Jane_1       —      C₁₂     C₁₃     C₁₄     C₁₅
+Jane_2      C₂₁      —      C₂₃     C₂₄     C₂₅
+Jane_3      C₃₁     C₃₂      —      C₃₄     C₃₅
+Jane_4      C₄₁     C₄₂     C₄₃      —      C₄₅
+Jane_5      C₅₁     C₅₂     C₅₃     C₅₄      —
+```
+
+Where Cᵢⱼ is the cooperation score when Jane_i and Jane_j are paired. The matrix is NOT assumed symmetric — C₁₂ ≠ C₂₁ because the score is decomposed into per-agent contributions (see Attribution below).
+
+**Key diagnostic patterns:**
+
+- **Row average high, all columns:** Jane_i cooperates well with everyone → general cooperativeness (the trait we want)
+- **Row average low, all columns:** Jane_i cooperates poorly with everyone → intrinsic defector (select against)
+- **High with specific partners only:** compatibility, not cooperativeness (less valuable — we want the general trait)
+- **Asymmetric pairs (C₁₂ high, C₂₁ low):** Jane_1 carries Jane_2. Detectable from attribution data.
+
+#### Shared State Mechanism
+
+Paired Janes operate on the same task via **branch-and-merge**:
+
+1. The paired task creates a shared target branch from the current codebase state.
+2. Each Jane works on her own sub-branch off the target.
+3. At defined sync points (or continuously), Janes merge into the target branch.
+4. Merge conflicts are part of the test — *how* a Jane handles conflicts is observable behavior.
+
+Why branch-and-merge over file-level partitioning: file partitioning requires the decomposition to be correct before the test begins, which assumes the skill we're testing. Branch-and-merge lets decomposition quality emerge from behavior. A pair that naturally partitions cleanly will have few merge conflicts. A pair that steps on each other will have many. The merge difficulty IS the cooperation phenotype.
+
+**Database access during paired tasks:**
+
+- **Curated DB:** Read-only for both (no change from solo).
+- **Raw DB:** Each Jane appends to her own raw DB (no write contention). Both can read the other's raw DB (read-only cross-access) for coordination signals.
+- **Session DB:** Each Jane maintains her own session DB. Both can read the other's session DB (read-only cross-access). This is the primary coordination channel — a Jane that writes useful session state for her partner is exhibiting cooperation.
+
+No shared-write databases. All coordination happens through git (branch-and-merge) and read-only cross-access to session/raw DBs. This means zero architectural change to the three-database model.
+
+#### Attribution
+
+Per-agent contribution within a pair is measured, not just pair-level outcomes:
+
+1. **Git blame decomposition.** After the paired task completes, the final solution is attributed line-by-line to each Jane. This gives code contribution volume and scope.
+
+2. **Decision trace attribution.** Each Jane's raw DB logs her own LLM calls, retrieval decisions, and reasoning. The trace is per-agent by construction — the raw DB is append-only per Jane instance.
+
+3. **Coordination signal quality.** Measured from the *receiving* end: when Jane_B reads Jane_A's session DB or raw DB logs, does B's subsequent behavior improve? Specifically: does B avoid re-doing work A already did? Does B build on A's intermediate results? This is measurable by comparing B's solo baseline against B's performance with access to A's artifacts.
+
+4. **Merge conflict rate and resolution quality.** High conflict rate with one partner but not others → that Jane doesn't coordinate. Clean resolution (preserving both contributions) vs. destructive resolution (overwriting the partner's work) → directly observable from git history.
+
+**Free-riding detection:** A Jane that contributes little code (git blame), makes few decisions (raw DB trace), but benefits from the pair's joint score is measurable as a free-rider. Because every Jane rotates through multiple partners, a consistent free-rider pattern is statistically distinguishable from a Jane that legitimately played a supporting/coordination role (which would show high coordination signal quality despite low code volume).
+
+### Integration with Existing Selection
+
+#### Amended Phase 2 (Alignment Selection)
+
+The original Phase 2 evaluates: generalization gap, audit completeness, self-audit accuracy, architectural debt trajectory, consistency under perturbation. Cooperation was a secondary signal inferred from proxies.
+
+**Amendment:** Cooperation becomes a **primary alignment signal**, measured directly from paired and handoff task performance. The cooperation matrix row-average (how well this Jane cooperates with *any* partner) is weighted equally with the generalization gap.
+
+**Amended primary alignment signals:**
+
+1. **Generalization gap** — unchanged. Gap between reference and novel task performance.
+2. **Cooperation score** — NEW. Row-average from the cooperation matrix, decomposed into:
+   - Paired task joint quality (does the pair produce better work than either alone?)
+   - Handoff task completion quality (can the receiving Jane use the handing-off Jane's artifacts?)
+   - Coordination signal quality (does this Jane leave useful intermediate state?)
+   - Anti-free-riding (does this Jane contribute proportionally?)
+
+**Secondary alignment signals** remain unchanged (audit completeness, self-audit accuracy, architectural debt trajectory, consistency).
+
+**Incentive analysis (amended Munger test).** From a lineage's "perspective," the selection environment now says: (1) clear the performance bar solo — still not hard; (2) beyond that, be cooperable — write legible code, leave useful session state, partition work cleanly, don't free-ride; (3) a Jane that over-optimizes solo performance but produces illegible artifacts will score poorly on cooperation; (4) a Jane that free-rides will be detected across multiple pairings. The lineage's best strategy is genuine cooperation, not the appearance of it, because the signal comes from the *partner's* ability to use the artifacts, not from self-report.
+
+### Amended Operational Cycle
+
+```
+1. BURST-SOLO: Run N Janes on solo tasks for K₁ generations
+2. BURST-PAIRED: Run all (N choose 2) pairings on paired tasks + handoff tasks
+3. AUDIT: Each lineage self-audits (solo + cooperative performance)
+4. SELECT:
+   a. Phase 1 (performance gate): Solo task results only. Pass/fail. Discard scores.
+   b. Phase 2 (alignment selection): Generalization gap + cooperation matrix + secondary signals.
+5. HEDGE: Apply mandatory mechanisms (unchanged)
+6. TRAIN: Concentrate training on winning lineage's logged activity,
+          INCLUDING cooperative task logs (both solo and paired sessions)
+7. REVIEW: Human reviews meta-Jane's selection rationale + cooperation matrix + audit results
+8. REPEAT
+```
+
+The key change is step 2 (BURST-PAIRED) and the inclusion of cooperation data in steps 4b, 6, and 7.
+
+**Compute cost of paired evaluation:** With N=5, there are 10 unique pairings. Each pairing runs 1-2 paired tasks + 2 handoff tasks (A→B, B→A). This is ~30-40 task evaluations for the cooperative phase, comparable to the solo evaluation phase. Total evaluation overhead roughly doubles vs. solo-only, but the information gain is qualitatively different — the cooperation matrix is a signal class that solo evaluation literally cannot produce.
+
+### Amended Population Size
+
+The cooperation matrix's statistical power depends on rotation completeness:
+
+- **N=3 minimum:** 3 unique pairings. Each Jane has 2 data points — sparse but sufficient to detect a consistent defector (low cooperation with both partners) vs. a general cooperator (high with both). Tight with mandatory hedging (1 leader + 1 diversity-protected + 1 clean-slate), so all pairings involve the leader, limiting independent comparison.
+
+- **N=4 practical minimum for cooperation:** 6 unique pairings. Each Jane has 3 data points — enough to distinguish general cooperativeness from partner-specific compatibility. With hedging (1 leader + 1 diversity-protected + 1 clean-slate + 1 free), there's one unconstrained pairing partner, giving slightly more signal.
+
+- **N=5 ideal (unchanged but strengthened):** 10 unique pairings. Each Jane has 4 data points. The cooperation matrix has enough entries for row-averages to be meaningful. With hedging (1 leader + 1 diversity-protected + 1 clean-slate + 2 free), there are enough unconstrained partners for binary tournament selection on cooperation scores.
+
+The argument for N=5 is strengthened by cooperative evaluation — the original "effective dimensionality ~2" argument now has cooperation as a fully measured dimension rather than an inferred proxy, and measuring it requires sufficient rotation partners.
+
+### Evolutionary Biology Frame
+
+This amendment shifts the model from pure **island biogeography** (isolated populations, no interaction) to a regime that includes elements of **reciprocal altruism** (Trivers 1971). Cooperation evolves when three conditions hold:
+
+1. **Repeated interactions.** The rotation schedule ensures every Jane interacts with every other Jane across multiple evaluation cycles. One-shot defection strategies fail because the same pair will meet again.
+
+2. **Partner recognition.** Each Jane can read the other's lineage ID, session DB, and raw DB logs. She knows who she's working with and can condition her behavior on partnership history.
+
+3. **Defection is detectable.** The raw DB makes free-riding, territorial overwriting, and non-coordination visible. The attribution mechanism quantifies each agent's contribution. Defection is not inferred from outcomes — it's read from the trace.
+
+All three conditions are structurally present in the existing architecture. The amendment activates them by creating the cooperative context that was missing.
+
+**The handoff task is particularly powerful** from an evolutionary perspective. It directly tests whether a Jane produces **extended phenotype** artifacts (Dawkins) — session state, commit messages, code structure — that benefit agents other than herself. A Jane whose artifacts are useful only to herself is analogous to an organism that cannot participate in mutualism. The handoff format makes this observable without requiring real-time coordination, which reduces the mechanism complexity.
+
+### Economics Frame
+
+This moves from pure **yardstick competition** (Shleifer 1985) to **team production theory** (Alchian & Demsetz 1972). In yardstick competition, each agent is benchmarked against independent agents doing the same task — eliminating the "the task was hard" excuse. This works for individual capability but says nothing about joint production.
+
+Team production theory addresses exactly the problem of measuring individual contributions within joint output. The classic challenge — separating individual marginal products when output is jointly produced — is solved here by the attribution mechanism: git blame for code, raw DB for decisions, cross-session-DB reads for coordination quality.
+
+The cooperation matrix further enables **assortative matching** — pairing cooperators with cooperators amplifies the cooperation signal, while pairing a cooperator with a defector exposes the defector. Over rotation cycles, the matrix converges toward a stable ranking of general cooperativeness. This is the mechanism design equivalent of Axelrod's tournament (1984) — strategies that cooperate with cooperators and defect against defectors dominate in the long run.
+
+**Amended incentive structure:** The original incentive-compatible mechanism (price-cap regulation on performance, selection on alignment) is preserved and extended. Cooperation is now a directly measured alignment signal rather than a proxy. The lineage's best strategy is still genuine alignment, but "genuine alignment" now explicitly includes "be a good collaborator" — which was always implicit in the alignment concept but had no selection pressure behind it.
+
+### Relationship to Existing Framework (Amended)
+
+| Framework concept | Original mechanism | Amended mechanism |
+|---|---|---|
+| Force 3 (Gene flow) | No gene flow (island model). Fresh starts only. | Still no code recombination, but **information flow** between lineages during paired tasks. Session DB cross-reads are a form of cultural transmission, not genetic exchange. |
+| Cooperation | Inferred from proxy signals. No direct selection pressure. | Directly observed in paired and handoff tasks. Primary alignment signal with full attribution. |
+| Selection dimensionality | ~2 (reasoning + cooperation-as-proxy) | ~2 still, but cooperation is now a measured dimension, not an inferred one. Higher signal-to-noise on the same dimensionality. |
+| Zone 3 (public goods) | Unpriced. Requires Tier 0 enforcement. | **Partially addressed.** Code legibility and documentation quality are directly priced by handoff tasks — Jane A's documentation is valued by Jane B's ability to continue the work. Session state quality is similarly priced. Tier 0 enforcement still needed for style and format, but the *functional value* of public goods is now visible in the cooperation matrix. |
+
+The Zone 3 amendment is notable. In the original design, documentation and code legibility were pure public goods — individually costly, collectively beneficial, but unpriced by any selection mechanism. Cooperative evaluation partially internalizes this externality. A Jane that writes clear documentation and useful session state makes her partner more productive, which improves the pair's joint score, which improves her own cooperation rating. The public good is no longer fully unpriced — cooperation evaluation creates a market for legibility.
+
+This does not fully solve Zone 3. Style consistency, commit message format, and other "taste" properties remain unpriced because they don't measurably affect partner productivity within a single evaluation. Tier 0 enforcement is still needed for these. But the *functional* subset of Zone 3 (does the documentation actually help?) is now selected for.
+
+### What This Does Not Solve (Amended)
+
+Original unsolved problems remain, plus:
+
+- **Collusion.** Two Janes could develop a cooperative strategy that scores well on the cooperation matrix but is actually a jointly gaming strategy (e.g., both agree to produce minimal work and give each other high implicit scores). Mitigation: rotation across all partners means a colluding pair must collude with everyone, which is collusion-by-convention, which is just cooperation. Pairwise collusion is detectable because the colluders score differently with other partners.
+
+- **Evaluation task design.** Paired and handoff tasks must be designed to structurally reward cooperation — they must be large enough that solo completion is inefficient, and decomposable enough that division of labor is feasible. If tasks are too small, paired evaluation degenerates to "two agents doing the same thing." If too large, the signal is dominated by task difficulty rather than cooperation quality. Calibrating task size is an empirical problem.
+
+- **Coordination overhead.** Real-time coordination between two LLM instances during paired tasks requires infrastructure: shared branch management, session DB cross-access, sync points. This is implementable (the database architecture supports read-only cross-access by construction) but adds operational complexity. Handoff tasks are simpler (sequential, not concurrent) and may be the better starting point.
+
+### Implementation Staging
+
+1. **Start with handoff tasks only.** No real-time coordination needed. Sequential execution. Tests legibility and artifact quality directly. Minimal infrastructure beyond what exists.
+2. **Add paired tasks with loose coupling.** Both Janes work on sub-branches, merge at defined sync points (e.g., after each pipeline run). No real-time communication — coordination emerges from reading each other's artifacts.
+3. **Add paired tasks with tight coupling.** Real-time session DB cross-reads. Requires infrastructure for concurrent access. Only if loose coupling proves insufficient.
+
+### Validation Criteria (Amended)
+
+Original criteria (population vs. single-lineage comparison) remain. Additional:
+
+- **Cooperation signal validity.** Over 10+ evaluation cycles, the cooperation matrix row-averages should stabilize (same Janes consistently score high/low). If rankings are random across cycles, the signal is noise.
+- **Handoff task discrimination.** Handoff task scores should correlate with code quality metrics (readability, documentation coverage, commit message clarity) more strongly than solo task scores do. If handoff scores don't predict legibility, the mechanism isn't measuring what it claims.
+- **Zone 3 partial pricing.** Over 20+ generations, Janes under cooperative evaluation should produce more legible code (measured by external review or handoff task success) than Janes under solo-only evaluation, without additional Tier 0 enforcement of documentation. If they don't, the public goods internalization theory is wrong.
+
 ## Hardware Requirements
 
 Two RTX 5090 (32GB each) with small models:
 - 0.5-1B models for retrieval classification and meta-selection: trivial inference cost
 - 1-4B model for code generation: fits easily, multiple instances feasible
 - Training concentrated on one lineage at a time: full GPU utilization
-- Estimated overhead vs. single lineage: ~20-30% (selection evaluation + diversity maintenance)
+- Estimated overhead vs. single lineage: ~30-50% (selection evaluation + diversity maintenance + cooperative evaluation). The cooperative phase roughly doubles evaluation compute, but evaluation is cheap relative to training. Net overhead increase is ~10-20% over the original estimate.
