@@ -160,7 +160,12 @@ def _deterministic_include_check(
 
     Returns None if the error does not match any known pattern.
     """
-    file_content = scaffold_content.get(file_path, "")
+    if file_path not in scaffold_content:
+        raise ValueError(
+            f"Scaffold file not in scaffold_content: {file_path}. "
+            f"Available: {sorted(scaffold_content.keys())}"
+        )
+    file_content = scaffold_content[file_path]
 
     for pattern in (_IMPLICIT_DECL_PATTERN, _UNDECLARED_ID_PATTERN, _UNKNOWN_TYPE_PATTERN):
         match = pattern.search(comp_error)
@@ -327,7 +332,12 @@ def classify_compiler_error(
             ),
         )
 
-    # Stage 5: Default -- logic error
+    # Stage 5: Default -- logic error (R2: log when default fires)
+    logger.warning(
+        "Compiler error for %s classified as default logic_error "
+        "(no binary classifier matched): %s",
+        stub.name, comp_error[:200],
+    )
     return CompilerErrorClassification(
         category=ERROR_CAT_LOGIC_ERROR,
         raw_error=comp_error,

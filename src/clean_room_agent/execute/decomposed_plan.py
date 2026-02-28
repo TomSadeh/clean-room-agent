@@ -409,11 +409,12 @@ def _run_part_dependencies(
         )
 
     # Build dependency dict: {part_id: [depends_on_ids]}
+    # omitted check above guarantees all keys present in verdict_map
     dep_edges: dict[str, list[str]] = {p.id: [] for p in parts}
     for pair in pairs:
         a, b = pair
         key = f"{a.id}->{b.id}"
-        if verdict_map.get(key, False):
+        if verdict_map[key]:
             dep_edges[b.id].append(a.id)
 
     return dep_edges
@@ -431,7 +432,7 @@ def _assemble_meta_plan(
             id=pg.id,
             description=pg.description,
             affected_files=list(pg.affected_files),
-            depends_on=list(dep_edges.get(pg.id, [])),
+            depends_on=list(dep_edges[pg.id]),
         ))
 
     meta_plan = MetaPlan(
@@ -588,11 +589,12 @@ def _run_step_dependencies(
         )
 
     # Build dependency dict: {step_id: [depends_on_ids]}
+    # omitted check above guarantees all keys present in verdict_map
     dep_edges: dict[str, list[str]] = {s.id: [] for s in steps}
     for pair in pairs:
         a, b = pair
         key = f"{a.id}->{b.id}"
-        if verdict_map.get(key, False):
+        if verdict_map[key]:
             dep_edges[b.id].append(a.id)
 
     return dep_edges
@@ -610,7 +612,7 @@ def _assemble_part_plan(
             description=step.description,
             target_files=list(step.target_files),
             target_symbols=list(step.target_symbols),
-            depends_on=list(dep_edges.get(step.id, [])),
+            depends_on=list(dep_edges[step.id]),
         ))
 
     part_plan = PartPlan(

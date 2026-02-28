@@ -123,6 +123,12 @@ class TestDeterministicIncludeCheck:
         result = _deterministic_include_check(error, "src/main.c", content)
         assert result is None
 
+    def test_missing_scaffold_file_raises_value_error(self):
+        """M3: Missing file_path in scaffold_content is a programming error."""
+        error = "src/main.c:10:5: warning: implicit declaration of function 'printf'"
+        with pytest.raises(ValueError, match="Scaffold file not in scaffold_content"):
+            _deterministic_include_check(error, "src/missing.c", {"src/other.c": ""})
+
 
 # ---------------------------------------------------------------------------
 # Tests for add_include_to_file()
@@ -273,6 +279,15 @@ class TestClassifyCompilerError:
         result = classify_compiler_error(error, "src/hash_table.c", scaffold_content, stub, llm)
         assert result.category == ERROR_CAT_LOGIC_ERROR
         assert result.diagnostic_context is None
+
+    def test_default_logic_error_logs_warning(self, model_config, stub, scaffold_content, caplog):
+        """M4: R2 says log a warning when the default fires."""
+        import logging
+        error = "src/hash_table.c:20:10: error: expected ';' after expression"
+        llm = _make_mock_llm(model_config, ["no", "no", "no"])
+        with caplog.at_level(logging.WARNING):
+            classify_compiler_error(error, "src/hash_table.c", scaffold_content, stub, llm)
+        assert any("default logic_error" in r.message for r in caplog.records)
 
     def test_short_circuit_stops_after_first_yes(self, model_config, stub, scaffold_content):
         error = "some error"

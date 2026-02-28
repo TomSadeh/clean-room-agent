@@ -167,6 +167,17 @@ class TestExtractFailureSignals:
         assert len(signals) == 1
         assert signals[0].category == FAILURE_CATEGORY_UNKNOWN
 
+    def test_unknown_classification_logs_warning(self, caplog):
+        """M6: R2 says log when the default fires."""
+        import logging
+        results = [StepResult(
+            success=False,
+            error_info="some completely novel error type",
+        )]
+        with caplog.at_level(logging.WARNING):
+            extract_failure_signals(results, 32768, 4096)
+        assert any("classified as unknown" in r.message for r in caplog.records)
+
     def test_extract_multiple_failures(self):
         results = [
             StepResult(success=False, error_info="gcc: error: redefinition of 'foo'"),
@@ -303,6 +314,18 @@ class TestRootCauseAttribution:
         assert result == {"s1": [0]}
         assert llm.complete.call_count == 1
 
+    def test_root_cause_all_omitted_raises(self, model_config):
+        """M7: All judgments failing to parse is a hard error."""
+        failures = [FailureSignal("compile_error", "error", "error_info")]
+        steps = _make_steps(("s1", "Step 1"))
+        viability = {"s1": True}
+        # Unparseable response -> omitted
+        llm = _make_mock_llm(model_config, ["maybe possibly"])
+        with pytest.raises(ValueError, match="root cause attribution judgments failed"):
+            _run_root_cause_attribution(
+                failures, steps, viability, None, "fix", llm,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tests for new step detection (stage 4)
@@ -339,6 +362,16 @@ class TestNewStepDetection:
         llm = _make_mock_llm(model_config, [])
         result = _run_new_step_detection([], _make_steps(("s1", "A")), "fix", llm)
         assert result == []
+
+    def test_new_step_all_omitted_raises(self, model_config):
+        """M7: All judgments failing to parse is a hard error."""
+        failures = [
+            (0, FailureSignal("test_failure", "test FAILED", "error_info")),
+        ]
+        steps = _make_steps(("s1", "A"))
+        llm = _make_mock_llm(model_config, ["maybe possibly"])
+        with pytest.raises(ValueError, match="new step detection judgments failed"):
+            _run_new_step_detection(failures, steps, "fix", llm)
 
 
 # ---------------------------------------------------------------------------

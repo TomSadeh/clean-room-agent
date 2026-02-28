@@ -258,6 +258,21 @@ class TestAssembleMetaPlan:
         with pytest.raises(ValueError, match="validation failed"):
             _assemble_meta_plan(enum_result, grouping, dep_edges)
 
+    def test_missing_dep_edges_key_raises(self):
+        """M1: Missing key in dep_edges is an invariant violation."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+            ],
+        )
+        grouping = PartGrouping(parts=[
+            PartGroup(id="p1", description="d1", change_point_indices=[0], affected_files=["a.py"]),
+        ])
+        dep_edges = {}  # Missing p1 key
+        with pytest.raises(KeyError):
+            _assemble_meta_plan(enum_result, grouping, dep_edges)
+
 
 # -- Symbol targeting tests --
 
@@ -355,6 +370,17 @@ class TestAssemblePartPlan:
         )
         dep_edges = {"s1": ["s2"], "s2": ["s1"]}
         with pytest.raises(ValueError, match="validation failed"):
+            _assemble_part_plan(step_plan, dep_edges)
+
+    def test_missing_dep_edges_key_raises(self):
+        """M1: Missing key in dep_edges is an invariant violation."""
+        step_plan = PartPlan(
+            part_id="p1", task_summary="t",
+            steps=[PlanStep(id="s1", description="d1")],
+            rationale="r",
+        )
+        dep_edges = {}  # Missing s1 key
+        with pytest.raises(KeyError):
             _assemble_part_plan(step_plan, dep_edges)
 
 

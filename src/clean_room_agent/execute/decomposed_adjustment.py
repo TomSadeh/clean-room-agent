@@ -70,6 +70,11 @@ def _classify_failure(text: str) -> str:
     for pat in _PATCH_PATTERNS:
         if pat.search(text):
             return FAILURE_CATEGORY_PATCH
+    # R2: log when default fires — no pattern matched
+    logger.warning(
+        "Failure text classified as unknown (no regex matched): %.200s",
+        text,
+    )
     return FAILURE_CATEGORY_UNKNOWN
 
 
@@ -247,7 +252,7 @@ def _run_root_cause_attribution(
         )
         diff_context = f"Prior changes (most recent):\n<prior_changes>{capped_diff}</prior_changes>\n"
 
-    verdict_map, _omitted = run_binary_judgment(
+    verdict_map, omitted = run_binary_judgment(
         pairs,
         system_prompt=system_prompt,
         task_context=diff_context,
@@ -257,6 +262,13 @@ def _run_root_cause_attribution(
         item_key=lambda pair: f"{pair[0][0]}:{pair[1].id}",
         default_action="not_attributed",
     )
+
+    # Fail-fast: if ALL judgments failed to parse, crash
+    if omitted and len(omitted) == len(pairs):
+        raise ValueError(
+            f"All {len(pairs)} root cause attribution judgments failed to parse. "
+            f"Omitted keys: {sorted(omitted)}. Cannot proceed with adjustment."
+        )
 
     # Build result: step_id -> list of failure indices
     result: dict[str, list[int]] = {}
@@ -309,7 +321,7 @@ def _run_new_step_detection(
     system_prompt = SYSTEM_PROMPTS["adjustment_new_step"]
     task_context = _format_remaining_steps_summary(remaining_steps) + "\n"
 
-    verdict_map, _omitted = run_binary_judgment(
+    verdict_map, omitted = run_binary_judgment(
         unattributed_failures,
         system_prompt=system_prompt,
         task_context=task_context,
@@ -319,6 +331,13 @@ def _run_new_step_detection(
         item_key=lambda pair: pair[0],
         default_action="no_new_step",
     )
+
+    # Fail-fast: if ALL judgments failed to parse, crash
+    if omitted and len(omitted) == len(unattributed_failures):
+        raise ValueError(
+            f"All {len(unattributed_failures)} new step detection judgments failed to parse. "
+            f"Omitted keys: {sorted(omitted)}. Cannot proceed with adjustment."
+        )
 
     return [fail_idx for fail_idx, _fs in unattributed_failures if verdict_map.get(fail_idx, False)]
 

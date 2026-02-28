@@ -4,7 +4,12 @@ import tomllib
 
 import pytest
 
-from clean_room_agent.config import create_default_config, load_config, require_models_config
+from clean_room_agent.config import (
+    create_default_config,
+    load_config,
+    require_environment_config,
+    require_models_config,
+)
 
 
 class TestLoadConfig:
@@ -110,3 +115,23 @@ class TestCreateDefaultConfig:
         config = load_config(tmp_path)
         assert "orchestrator" in config
         assert config["orchestrator"]["documentation_pass"] is True
+
+
+class TestRequireEnvironmentConfig:
+    def test_none_config_returns_default(self):
+        result = require_environment_config(None)
+        assert result["coding_style"] == "development"
+
+    def test_missing_environment_section_returns_default(self):
+        result = require_environment_config({"models": {}})
+        assert result["coding_style"] == "development"
+
+    def test_valid_coding_style(self):
+        config = {"environment": {"coding_style": "development"}}
+        result = require_environment_config(config)
+        assert result["coding_style"] == "development"
+
+    def test_missing_coding_style_raises_key_error(self):
+        config = {"environment": {"other_key": "value"}}
+        with pytest.raises(KeyError, match="coding_style"):
+            require_environment_config(config)

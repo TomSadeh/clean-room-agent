@@ -163,8 +163,16 @@ def require_environment_config(config: dict | None) -> dict:
 
     if config is None:
         return {"coding_style": _DEFAULT_CODING_STYLE}
-    section = config["environment"]
-    coding_style = section["coding_style"]
+    section = config.get("environment")
+    if section is None:
+        return {"coding_style": _DEFAULT_CODING_STYLE}
+    try:
+        coding_style = section["coding_style"]
+    except KeyError:
+        raise KeyError(
+            "Missing 'coding_style' in [environment] config section. "
+            "Expected one of the valid coding styles."
+        ) from None
     if coding_style not in CODING_STYLES:
         raise ValueError(
             f"Unknown coding_style {coding_style!r} in [environment] config. "
