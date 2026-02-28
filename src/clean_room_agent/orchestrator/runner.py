@@ -910,22 +910,15 @@ def run_orchestrator(
                     # Select KB patterns if decomposed scaffold is enabled
                     kb_patterns: list[str] | None = None
                     if use_kb:
-                        try:
-                            with LoggedLLMClient(coding_config) as kb_llm:
-                                kb_patterns = select_kb_patterns_for_function(
-                                    stub, scaffold_context, kb_llm,
-                                )
-                                _flush_llm_calls(
-                                    kb_llm, raw_conn, sub_task_id,
-                                    "select_kb_patterns", "select_kb_patterns",
-                                    trace_logger,
-                                )
-                        except (ValueError, RuntimeError, OSError) as e:
-                            logger.warning(
-                                "KB pattern selection failed for %s (continuing without): %s",
-                                stub.name, e,
+                        with LoggedLLMClient(coding_config) as kb_llm:
+                            kb_patterns = select_kb_patterns_for_function(
+                                stub, scaffold_context, kb_llm,
                             )
-                            kb_patterns = None
+                            _flush_llm_calls(
+                                kb_llm, raw_conn, sub_task_id,
+                                "select_kb_patterns", "select_kb_patterns",
+                                trace_logger,
+                            )
 
                     # Compile-and-retry loop
                     compiler_error: str | None = None
@@ -978,28 +971,21 @@ def run_orchestrator(
                                     logger.warning(
                                         "Function %s compile failed (attempt %d/%d): %s",
                                         stub.name, attempt + 1, max_retries + 1,
-                                        comp_error[:200],
+                                        comp_error,
                                     )
 
                                     # Classify error and attempt deterministic recovery
                                     if use_error_classification:
-                                        try:
-                                            with LoggedLLMClient(coding_config) as cls_llm:
-                                                classification = classify_compiler_error(
-                                                    comp_error, stub.file_path,
-                                                    scaffold_content, stub, cls_llm,
-                                                )
-                                                _flush_llm_calls(
-                                                    cls_llm, raw_conn, attempt_task_id,
-                                                    "classify_compiler_error", "classify_compiler_error",
-                                                    trace_logger,
-                                                )
-                                        except (ValueError, RuntimeError, OSError) as e:
-                                            logger.warning(
-                                                "Error classification failed for %s (falling back to blind retry): %s",
-                                                stub.name, e,
+                                        with LoggedLLMClient(coding_config) as cls_llm:
+                                            classification = classify_compiler_error(
+                                                comp_error, stub.file_path,
+                                                scaffold_content, stub, cls_llm,
                                             )
-                                            classification = None
+                                            _flush_llm_calls(
+                                                cls_llm, raw_conn, attempt_task_id,
+                                                "classify_compiler_error", "classify_compiler_error",
+                                                trace_logger,
+                                            )
 
                                         if classification is not None and classification.category == ERROR_CAT_MISSING_INCLUDE and classification.suggested_include:
                                             # Deterministic fix: insert include and re-compile
