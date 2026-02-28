@@ -71,7 +71,7 @@ def pipeline_repo(tmp_path):
     return tmp_path, repo_id, fid1, fid2
 
 
-def _mock_llm_complete(prompt, system=None):
+def _mock_llm_complete(prompt, system=None, *, sub_stage=None):
     """Mock LLM that returns different responses based on system prompt.
 
     Binary decomposition: routing, scope, and precision all use per-item
@@ -113,7 +113,7 @@ def _make_mock_llm_instance():
     mock_instance.__enter__ = MagicMock(return_value=mock_instance)
     mock_instance.__exit__ = MagicMock(return_value=False)
 
-    def _recording_complete(prompt, system=None):
+    def _recording_complete(prompt, system=None, *, sub_stage=None):
         response = _mock_llm_complete(prompt, system)
         mock_instance.calls.append({
             "prompt": prompt,
@@ -362,7 +362,7 @@ class TestRunPipeline:
         # First context manager: task analysis succeeds
         # Second context manager: scope stage's LLM call raises
         call_count = 0
-        def _side_effect(prompt, system=None):
+        def _side_effect(prompt, system=None, *, sub_stage=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -402,7 +402,7 @@ class TestPipelineExceptionHandling:
 
         # Make the scope stage raise a TypeError (unexpected)
         call_count = 0
-        def _side_effect(prompt, system=None):
+        def _side_effect(prompt, system=None, *, sub_stage=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -439,7 +439,7 @@ class TestPipelineExceptionHandling:
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
         call_count = 0
-        def _side_effect(prompt, system=None):
+        def _side_effect(prompt, system=None, *, sub_stage=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -880,7 +880,7 @@ class TestPipelineRouting:
 
         call_count = 0
 
-        def _routing_skips_all(prompt, system=None):
+        def _routing_skips_all(prompt, system=None, *, sub_stage=None):
             nonlocal call_count
             call_count += 1
             response = MagicMock()
@@ -929,7 +929,7 @@ class TestPipelineRouting:
         """When routing selects only scope, precision stage is skipped."""
         tmp_path, repo_id, fid1, fid2 = pipeline_repo
 
-        def _routing_scope_only(prompt, system=None):
+        def _routing_scope_only(prompt, system=None, *, sub_stage=None):
             response = MagicMock()
             response.latency_ms = 100
             response.prompt_tokens = 50

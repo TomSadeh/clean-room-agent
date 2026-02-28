@@ -200,6 +200,7 @@ def assign_groups(
     Groups exceeding max_group_size are capped.
     """
     if not confirmed_pairs:
+        logger.info("assign_groups: no confirmed similar pairs — returning empty groups")
         return {}
 
     # Union-find

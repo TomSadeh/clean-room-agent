@@ -99,6 +99,7 @@ def run_plan(
                             stage_name="execute_plan",
                             system_prompt=call["system"],
                             thinking=call.get("thinking"),
+                            sub_stage=call.get("sub_stage"),
                         )
                     raw_conn.commit()
                 finally:

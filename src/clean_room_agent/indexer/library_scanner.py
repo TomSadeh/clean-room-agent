@@ -150,10 +150,13 @@ def _auto_resolve(repo_path: Path) -> list[LibrarySource]:
 def scan_library(
     library: LibrarySource,
     max_file_size: int = _DEFAULT_LIBRARY_MAX_FILE_SIZE,
-) -> list[LibraryFileInfo]:
+) -> tuple[list[LibraryFileInfo], list[tuple[str, str]]]:
     """Walk a library directory, collecting .py files for indexing.
 
     Skips tests/, _vendor/, examples/, docs/, __pycache__/.
+
+    Returns (files, skipped) where skipped is a list of (path, reason) tuples
+    for files that were excluded (T2-6: audit trail for skip decisions).
     """
     result = []
     root = library.package_path
@@ -174,17 +177,21 @@ def scan_library(
                     absolute_path=root,
                     size_bytes=size,
                 ))
-        return result
+        return result, []
 
     if not root.is_dir():
         logger.warning("Library path does not exist: %s", root)
-        return result
+        return result, []
+
+    skipped: list[tuple[str, str]] = []
 
     for py_file in root.rglob("*.py"):
         rel = py_file.relative_to(root)
 
         # Skip excluded directories
         if any(part in _SKIP_DIRS for part in rel.parts):
+            prefixed = f"{library.package_name}/{rel.as_posix()}"
+            skipped.append((prefixed, "excluded_directory"))
             continue
 
         # Skip oversized files
@@ -196,6 +203,8 @@ def scan_library(
                 f"File discovered by rglob but stat failed — check permissions."
             ) from e
         if size > max_file_size:
+            prefixed = f"{library.package_name}/{rel.as_posix()}"
+            skipped.append((prefixed, f"oversized:{size}>{max_file_size}"))
             continue
 
         # Prefix with package name
@@ -206,4 +215,4 @@ def scan_library(
             size_bytes=size,
         ))
 
-    return result
+    return result, skipped

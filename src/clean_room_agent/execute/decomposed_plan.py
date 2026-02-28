@@ -77,7 +77,7 @@ def _run_change_point_enum(
         pass_type="change_point_enum",
         model_config=llm.config,
     )
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="change_point_enum")
     result = parse_plan_response(response.text, "change_point_enum")
     if not isinstance(result, ChangePointEnumeration):
         raise ValueError(
@@ -112,7 +112,7 @@ def _run_part_grouping(
         model_config=llm.config,
         prior_stage_output=prior_output,
     )
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="part_grouping")
     result = parse_plan_response(response.text, "part_grouping")
     if not isinstance(result, PartGrouping):
         raise ValueError(
@@ -488,7 +488,7 @@ def _run_symbol_targeting(
         model_config=llm.config,
         cumulative_diff=cumulative_diff,
     )
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="symbol_targeting")
     result = parse_plan_response(response.text, "symbol_targeting")
     if not isinstance(result, SymbolTargetEnumeration):
         raise ValueError(
@@ -524,7 +524,7 @@ def _run_step_design(
         prior_stage_output=prior_output,
         cumulative_diff=cumulative_diff,
     )
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="step_design")
     result = parse_plan_response(response.text, "step_design")
     if not isinstance(result, PartPlan):
         raise ValueError(

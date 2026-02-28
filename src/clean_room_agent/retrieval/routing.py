@@ -46,7 +46,7 @@ def route_stages(
 
     stage_items = list(available_stages.items())  # [(name, description), ...]
 
-    verdict_map, _ = run_binary_judgment(
+    verdict_map, _omitted = run_binary_judgment(
         stage_items,
         system_prompt=ROUTING_BINARY_SYSTEM,
         task_context=task_context,

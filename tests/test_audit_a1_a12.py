@@ -255,8 +255,11 @@ class TestA1EnrichmentLoggedClient:
             return mock_raw_conn
 
         mock_client_instance = MagicMock()
-        # flush returns remaining records in finally block
-        mock_client_instance.flush.return_value = [{"prompt": "x", "response": "y"}]
+        # flush returns remaining records in finally block — must match LoggedLLMClient record format
+        mock_client_instance.flush.return_value = [{
+            "prompt": "x", "response": "y", "system": None,
+            "prompt_tokens": 10, "completion_tokens": 5, "elapsed_ms": 100,
+        }]
 
         models_config = {
             "provider": "ollama",
@@ -269,10 +272,12 @@ class TestA1EnrichmentLoggedClient:
 
         with patch("clean_room_agent.llm.enrichment.get_connection", side_effect=mock_get_conn):
             with patch("clean_room_agent.llm.enrichment.LoggedLLMClient", return_value=mock_client_instance):
-                with caplog.at_level(logging.WARNING):
+                with patch("clean_room_agent.llm.enrichment.insert_retrieval_llm_call") as mock_insert:
                     with pytest.raises(RuntimeError, match="No indexed repo"):
                         enrich_repository(Path("/tmp/test"), models_config)
 
-        assert any("unflushed" in r.message for r in caplog.records)
+        # T2-5: with raw_conn available, unflushed records are written to retrieval_llm_calls
+        assert mock_insert.call_count == 1
+        assert mock_insert.call_args.kwargs["call_type"] == "enrichment"
 
 

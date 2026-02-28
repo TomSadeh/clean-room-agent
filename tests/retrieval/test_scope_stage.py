@@ -191,7 +191,7 @@ def _binary_scope_llm(path_verdicts):
     llm.config.context_window = 32768
     llm.config.max_tokens = 4096
 
-    def _complete(prompt, system=None):
+    def _complete(prompt, system=None, *, sub_stage=None):
         resp = MagicMock()
         for path, answer in path_verdicts.items():
             if path in prompt:

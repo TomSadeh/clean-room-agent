@@ -84,8 +84,8 @@ def decomposed_scaffold(
     """
     task_description = f"Part: {part_plan.part_id}\nGoal: {part_plan.task_summary}"
 
-    enum_result = _run_interface_enum(context, task_description, part_plan, llm, cumulative_diff)
-    header_contents = _run_header_generation(enum_result, context, task_description, llm, cumulative_diff)
+    enum_result, enum_raw_response = _run_interface_enum(context, task_description, part_plan, llm, cumulative_diff)
+    header_contents, header_raw_responses = _run_header_generation(enum_result, context, task_description, llm, cumulative_diff)
     stub_contents = _generate_deterministic_stubs(enum_result, header_contents)
 
     # Write all files to disk
@@ -95,7 +95,11 @@ def decomposed_scaffold(
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
 
-    return _assemble_scaffold_result(header_contents, stub_contents, enum_result)
+    return _assemble_scaffold_result(
+        header_contents, stub_contents, enum_result,
+        enum_raw_response=enum_raw_response,
+        header_raw_responses=header_raw_responses,
+    )
 
 
 def _run_interface_enum(
@@ -123,9 +127,9 @@ def _run_interface_enum(
         model_config=llm.config,
         cumulative_diff=cumulative_diff,
     )
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="interface_enum")
     result = parse_scaffold_response(response.text, "interface_enum")
-    return result
+    return result, response.text
 
 
 def _run_header_generation(
@@ -134,10 +138,12 @@ def _run_header_generation(
     task_description: str,
     llm: LoggedLLMClient,
     cumulative_diff: str | None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
     """Stage 2: Generate one .h file per unique header path.
 
-    Returns dict mapping header_path -> file content.
+    Returns (header_contents, header_raw_responses):
+        header_contents: dict mapping header_path -> file content.
+        header_raw_responses: dict mapping header_path -> raw LLM response text.
     """
     # Group types and functions by header file
     header_files: dict[str, dict] = {}
@@ -150,6 +156,7 @@ def _run_header_generation(
         header_files[f.file_path]["functions"].append(f.to_dict())
 
     header_contents: dict[str, str] = {}
+    header_raw_responses: dict[str, str] = {}
 
     for header_path in sorted(header_files):
         spec = header_files[header_path]
@@ -167,7 +174,7 @@ def _run_header_generation(
             prior_stage_output=prior_output,
             cumulative_diff=cumulative_diff,
         )
-        response = llm.complete(user, system=system)
+        response = llm.complete(user, system=system, sub_stage="header_gen")
 
         # Raw output — the LLM produces the header file content directly.
         # Strip markdown code fences if the model wraps it despite instructions.
@@ -177,8 +184,9 @@ def _run_header_generation(
                 f"Header generation for {header_path} produced empty content"
             )
         header_contents[header_path] = content
+        header_raw_responses[header_path] = response.text
 
-    return header_contents
+    return header_contents, header_raw_responses
 
 
 def _generate_deterministic_stubs(
@@ -337,20 +345,28 @@ def _assemble_scaffold_result(
     header_contents: dict[str, str],
     stub_contents: dict[str, str],
     enum_result: InterfaceEnumeration,
+    *,
+    enum_raw_response: str = "",
+    header_raw_responses: dict[str, str] | None = None,
 ) -> ScaffoldResult:
     """Combine header and stub info into a ScaffoldResult.
 
     Files are already written to disk by decomposed_scaffold().
     The ScaffoldResult contains empty edits (files were written directly)
     but populated header_files/source_files for downstream use.
+
+    T2-4: raw_response includes actual LLM output texts, not just a synthetic
+    summary. This ensures the artifact links directly to what the LLM said.
     """
     header_files = sorted(header_contents.keys())
     source_files = sorted(stub_contents.keys())
 
-    # Build raw_response summary from enum_result for logging
+    # Build raw_response with actual LLM outputs for traceability (T2-4)
     raw_response = json.dumps({
         "decomposed": True,
         "interface_enum": enum_result.to_dict(),
+        "interface_enum_raw": enum_raw_response,
+        "header_gen_raw": header_raw_responses or {},
         "header_count": len(header_files),
         "source_count": len(source_files),
     })
@@ -405,7 +421,7 @@ def select_kb_patterns_for_function(
     def kb_key(kb_file):
         return kb_file.path
 
-    verdict_map, _omitted = run_binary_judgment(
+    verdict_map, _kb_omitted = run_binary_judgment(
         kb_files,
         system_prompt=system_prompt,
         task_context=task_context,

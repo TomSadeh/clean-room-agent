@@ -33,15 +33,16 @@ def insert_retrieval_llm_call(
     stage_name: str | None = None,
     system_prompt: str | None = None,
     thinking: str | None = None,
+    sub_stage: str | None = None,
 ) -> int:
     """Log a retrieval LLM call to the raw DB. Returns the call id."""
     return _insert_row(conn, "retrieval_llm_calls",
         ["task_id", "call_type", "stage_name", "model", "system_prompt", "prompt",
          "response", "prompt_tokens", "completion_tokens", "latency_ms",
-         "thinking", "timestamp"],
+         "thinking", "sub_stage", "timestamp"],
         [task_id, call_type, stage_name, model, system_prompt, prompt,
          response, prompt_tokens, completion_tokens, latency_ms,
-         thinking, _now()],
+         thinking, sub_stage, _now()],
     )
 
 
@@ -262,6 +263,22 @@ def update_orchestrator_pass_sha(
     conn.execute(
         "UPDATE orchestrator_passes SET commit_sha = ? WHERE id = ?",
         (commit_sha, pass_id),
+    )
+
+
+def insert_audit_event(
+    conn: sqlite3.Connection,
+    component: str,
+    event_type: str,
+    *,
+    item_path: str | None = None,
+    detail: str | None = None,
+    task_id: str | None = None,
+) -> int:
+    """Log an audit event to the raw DB. Returns the event id."""
+    return _insert_row(conn, "audit_events",
+        ["task_id", "component", "event_type", "item_path", "detail", "timestamp"],
+        [task_id, component, event_type, item_path, detail, _now()],
     )
 
 

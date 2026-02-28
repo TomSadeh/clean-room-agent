@@ -431,7 +431,7 @@ def _finalize_adjustment(
         "adjustment_finalize",
     )
 
-    response = llm.complete(user, system=system)
+    response = llm.complete(user, system=system, sub_stage="adjustment_finalize")
     adjustment = parse_plan_response(response.text, "adjustment_finalize")
     if not isinstance(adjustment, PlanAdjustment):
         raise ValueError(

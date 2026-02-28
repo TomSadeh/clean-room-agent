@@ -60,7 +60,7 @@ def _make_mock_llm(model_config, responses):
     llm.flush.return_value = []
 
     response_iter = iter(responses)
-    def complete_side_effect(prompt, system=None):
+    def complete_side_effect(prompt, system=None, *, sub_stage=None):
         text = next(response_iter)
         return LLMResponse(
             text=text, thinking=None,

@@ -36,7 +36,7 @@ def _binary_llm(pass_map):
     mock_llm.config.context_window = 32768
     mock_llm.config.max_tokens = 4096
 
-    def _complete(prompt, system=None):
+    def _complete(prompt, system=None, *, sub_stage=None):
         resp = MagicMock()
         # Determine which pass based on system prompt
         if system == PRECISION_PASS1_SYSTEM:

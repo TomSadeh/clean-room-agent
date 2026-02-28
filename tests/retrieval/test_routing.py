@@ -45,7 +45,7 @@ def _binary_routing_llm(stage_verdicts):
     llm.config.context_window = 32768
     llm.config.max_tokens = 4096
 
-    def _complete(prompt, system=None):
+    def _complete(prompt, system=None, *, sub_stage=None):
         resp = MagicMock()
         for name, answer in stage_verdicts.items():
             if f"Stage: {name}" in prompt:

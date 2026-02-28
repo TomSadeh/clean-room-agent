@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -112,6 +113,10 @@ def assemble_context(
             "reason": f"included: detail={fc.detail_level}, tokens={fc.token_estimate}",
         })
 
+    # T2-11: debug validation of framing token estimates vs actual rendering
+    if os.environ.get("CRA_DEBUG_BUDGET"):
+        _validate_framing_estimates(file_contents)
+
     return ContextPackage(
         task=context.task,
         files=file_contents,
@@ -124,6 +129,42 @@ def assemble_context(
             "assembly_decisions": assembly_decisions,
         },
     )
+
+
+def _validate_framing_estimates(file_contents: list[FileContent]) -> None:
+    """Debug-only: compare estimated framing tokens vs actual rendered framing.
+
+    Enabled by CRA_DEBUG_BUDGET env var. Logs warnings for mismatches.
+    T2-11: ensures R5 (framing overhead is part of the budget) holds in practice.
+    """
+    for fc in file_contents:
+        estimated = estimate_framing_tokens(
+            fc.path, fc.language, fc.detail_level,
+            has_metadata=bool(fc.metadata_summary),
+        )
+        # Render just the framing portion (header + code fence markers)
+        actual_framing = _count_actual_framing_tokens(fc)
+        if abs(estimated - actual_framing) > 5:
+            logger.warning(
+                "T2-11 framing mismatch for %s: estimated=%d actual=%d (delta=%d)",
+                fc.path, estimated, actual_framing, estimated - actual_framing,
+            )
+
+
+def _count_actual_framing_tokens(fc: FileContent) -> int:
+    """Count tokens consumed by framing (headers, code fences) for a rendered file.
+
+    Subtracts the raw content tokens from the total rendered tokens to isolate
+    the framing overhead.
+    """
+    # Build the framing text without content
+    framing_parts = [f"## {fc.path} [{fc.detail_level}]"]
+    if fc.metadata_summary:
+        framing_parts.append(fc.metadata_summary)
+    framing_parts.append(f"```{fc.language}")
+    framing_parts.append("```")
+    framing_text = "\n".join(framing_parts) + "\n"
+    return estimate_tokens(framing_text)
 
 
 def _classify_file_inclusions(

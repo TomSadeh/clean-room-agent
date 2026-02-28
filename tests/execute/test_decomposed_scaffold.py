@@ -86,7 +86,7 @@ def _make_mock_llm(model_config, responses):
     llm.flush.return_value = []
 
     response_iter = iter(responses)
-    def complete_side_effect(prompt, system=None):
+    def complete_side_effect(prompt, system=None, *, sub_stage=None):
         text = next(response_iter)
         return LLMResponse(
             text=text, thinking=None,
@@ -181,12 +181,13 @@ class TestHeaderGeneration:
             '#endif'
         )
         llm = _make_mock_llm(model_config, [header_response])
-        contents = _run_header_generation(
+        contents, raw_responses = _run_header_generation(
             enum_result, context_package, "test task", llm, None,
         )
         assert len(contents) == 1
         assert "list.h" in contents
         assert "#ifndef LIST_H" in contents["list.h"]
+        assert "list.h" in raw_responses
 
     def test_multiple_headers(self, context_package, model_config):
         enum_result = InterfaceEnumeration(
@@ -214,12 +215,13 @@ class TestHeaderGeneration:
             'B *b_init(void);\n#endif',
         ]
         llm = _make_mock_llm(model_config, responses)
-        contents = _run_header_generation(
+        contents, raw_responses = _run_header_generation(
             enum_result, context_package, "test task", llm, None,
         )
         assert len(contents) == 2
         assert llm.complete.call_count == 2
         assert set(contents.keys()) == {"a.h", "b.h"}
+        assert set(raw_responses.keys()) == {"a.h", "b.h"}
 
     def test_strips_code_fences(self, context_package, model_config):
         """LLM wraps output in markdown fences — we strip them."""
@@ -232,11 +234,13 @@ class TestHeaderGeneration:
         )
         fenced_response = '```c\n#ifndef FOO_H\nint foo(void);\n#endif\n```'
         llm = _make_mock_llm(model_config, [fenced_response])
-        contents = _run_header_generation(
+        contents, raw_responses = _run_header_generation(
             enum_result, context_package, "test task", llm, None,
         )
         assert "#ifndef FOO_H" in contents["foo.h"]
         assert "```" not in contents["foo.h"]
+        # Raw response preserves original fenced text
+        assert "```" in raw_responses["foo.h"]
 
     def test_empty_response_raises(self, context_package, model_config):
         enum_result = InterfaceEnumeration(

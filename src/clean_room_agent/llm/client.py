@@ -181,7 +181,7 @@ class LoggedLLMClient:
     def config(self) -> ModelConfig:
         return self._client.config
 
-    def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
+    def complete(self, prompt: str, system: str | None = None, *, sub_stage: str | None = None) -> LLMResponse:
         """Send a completion request and record the full I/O.
 
         Failed calls are recorded with error info for traceability (T70),
@@ -201,6 +201,7 @@ class LoggedLLMClient:
                 "completion_tokens": None,
                 "elapsed_ms": elapsed,
                 "error": str(e),
+                "sub_stage": sub_stage,
             })
             raise
         elapsed = int((time.monotonic() - start) * 1000)
@@ -213,6 +214,7 @@ class LoggedLLMClient:
             "completion_tokens": response.completion_tokens,
             "elapsed_ms": elapsed,
             "error": "",
+            "sub_stage": sub_stage,
         }
         self.calls.append(record)
         return response
@@ -251,9 +253,9 @@ class EnvironmentLLMClient:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    def complete(self, prompt: str, system: str | None = None) -> LLMResponse:
+    def complete(self, prompt: str, system: str | None = None, *, sub_stage: str | None = None) -> LLMResponse:
         enriched = f"{self._brief}\n\n{prompt}" if self._brief else prompt
-        return self._inner.complete(enriched, system=system)
+        return self._inner.complete(enriched, system=system, sub_stage=sub_stage)
 
     def __enter__(self):
         return self

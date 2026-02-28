@@ -4,6 +4,50 @@ Remaining findings from code reviews and audits. Completed items removed — see
 
 ---
 
+## Transparency Principle Audit — 2026-02-28
+
+Core test: "a human must be able to trace any output back through every decision that produced it using only the logs." Findings organized by the specific transparency sub-principle violated.
+
+### Critical — FIXED
+
+- [x] **T2-1: Decomposed stage LLM calls lack sub-stage labels** — Added `sub_stage` column to `retrieval_llm_calls`, threaded `sub_stage=` kwarg through `LoggedLLMClient.complete()` / `EnvironmentLLMClient.complete()` / all flush paths. Each decomposed LLM call now passes its stage name (e.g. `"change_point_enum"`, `"header_gen"`, `"adjustment_finalize"`). `run_binary_judgment` also passes `sub_stage` (defaults to `stage_name`).
+
+- [x] **T2-2: Omitted binary judgment keys discarded by all callers** — Added centralized warning in `run_binary_judgment()` that logs omission count, item count, default action, and sorted keys when `omitted_keys` is non-empty. Renamed `_` to `_omitted` at callers that discard (precision ×3, routing ×1, scaffold ×1) to signal intent.
+
+### High — FIXED
+
+- [x] **T2-3: Precision cascade silently drops when intermediate lists empty** — Added `logger.info(...)` before each early return in `classify_symbols()` when `relevant` is empty (pass1) or `non_primary` is empty (pass2).
+
+- [x] **T2-4: Decomposed scaffold raw_response is synthetic, not actual** — Modified `_run_interface_enum()` and `_run_header_generation()` to also return raw LLM response text. `_assemble_scaffold_result()` now includes `interface_enum_raw` and `header_gen_raw` in the `raw_response` JSON.
+
+- [x] **T2-5: Enrichment LLM calls isolated from main audit trail** — Added `_flush_to_retrieval_llm_calls()` helper that writes enrichment LLM calls to `retrieval_llm_calls` with `call_type="enrichment"` and `task_id="enrichment:{file_path}"`. Called at all three flush sites (error, success, cleanup). `enrichment_outputs` remains canonical.
+
+### Medium — FIXED
+
+- [x] **T2-6: Library scanner skip decisions logged to Python logger only, not raw DB** — `scan_library()` now returns `(files, skipped)` tuple where `skipped` is `list[(path, reason)]`. Caller in `index_libraries()` writes each skip to `audit_events` table via `insert_audit_event()`.
+
+- [x] **T2-7: KB indexer silent-continue patterns without raw DB audit trail** — `index_knowledge_base()` opens `raw_conn` and writes `insert_audit_event()` at each decision point: unknown source, missing directory, empty parse result.
+
+- [x] **T2-8: DB upserts silently overwrite without audit trail** — `_do_index()` checks for existing repo remote_url before upsert and logs changes. Changed file content_hash differences logged to `audit_events`.
+
+- [x] **T2-9: Rollback original_contents excluded from artifact serialization** — `_rollback_part()` now calls `insert_audit_event()` with `component="rollback"`, `event_type="part_rolled_back"`, and JSON detail including files list, git_reset flag, and checkpoint SHA.
+
+- [x] **T2-10: Scope stage metadata search results unordered before capping** — Already fixed: `_dedup_by_score()` sorts by specificity score descending before capping. Added docstring noting T2-10 verification.
+
+- [x] **T2-11: Framing token estimate not validated against actual rendering** — Added `_validate_framing_estimates()` and `_count_actual_framing_tokens()` in context_assembly.py, activated by `CRA_DEBUG_BUDGET` env var. Logs warnings when estimated vs actual framing tokens diverge by >5.
+
+### Low — FIXED
+
+- [x] **T2-12: Binary judgment parse failures log key but not the unparseable response** — Appended `answer[:200]` (via `%.200s` format) to all three warning messages in `run_binary_judgment()`.
+
+- [x] **T2-13: Similarity stage zero-group outcome silent** — Added `logger.info("assign_groups: no confirmed similar pairs — returning empty groups")` on empty result.
+
+- [x] **T2-14: HTML parser skips entries without logging** — Added `logger = logging.getLogger(__name__)` and `logger.debug(...)` at each silent skip in both `parse_crafting_interpreters` (no title) and `parse_cppreference` (no title, empty content).
+
+- [x] **T2-15: Indexer config silently defaults to empty dict** — Added `logger.info("Indexer effective config: %s", ic or "(all defaults)")` in `_do_index()` after `ic = indexer_config or {}`.
+
+---
+
 ## Transparency Audit — 2026-02-28 (commits dfdc871..10f7f12)
 
 All Critical, High, and Medium findings fixed. Low findings fixed except L9.

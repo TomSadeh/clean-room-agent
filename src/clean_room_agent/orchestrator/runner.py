@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from clean_room_agent.trace import TraceLogger
 from clean_room_agent.db.connection import _db_path, get_connection
 from clean_room_agent.db.raw_queries import (
+    insert_audit_event,
     insert_orchestrator_pass,
     insert_orchestrator_run,
     insert_retrieval_llm_call,
@@ -170,6 +171,7 @@ def _flush_llm_calls(
             stage_name=stage_name,
             system_prompt=call["system"],
             thinking=call.get("thinking"),
+            sub_stage=call.get("sub_stage"),
         )
         prompt_tokens_list.append(call["prompt_tokens"])
         completion_tokens_list.append(call["completion_tokens"])
@@ -356,6 +358,24 @@ def _rollback_part(
     # A6: Mark affected run_attempts as rolled back in raw DB
     # Must happen before any raise — DB should reflect reality even on partial failure
     mark_part_attempts_rolled_back(raw_conn, task_id, part_id)
+
+    # T2-9: log rollback event to raw DB audit trail
+    rollback_files = []
+    for patches in (code_patches, doc_patches, test_patches):
+        for p in patches:
+            if hasattr(p, "edits"):
+                rollback_files.extend(e.file_path for e in p.edits if hasattr(e, "file_path"))
+    insert_audit_event(
+        raw_conn, "rollback", "part_rolled_back",
+        item_path=part_id,
+        detail=json.dumps({
+            "files": rollback_files,
+            "git_reset": git is not None,
+            "sha": part_start_sha,
+        }),
+        task_id=task_id,
+    )
+
     raw_conn.commit()
     logger.info("Rollback: marked run_attempts as rolled back for part %s", part_id)
 

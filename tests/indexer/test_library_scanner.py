@@ -29,7 +29,7 @@ class TestScanLibrary:
         _write(lib_dir / "readme.md", "# Readme")
 
         lib = LibrarySource(package_name="mylib", package_path=lib_dir)
-        result = scan_library(lib)
+        result, skipped = scan_library(lib)
 
         assert len(result) == 1
         assert result[0].relative_path == "mylib/module.py"
@@ -46,10 +46,12 @@ class TestScanLibrary:
         _write(lib_dir / "_vendor" / "vendored.py", "vendored code")
 
         lib = LibrarySource(package_name="mylib", package_path=lib_dir)
-        result = scan_library(lib)
+        result, skipped = scan_library(lib)
 
         assert len(result) == 1
         assert result[0].relative_path == "mylib/core.py"
+        # Skipped dirs should be recorded
+        assert any(reason == "excluded_directory" for _, reason in skipped)
 
     def test_scan_library_size_limit(self, tmp_path):
         """scan_library skips files larger than max_file_size."""
@@ -60,10 +62,12 @@ class TestScanLibrary:
         big_file.write_bytes(b"x" * 2000)
 
         lib = LibrarySource(package_name="mylib", package_path=lib_dir)
-        result = scan_library(lib, max_file_size=1000)
+        result, skipped = scan_library(lib, max_file_size=1000)
 
         assert len(result) == 1
         assert result[0].relative_path == "mylib/small.py"
+        # Oversized file should be in skipped list
+        assert any("huge.py" in path and reason.startswith("oversized") for path, reason in skipped)
 
     def test_scan_library_relative_paths(self, tmp_path):
         """Paths are prefixed with the package name."""
@@ -72,7 +76,7 @@ class TestScanLibrary:
         _write(lib_dir / "__init__.py", "")
 
         lib = LibrarySource(package_name="numpy", package_path=lib_dir)
-        result = scan_library(lib)
+        result, _skipped = scan_library(lib)
 
         paths = {r.relative_path for r in result}
         assert "numpy/core/numeric.py" in paths

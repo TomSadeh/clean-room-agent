@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 
 from clean_room_agent.knowledge_base.models import RefSection, title_to_path
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -203,6 +206,7 @@ def parse_crafting_interpreters(html_dir: Path) -> list[RefSection]:
         parser.feed(text)
 
         if not parser.chapter_title:
+            logger.debug("Skipping %s: no chapter title found", html_file.name)
             continue
 
         ch_num = parser.chapter_number or str(ordering)
@@ -407,10 +411,12 @@ def parse_cppreference(ref_dir: Path) -> list[RefSection]:
         parser.feed(text)
 
         if not parser.title:
+            logger.debug("Skipping %s: no title found", html_file.name)
             continue
 
         content = "".join(parser.content_parts).strip()
         if not content:
+            logger.debug("Skipping %s: empty content after parsing", html_file.name)
             continue
 
         # Build section path from relative path

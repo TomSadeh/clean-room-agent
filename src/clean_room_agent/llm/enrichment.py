@@ -8,12 +8,43 @@ from pathlib import Path
 
 from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db.queries import upsert_file_metadata
-from clean_room_agent.db.raw_queries import insert_enrichment_output
+from clean_room_agent.db.raw_queries import insert_enrichment_output, insert_retrieval_llm_call
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.llm.router import ModelRouter
 from clean_room_agent.token_estimation import check_prompt_budget
 
 logger = logging.getLogger(__name__)
+
+def _flush_to_retrieval_llm_calls(
+    client: "LoggedLLMClient",
+    raw_conn,
+    file_path: str,
+    model: str,
+) -> None:
+    """Flush LoggedLLMClient records to retrieval_llm_calls for unified audit trail (T2-5).
+
+    enrichment_outputs remains canonical for enrichment data. This ensures
+    enrichment LLM calls also appear in retrieval_llm_calls so a human querying
+    the standard audit path finds them.
+    """
+    calls = client.flush()
+    for call in calls:
+        insert_retrieval_llm_call(
+            raw_conn,
+            task_id=f"enrichment:{file_path}",
+            call_type="enrichment",
+            model=model,
+            prompt=call["prompt"],
+            response=call["response"],
+            prompt_tokens=call["prompt_tokens"],
+            completion_tokens=call["completion_tokens"],
+            latency_ms=call["elapsed_ms"],
+            stage_name="enrichment",
+            system_prompt=call["system"],
+            thinking=call.get("thinking"),
+            sub_stage=call.get("sub_stage"),
+        )
+
 
 ENRICHMENT_SYSTEM = (
     "You are a code analysis assistant. Analyze the given source file and produce a JSON object "
@@ -118,7 +149,8 @@ def enrich_repository(
             except Exception as e:
                 logger.error("Enrichment failed for %s: %s", file_path, e)
                 # H1: record failure to raw DB for audit trail
-                client.flush()
+                # T2-5: also write to retrieval_llm_calls for unified audit trail
+                _flush_to_retrieval_llm_calls(client, raw_conn, file_path, model_config.model)
                 insert_enrichment_output(
                     raw_conn,
                     file_id=file_id,
@@ -164,7 +196,9 @@ def enrich_repository(
                 latency_ms=elapsed_ms,
             )
             raw_conn.commit()
-            client.flush()  # discard logged records — enrichment_outputs is canonical
+            # T2-5: write to retrieval_llm_calls for unified audit trail before discarding
+            _flush_to_retrieval_llm_calls(client, raw_conn, file_path, model_config.model)
+            raw_conn.commit()
             enriched += 1
 
             # Optionally promote to curated
@@ -191,9 +225,14 @@ def enrich_repository(
         )
     finally:
         if client is not None:
-            remaining = client.flush()
-            if remaining:
-                logger.warning("Enrichment: %d unflushed LLM call records (likely from errors)", len(remaining))
+            # T2-5: flush any remaining to retrieval_llm_calls before close
+            if raw_conn is not None:
+                _flush_to_retrieval_llm_calls(client, raw_conn, "unknown", model_config.model)
+                raw_conn.commit()
+            else:
+                remaining = client.flush()
+                if remaining:
+                    logger.warning("Enrichment: %d unflushed LLM call records (no raw_conn)", len(remaining))
             client.close()
         if curated_conn is not None:
             curated_conn.close()

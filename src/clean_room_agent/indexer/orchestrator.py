@@ -9,6 +9,7 @@ from pathlib import Path
 
 from clean_room_agent.db.connection import get_connection
 from clean_room_agent.db import queries, raw_queries
+from clean_room_agent.db.raw_queries import insert_audit_event
 from clean_room_agent.extractors.dependencies import resolve_dependencies
 from clean_room_agent.extractors.git_extractor import extract_git_history, get_remote_url
 from clean_room_agent.indexer.file_scanner import scan_repo
@@ -280,8 +281,24 @@ def _do_index(
 ) -> IndexResult:
     ic = indexer_config or {}
 
+    # T2-15: Log effective config at the start of the indexing run
+    logger.info("Indexer effective config: %s", ic or "(all defaults)")
+
     # Register repo
     remote_url = get_remote_url(repo_path)
+
+    # T2-8: Check for changes before upsert and log to raw DB
+    existing_repo = curated_conn.execute(
+        "SELECT id, remote_url FROM repos WHERE path = ?", (str(repo_path),)
+    ).fetchone()
+    if existing_repo and existing_repo["remote_url"] != remote_url:
+        insert_audit_event(
+            raw_conn, "upsert_overwrite", "repo_remote_url_changed",
+            item_path=str(repo_path),
+            detail=f"old={existing_repo['remote_url']!r} new={remote_url!r}",
+        )
+        raw_conn.commit()
+
     repo_id = queries.upsert_repo(curated_conn, str(repo_path), remote_url)
     curated_conn.commit()
 
@@ -307,6 +324,14 @@ def _do_index(
     for p in common_paths:
         if scanned_map[p].content_hash != existing_map[p][1]:
             changed_paths.add(p)
+            # T2-8: log old→new hash for each changed file
+            insert_audit_event(
+                raw_conn, "upsert_overwrite", "file_content_changed",
+                item_path=p,
+                detail=f"old_hash={existing_map[p][1][:16]} new_hash={scanned_map[p].content_hash[:16]}",
+            )
+    if changed_paths:
+        raw_conn.commit()
 
     unchanged_paths = common_paths - changed_paths
 
@@ -469,8 +494,17 @@ def index_libraries(
         existing_map = {r["path"]: (r["id"], r["content_hash"]) for r in existing}
 
         for lib in sources:
-            lib_files = scan_library(lib, max_file_size=max_file_size)
+            lib_files, lib_skipped = scan_library(lib, max_file_size=max_file_size)
             total_scanned += len(lib_files)
+
+            # T2-6: log skip decisions to raw DB audit trail
+            for skip_path, skip_reason in lib_skipped:
+                insert_audit_event(
+                    raw_conn, "library_scanner", "file_skipped",
+                    item_path=skip_path, detail=skip_reason,
+                )
+            if lib_skipped:
+                raw_conn.commit()
 
             for lf in lib_files:
                 scanned_paths.add(lf.relative_path)

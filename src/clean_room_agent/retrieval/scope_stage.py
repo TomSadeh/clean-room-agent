@@ -27,7 +27,11 @@ class ScopeCandidate(NamedTuple):
 
 
 def _dedup_by_score(candidates: list[ScopeCandidate]) -> list[ScopeCandidate]:
-    """Deduplicate candidates by file_id, keeping the highest score."""
+    """Deduplicate candidates by file_id, keeping the highest score.
+
+    T2-10 verified: specificity scoring + descending sort satisfies R6
+    (arbitrary caps must be ordered by a defined relevance criterion).
+    """
     best: dict[int, ScopeCandidate] = {}
     for c in candidates:
         if c.file_id not in best or c.score > best[c.file_id].score:

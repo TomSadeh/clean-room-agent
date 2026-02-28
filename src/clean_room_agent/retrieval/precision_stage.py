@@ -195,7 +195,7 @@ def classify_symbols(
     task_header = f"Task: {task.raw_task}\nIntent: {task.intent_summary}\n\n"
 
     # === Pass 1: relevant or excluded? ===
-    pass1_map, _ = run_binary_judgment(
+    pass1_map, _omitted = run_binary_judgment(
         project_candidates,
         system_prompt=PRECISION_PASS1_SYSTEM,
         task_context=task_header,
@@ -212,10 +212,14 @@ def classify_symbols(
             results.append(_make_classified(c, "excluded", "pass1: not relevant"))
 
     if not relevant:
+        logger.info(
+            "R2: precision pass1 excluded all %d project symbols — none judged relevant",
+            len(project_candidates),
+        )
         return results
 
     # === Pass 2: primary or not? (only relevant symbols) ===
-    pass2_map, _ = run_binary_judgment(
+    pass2_map, _omitted = run_binary_judgment(
         relevant,
         system_prompt=PRECISION_PASS2_SYSTEM,
         task_context=task_header,
@@ -233,10 +237,14 @@ def classify_symbols(
         results.append(_make_classified(c, "primary", "pass2: directly involved"))
 
     if not non_primary:
+        logger.info(
+            "Precision pass2: all %d relevant symbols classified as primary — skipping pass3",
+            len(primary),
+        )
         return results
 
     # === Pass 3: supporting or type_context? (only non-primary relevant symbols) ===
-    pass3_map, _ = run_binary_judgment(
+    pass3_map, _omitted = run_binary_judgment(
         non_primary,
         system_prompt=PRECISION_PASS3_SYSTEM,
         task_context=task_header,

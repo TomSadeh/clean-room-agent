@@ -33,6 +33,7 @@ def run_binary_judgment(
     stage_name: str,
     item_key: Callable | None = None,
     default_action: str = "excluded",
+    sub_stage: str | None = None,
 ) -> tuple[dict[Hashable, bool], set[Hashable]]:
     """Run independent binary (yes/no) LLM judgment on each item.
 
@@ -75,7 +76,7 @@ def run_binary_judgment(
             f"{stage_name}_binary",
         )
 
-        response = llm.complete(prompt, system=system_prompt)
+        response = llm.complete(prompt, system=system_prompt, sub_stage=sub_stage or stage_name)
         answer = response.text.strip().lower()
 
         # Parse binary response: accept "yes"/"no" or minimal JSON
@@ -90,8 +91,8 @@ def run_binary_judgment(
                 # This is expected with small classifiers — default to exclude.
                 # Intentional: individual item parse failures are not fatal.
                 logger.warning(
-                    "R2: %s binary judgment unparseable for %s — defaulting to %s",
-                    stage_name, str(key)[:100], default_action,
+                    "R2: %s binary judgment unparseable for %s — defaulting to %s. Response: %.200s",
+                    stage_name, str(key)[:100], default_action, answer,
                 )
                 verdict_map[key] = False
                 omitted_keys.add(key)
@@ -100,8 +101,8 @@ def run_binary_judgment(
             if not isinstance(parsed, dict):
                 # R2 default-deny: non-dict response (e.g. list or string).
                 logger.warning(
-                    "R2: %s binary judgment returned %s for %s — defaulting to %s",
-                    stage_name, type(parsed).__name__, str(key)[:100], default_action,
+                    "R2: %s binary judgment returned %s for %s — defaulting to %s. Response: %.200s",
+                    stage_name, type(parsed).__name__, str(key)[:100], default_action, answer,
                 )
                 verdict_map[key] = False
                 omitted_keys.add(key)
@@ -114,10 +115,17 @@ def run_binary_judgment(
             else:
                 # R2 default-deny: parsed JSON but missing expected keys.
                 logger.warning(
-                    "R2: %s binary judgment missing verdict/keep for %s — defaulting to %s",
-                    stage_name, str(key)[:100], default_action,
+                    "R2: %s binary judgment missing verdict/keep for %s — defaulting to %s. Response: %.200s",
+                    stage_name, str(key)[:100], default_action, answer,
                 )
                 verdict_map[key] = False
                 omitted_keys.add(key)
+
+    if omitted_keys:
+        logger.warning(
+            "R2: %s binary judgment omitted %d/%d items (parse failures, defaulted to %s): %s",
+            stage_name, len(omitted_keys), len(items), default_action,
+            sorted(str(k)[:80] for k in omitted_keys),
+        )
 
     return verdict_map, omitted_keys

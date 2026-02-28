@@ -236,6 +236,7 @@ def run_pipeline(
                     stage_name="stage_routing",
                     system_prompt=call["system"],
                     thinking=call.get("thinking"),
+                    sub_stage=call.get("sub_stage"),
                 )
             raw_conn.commit()
 
@@ -356,6 +357,7 @@ def run_pipeline(
                     stage_name="assembly",
                     system_prompt=call["system"],
                     thinking=call.get("thinking"),
+                    sub_stage=call.get("sub_stage"),
                 )
 
         # Log assembly-stage file decisions to raw DB

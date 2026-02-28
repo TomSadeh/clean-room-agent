@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from clean_room_agent.db.connection import get_connection
+from clean_room_agent.db.raw_queries import insert_audit_event
 from clean_room_agent.db.queries import (
     delete_bridge_files_for_source,
     delete_ref_sections_for_source,
@@ -96,45 +97,66 @@ def index_knowledge_base(
     start = time.monotonic()
     result = KBIndexResult()
 
+    # T2-7: open raw_conn for audit trail of indexing decisions
+    raw_conn = get_connection("raw", repo_path=repo_path)
+
     source_names = sources or list(SOURCE_REGISTRY.keys())
 
-    for name in source_names:
-        if name not in SOURCE_REGISTRY:
-            result.errors.append(f"Unknown source: {name}")
-            continue
+    try:
+        for name in source_names:
+            if name not in SOURCE_REGISTRY:
+                result.errors.append(f"Unknown source: {name}")
+                insert_audit_event(
+                    raw_conn, "kb_indexer", "unknown_source",
+                    item_path=name, detail="Not in SOURCE_REGISTRY",
+                )
+                raw_conn.commit()
+                continue
 
-        config = SOURCE_REGISTRY[name]
-        source_dir = kb_path / name
+            config = SOURCE_REGISTRY[name]
+            source_dir = kb_path / name
 
-        if not source_dir.exists():
-            result.errors.append(f"Source directory not found: {source_dir}")
-            continue
+            if not source_dir.exists():
+                result.errors.append(f"Source directory not found: {source_dir}")
+                insert_audit_event(
+                    raw_conn, "kb_indexer", "missing_directory",
+                    item_path=str(source_dir), detail=f"Source {name} directory not found",
+                )
+                raw_conn.commit()
+                continue
 
-        try:
-            sections = _parse_source(name, config, source_dir)
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse source {name}: {e}") from e
+            try:
+                sections = _parse_source(name, config, source_dir)
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse source {name}: {e}") from e
 
-        if not sections:
-            logger.info("No sections parsed for source %s", name)
-            continue
+            if not sections:
+                logger.info("No sections parsed for source %s", name)
+                insert_audit_event(
+                    raw_conn, "kb_indexer", "empty_parse",
+                    item_path=name, detail="Parser returned no sections",
+                )
+                raw_conn.commit()
+                continue
 
-        try:
-            n_sections, n_bridge = _insert_source(
-                name, config, sections, kb_path, repo_path,
-            )
-            result.sources_indexed += 1
-            result.sections_total += n_sections
-            result.bridge_files_created += n_bridge
-            logger.info(
-                "Indexed %s: %d sections, %d bridge files",
-                name, n_sections, n_bridge,
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to insert source {name}: {e}") from e
+            try:
+                n_sections, n_bridge = _insert_source(
+                    name, config, sections, kb_path, repo_path,
+                )
+                result.sources_indexed += 1
+                result.sections_total += n_sections
+                result.bridge_files_created += n_bridge
+                logger.info(
+                    "Indexed %s: %d sections, %d bridge files",
+                    name, n_sections, n_bridge,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to insert source {name}: {e}") from e
 
-    result.duration_ms = int((time.monotonic() - start) * 1000)
-    return result
+        result.duration_ms = int((time.monotonic() - start) * 1000)
+        return result
+    finally:
+        raw_conn.close()
 
 
 def _parse_source(

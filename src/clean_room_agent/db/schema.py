@@ -343,6 +343,19 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
             completed_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY,
+            task_id TEXT,
+            component TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            item_path TEXT,
+            detail TEXT,
+            timestamp TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_audit_events_component ON audit_events(component);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_task_id ON audit_events(task_id);
+
         CREATE TABLE IF NOT EXISTS orchestrator_passes (
             id INTEGER PRIMARY KEY,
             orchestrator_run_id INTEGER NOT NULL REFERENCES orchestrator_runs(id),
@@ -361,6 +374,7 @@ def create_raw_schema(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "orchestrator_runs", "git_branch TEXT")
     _migrate_add_column(conn, "orchestrator_runs", "git_base_ref TEXT")
     _migrate_add_column(conn, "retrieval_llm_calls", "thinking TEXT")
+    _migrate_add_column(conn, "retrieval_llm_calls", "sub_stage TEXT")
     _migrate_add_column(conn, "orchestrator_runs", "error_message TEXT")
     _migrate_add_column(conn, "orchestrator_passes", "commit_sha TEXT")
 
