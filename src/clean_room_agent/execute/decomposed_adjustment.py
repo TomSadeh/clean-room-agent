@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 FAILURE_CATEGORY_COMPILE = "compile_error"
 FAILURE_CATEGORY_TEST = "test_failure"
 FAILURE_CATEGORY_PATCH = "patch_failure"
-FAILURE_CATEGORY_RUNTIME = "runtime_error"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
 
 _COMPILE_PATTERNS = [
@@ -59,7 +58,7 @@ _PATCH_PATTERNS = [
 def _classify_failure(text: str) -> str:
     """Classify failure text into a category using regex patterns.
 
-    Priority: compile > test > patch > runtime > unknown.
+    Priority: compile > test > patch > unknown.
     """
     for pat in _COMPILE_PATTERNS:
         if pat.search(text):

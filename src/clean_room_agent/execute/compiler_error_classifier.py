@@ -212,7 +212,8 @@ def _run_single_binary(
         default_action="not_classified",
     )
 
-    return verdict_map.get(0, False)
+    # Single-item list: key 0 is always present in verdict_map
+    return verdict_map[0]
 
 
 def _resolve_missing_include(
@@ -371,7 +372,9 @@ def add_include_to_file(
     lines = content.split("\n")
     insert_idx = 0
 
-    # Find the last #include line and insert after it
+    # Find the last #include line and insert after it.
+    # String heuristic is acceptable here: operates only on auto-generated
+    # scaffold code where #include lines are always at top-of-file.
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("#include"):

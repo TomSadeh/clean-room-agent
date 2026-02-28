@@ -244,9 +244,9 @@ class PlanAdjustment(_SerializableMixin):
 @dataclass
 class FailureSignal(_SerializableMixin):
     """A single categorized failure extracted from a StepResult."""
-    category: str     # "compile_error", "test_failure", "patch_failure", "runtime_error", "unknown"
-    message: str      # the raw failure text (truncated if necessary)
-    source: str       # "error_info", "raw_response", or "step_failed"
+    category: str     # "compile_error", "test_failure", "patch_failure", "unknown"
+    message: str      # the raw failure text (budget-truncated if necessary)
+    source: str       # "error_info" or "step_failed"
 
     _REQUIRED = ("category", "message", "source")
     _NON_EMPTY = ("category", "message", "source")

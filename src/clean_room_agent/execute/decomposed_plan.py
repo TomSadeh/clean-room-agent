@@ -29,7 +29,7 @@ from clean_room_agent.execute.parsers import (
     validate_part_grouping,
     validate_plan,
 )
-from clean_room_agent.execute.prompts import build_decomposed_plan_prompt
+from clean_room_agent.execute.prompts import SYSTEM_PROMPTS, build_decomposed_plan_prompt
 from clean_room_agent.llm.client import LoggedLLMClient
 from clean_room_agent.retrieval.batch_judgment import run_binary_judgment
 from clean_room_agent.retrieval.dataclasses import ContextPackage
@@ -229,11 +229,8 @@ def _generate_part_description(
         file_str = ", ".join(files)
         desc = f"{type_str.capitalize()} across {file_str}: {sym_str}"
 
-    # Append first rationale as context (truncated)
-    first_rationale = cps[0].rationale
-    if len(first_rationale) > 80:
-        first_rationale = first_rationale[:77] + "..."
-    desc += f" -- {first_rationale}"
+    # Append first rationale as context
+    desc += f" -- {cps[0].rationale}"
 
     return desc
 
@@ -306,7 +303,6 @@ def _run_part_grouping_binary(
             pairs.append((indexed_cps[i], indexed_cps[j]))
 
     # Step 2: Binary judgment per pair
-    from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
     system_prompt = SYSTEM_PROMPTS["part_grouping_binary"]
 
     def pair_key(pair):
@@ -376,7 +372,6 @@ def _run_part_dependencies(
             if a.id != b.id:
                 pairs.append((a, b))
 
-    from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
     system_prompt = SYSTEM_PROMPTS["part_dependency"]
 
     def format_pair(pair):
@@ -556,7 +551,6 @@ def _run_step_dependencies(
             if a.id != b.id:
                 pairs.append((a, b))
 
-    from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
     system_prompt = SYSTEM_PROMPTS["step_dependency"]
 
     def format_pair(pair):

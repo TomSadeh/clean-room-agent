@@ -82,7 +82,7 @@ def _make_mock_llm(model_config, responses):
     llm.flush.return_value = []
 
     response_iter = iter(responses)
-    def complete_side_effect(prompt, system=None):
+    def complete_side_effect(prompt, system):
         text = next(response_iter)
         return LLMResponse(
             text=text, thinking=None,
@@ -540,12 +540,12 @@ class TestGeneratePartDescription:
         assert "a.py" in desc
         assert "b.py" in desc
 
-    def test_long_rationale_truncated(self):
+    def test_long_rationale_included_in_full(self):
+        """L1: Full rationale included, no truncation."""
         long_rationale = "x" * 200
         cps = [ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale=long_rationale)]
         desc = _generate_part_description([0], cps)
-        assert len(desc) < 300  # reasonable bound
-        assert "..." in desc
+        assert long_rationale in desc
 
 
 # -- Build grouping from components tests --
