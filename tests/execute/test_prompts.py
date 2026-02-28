@@ -332,6 +332,8 @@ class TestBuildTestImplementPrompt:
             "interface_enum", "header_gen", "kb_pattern_relevance",
             "adjustment_step_viability", "adjustment_root_cause",
             "adjustment_new_step", "adjustment_finalize",
+            "error_missing_include", "error_signature_mismatch",
+            "error_missing_definition", "error_which_include",
         }
         assert set(SYSTEM_PROMPTS.keys()) == expected
 

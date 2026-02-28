@@ -43,6 +43,11 @@ from clean_room_agent.execute.dataclasses import (
     StepResult,
 )
 from clean_room_agent.execute.documentation import run_documentation_pass
+from clean_room_agent.execute.compiler_error_classifier import (
+    ERROR_CAT_MISSING_INCLUDE,
+    add_include_to_file,
+    classify_compiler_error,
+)
 from clean_room_agent.execute.decomposed_adjustment import decomposed_adjustment
 from clean_room_agent.execute.decomposed_plan import decomposed_meta_plan, decomposed_part_plan
 from clean_room_agent.execute.decomposed_scaffold import decomposed_scaffold, select_kb_patterns_for_function
@@ -100,6 +105,14 @@ def _use_decomposed_adjustment(config: dict) -> bool:
     if "decomposed_adjustment" not in orch:
         logger.debug("decomposed_adjustment not in config, defaulting to False")
     return bool(orch.get("decomposed_adjustment", False))
+
+
+def _use_decomposed_error_classification(config: dict) -> bool:
+    """Check if decomposed error classification is enabled. Supplementary, default False."""
+    orch = config.get("orchestrator", {})
+    if "decomposed_error_classification" not in orch:
+        logger.debug("decomposed_error_classification not in config, defaulting to False")
+    return bool(orch.get("decomposed_error_classification", False))
 
 
 def _cap_cumulative_diff(diff: str, *, max_chars: int = _MAX_CUMULATIVE_DIFF_CHARS) -> str:
@@ -886,6 +899,7 @@ def run_orchestrator(
 
                 # KB pattern selection (decomposed scaffold mode only)
                 use_kb = use_decomposed and scaffold_context is not None
+                use_error_classification = use_decomposed and _use_decomposed_error_classification(config)
 
                 for stub_idx, stub in enumerate(scaffold_result.function_stubs):
                     sub_task_id = f"{task_id}:func_impl:{part.id}:{stub.name}"
@@ -966,25 +980,89 @@ def run_orchestrator(
                                         stub.name, attempt + 1, max_retries + 1,
                                         comp_error[:200],
                                     )
-                                    if attempt < max_retries:
-                                        # Keep failed code in place — compiler error
-                                        # references line numbers in current file
-                                        compiler_error = comp_error
-                                        continue
-                                    else:
-                                        # All retries exhausted — rollback to stub
-                                        if pre_impl_content:
-                                            for fpath, content in pre_impl_content.items():
-                                                (repo_path / fpath).write_text(
-                                                    content, encoding="utf-8",
+
+                                    # Classify error and attempt deterministic recovery
+                                    if use_error_classification:
+                                        try:
+                                            with LoggedLLMClient(coding_config) as cls_llm:
+                                                classification = classify_compiler_error(
+                                                    comp_error, stub.file_path,
+                                                    scaffold_content, stub, cls_llm,
                                                 )
-                                                scaffold_content[fpath] = content
-                                        logger.error(
-                                            "Function %s failed compilation after %d attempts, rolled back",
-                                            stub.name, max_retries + 1,
-                                        )
-                                        func_success = False
-                                        break
+                                                _flush_llm_calls(
+                                                    cls_llm, raw_conn, attempt_task_id,
+                                                    "classify_compiler_error", "classify_compiler_error",
+                                                    trace_logger,
+                                                )
+                                        except (ValueError, RuntimeError, OSError) as e:
+                                            logger.warning(
+                                                "Error classification failed for %s (falling back to blind retry): %s",
+                                                stub.name, e,
+                                            )
+                                            classification = None
+
+                                        if classification is not None and classification.category == ERROR_CAT_MISSING_INCLUDE and classification.suggested_include:
+                                            # Deterministic fix: insert include and re-compile
+                                            add_include_to_file(
+                                                stub.file_path,
+                                                classification.suggested_include,
+                                                scaffold_content,
+                                                repo_path,
+                                            )
+                                            recompiled, recomp_error = compile_single_file(
+                                                stub.file_path, repo_path,
+                                                compiler=scaffold_compiler,
+                                                flags=scaffold_compiler_flags,
+                                            )
+                                            if recompiled:
+                                                logger.info(
+                                                    "Function %s: deterministic include fix succeeded (%s)",
+                                                    stub.name, classification.suggested_include,
+                                                )
+                                                # Don't consume a retry attempt — jump to success path
+                                                code_patch_results.append(patch_result)
+                                                steps_completed += 1
+                                                func_success = True
+                                                cumulative_diff, commit_sha = _update_cumulative_diff(
+                                                    git, cumulative_diff, func_result.edits,
+                                                    f"cra: {part.id}:func:{stub.name}",
+                                                    max_diff_chars,
+                                                )
+                                                break
+                                            else:
+                                                # Include fix didn't fully resolve — set enriched error for retry
+                                                compiler_error = classification.diagnostic_context or comp_error
+                                                if attempt < max_retries:
+                                                    continue
+                                        elif classification is not None and classification.diagnostic_context:
+                                            # Enriched error context for retry
+                                            compiler_error = classification.diagnostic_context
+                                            if attempt < max_retries:
+                                                continue
+                                        else:
+                                            # logic_error or classification failed — raw error for retry
+                                            compiler_error = comp_error
+                                            if attempt < max_retries:
+                                                continue
+                                    else:
+                                        # No error classification — blind retry (existing behavior)
+                                        if attempt < max_retries:
+                                            compiler_error = comp_error
+                                            continue
+
+                                    # All retries exhausted — rollback to stub
+                                    if pre_impl_content:
+                                        for fpath, content in pre_impl_content.items():
+                                            (repo_path / fpath).write_text(
+                                                content, encoding="utf-8",
+                                            )
+                                            scaffold_content[fpath] = content
+                                    logger.error(
+                                        "Function %s failed compilation after %d attempts, rolled back",
+                                        stub.name, max_retries + 1,
+                                    )
+                                    func_success = False
+                                    break
 
                             # Success path
                             code_patch_results.append(patch_result)

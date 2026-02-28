@@ -127,6 +127,7 @@ def create_default_config(repo_path: Path) -> Path:
         '# decomposed_planning = false  # Multi-stage meta-plan/part-plan decomposition\n'
         '# decomposed_scaffold = false  # Multi-stage scaffold for smaller models\n'
         '# decomposed_part_grouping = false  # Pairwise binary part grouping (A11 decomposition)\n'
+        '# decomposed_error_classification = false  # Binary compiler error classification on retry (A18 decomposition)\n'
         '\n'
         '# [retrieval]\n'
         '# max_deps = 30\n'

@@ -376,6 +376,21 @@ class PatchResult(_SerializableMixin):
     _EXCLUDE = frozenset({"original_contents"})
 
 
+# -- Compiler error classification --
+
+
+@dataclass
+class CompilerErrorClassification(_SerializableMixin):
+    """Result of compiler error classification on the retry path."""
+    category: str          # "missing_include", "signature_mismatch", "missing_definition", "logic_error"
+    raw_error: str         # the original compiler error string
+    suggested_include: str | None = None   # header to add (only for missing_include)
+    diagnostic_context: str | None = None  # enriched context for the retry prompt
+
+    _REQUIRED = ("category", "raw_error")
+    _NON_EMPTY = ("category", "raw_error")
+
+
 # -- Scaffold data structures --
 
 @dataclass

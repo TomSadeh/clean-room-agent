@@ -87,6 +87,7 @@ The following decompositions from the original design record are **now implement
 | Precision → 3-pass binary cascade | **Done** | `retrieval/precision.py`: pass1 (relevance) → pass2 (primary) → pass3 (supporting) |
 | Per-function implementation (scaffold path) | **Done** | `orchestrator/runner.py`: per-stub loop with `execute_function_implement()` |
 | Adjustment → failure extract + binary viability + binary root cause + binary new step + finalize | **Done** | `execute/decomposed_adjustment.py`: `decomposed_adjustment()` |
+| Function implement retry → deterministic include check + binary error classification + route recovery | **Done** | `execute/compiler_error_classifier.py`: `classify_compiler_error()` |
 
 ## Decomposition-First Principle
 
@@ -106,7 +107,7 @@ Opportunities identified from code review (2026-02-28). Organized by implementat
 |---|---|---|---|
 | **A11** part grouping | ~~1.7B: produce clustered groups~~ **Done** | Pairwise binary: "same part?" → union-find → deterministic descriptions | Deterministic enum → N×binary 0.6B → deterministic post-process |
 | **A20** adjustment | ~~1.7B: revise all steps at once~~ **Done** | Binary viability per step + binary root cause per (failure, step) pair + binary "need new step?" → finalize | Deterministic enum → N×binary 0.6B → focused 1.7B finalize |
-| **A18** function implement (retry) | 1.7B: blind retry with compiler error | Add binary error classification: "missing include vs. logic error vs. missing definition?" → route recovery | +1 binary 0.6B call on retry path only |
+| **A18** function implement (retry) | ~~1.7B: blind retry with compiler error~~ **Done** | Add binary error classification: "missing include vs. logic error vs. missing definition?" → route recovery | +1 binary 0.6B call on retry path only |
 
 **Tier 2 — Decompose next** (high value, more implementation complexity):
 
