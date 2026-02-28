@@ -20,12 +20,17 @@ from clean_room_agent.execute.dataclasses import (
 from clean_room_agent.execute.decomposed_plan import (
     _assemble_meta_plan,
     _assemble_part_plan,
+    _build_grouping_from_components,
+    _generate_part_description,
     _run_change_point_enum,
     _run_part_dependencies,
     _run_part_grouping,
+    _run_part_grouping_binary,
     _run_step_dependencies,
     _run_step_design,
     _run_symbol_targeting,
+    _single_change_point_grouping,
+    _union_find_groups,
     decomposed_meta_plan,
     decomposed_part_plan,
 )
@@ -451,3 +456,252 @@ class TestDecomposedPartPlan:
         # Verify cumulative_diff was passed (appears in prompts)
         calls = llm.complete.call_args_list
         assert any("prior_changes" in str(c) for c in calls)
+
+
+# -- Union-find tests --
+
+
+class TestUnionFindGroups:
+    def test_empty_pairs(self):
+        """No pairs -> empty groups."""
+        result = _union_find_groups([])
+        assert result == {}
+
+    def test_single_pair(self):
+        """One pair -> one group of two."""
+        result = _union_find_groups([(0, 1)])
+        assert result == {0: [0, 1]}
+
+    def test_transitive_closure(self):
+        """(0,1) + (1,2) -> one group {0,1,2}."""
+        result = _union_find_groups([(0, 1), (1, 2)])
+        assert result == {0: [0, 1, 2]}
+
+    def test_two_separate_groups(self):
+        """(0,1) + (2,3) -> two groups."""
+        result = _union_find_groups([(0, 1), (2, 3)])
+        assert 0 in result and 2 in result
+        assert result[0] == [0, 1]
+        assert result[2] == [2, 3]
+
+    def test_deterministic_root_selection(self):
+        """Smaller index always becomes root."""
+        result = _union_find_groups([(5, 3), (3, 1)])
+        assert 1 in result
+        assert sorted(result[1]) == [1, 3, 5]
+
+
+# -- Description generation tests --
+
+
+class TestGeneratePartDescription:
+    def test_single_file(self):
+        cps = [
+            ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="Fix bug"),
+            ChangePoint(file_path="a.py", symbol="bar", change_type="modify", rationale="Related fix"),
+        ]
+        desc = _generate_part_description([0, 1], cps)
+        assert "a.py" in desc
+        assert "foo" in desc
+        assert "bar" in desc
+
+    def test_multiple_files(self):
+        cps = [
+            ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="Fix"),
+            ChangePoint(file_path="b.py", symbol="bar", change_type="add", rationale="New"),
+        ]
+        desc = _generate_part_description([0, 1], cps)
+        assert "a.py" in desc
+        assert "b.py" in desc
+
+    def test_long_rationale_truncated(self):
+        long_rationale = "x" * 200
+        cps = [ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale=long_rationale)]
+        desc = _generate_part_description([0], cps)
+        assert len(desc) < 300  # reasonable bound
+        assert "..." in desc
+
+
+# -- Build grouping from components tests --
+
+
+class TestBuildGroupingFromComponents:
+    def test_single_component(self):
+        cps = [
+            ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+            ChangePoint(file_path="a.py", symbol="bar", change_type="modify", rationale="r"),
+        ]
+        groups = {0: [0, 1]}
+        result = _build_grouping_from_components(groups, cps)
+        assert len(result.parts) == 1
+        assert result.parts[0].change_point_indices == [0, 1]
+        assert result.parts[0].affected_files == ["a.py"]
+        assert result.parts[0].id == "p1"
+
+    def test_two_components(self):
+        cps = [
+            ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+            ChangePoint(file_path="b.py", symbol="bar", change_type="add", rationale="r"),
+        ]
+        groups = {0: [0], 1: [1]}
+        result = _build_grouping_from_components(groups, cps)
+        assert len(result.parts) == 2
+        assert result.parts[0].id == "p1"
+        assert result.parts[1].id == "p2"
+
+    def test_affected_files_deduplication(self):
+        cps = [
+            ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+            ChangePoint(file_path="a.py", symbol="bar", change_type="modify", rationale="r"),
+            ChangePoint(file_path="b.py", symbol="baz", change_type="add", rationale="r"),
+        ]
+        groups = {0: [0, 1, 2]}
+        result = _build_grouping_from_components(groups, cps)
+        assert result.parts[0].affected_files == ["a.py", "b.py"]
+
+
+# -- Single change point grouping tests --
+
+
+class TestSingleChangePointGrouping:
+    def test_one_change_point(self):
+        cps = [ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r")]
+        result = _single_change_point_grouping(cps)
+        assert len(result.parts) == 1
+        assert result.parts[0].change_point_indices == [0]
+
+    def test_zero_change_points_raises(self):
+        with pytest.raises(ValueError, match="zero change points"):
+            _single_change_point_grouping([])
+
+
+# -- Binary part grouping tests --
+
+
+class TestRunPartGroupingBinary:
+    def test_two_change_points_same_part(self, model_config):
+        """Two change points, classifier says yes -> one part."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+                ChangePoint(file_path="a.py", symbol="bar", change_type="modify", rationale="r"),
+            ],
+        )
+        llm = _make_mock_llm(model_config, ["yes"])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        assert isinstance(result, PartGrouping)
+        assert len(result.parts) == 1
+        assert result.parts[0].change_point_indices == [0, 1]
+
+    def test_two_change_points_different_parts(self, model_config):
+        """Two change points, classifier says no -> two parts."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+                ChangePoint(file_path="b.py", symbol="bar", change_type="add", rationale="r"),
+            ],
+        )
+        llm = _make_mock_llm(model_config, ["no"])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        assert isinstance(result, PartGrouping)
+        assert len(result.parts) == 2
+
+    def test_three_change_points_transitive(self, model_config):
+        """Three CPs: (0,1)=yes, (0,2)=no, (1,2)=yes -> all in one group via transitivity."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+                ChangePoint(file_path="a.py", symbol="bar", change_type="modify", rationale="r"),
+                ChangePoint(file_path="a.py", symbol="baz", change_type="modify", rationale="r"),
+            ],
+        )
+        # Pairs: (0,1), (0,2), (1,2)
+        llm = _make_mock_llm(model_config, ["yes", "no", "yes"])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        assert len(result.parts) == 1
+        assert sorted(result.parts[0].change_point_indices) == [0, 1, 2]
+
+    def test_single_change_point(self, model_config):
+        """One change point -> one part, no LLM calls."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+            ],
+        )
+        llm = _make_mock_llm(model_config, [])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        assert len(result.parts) == 1
+        assert result.parts[0].change_point_indices == [0]
+        assert llm.complete.call_count == 0
+
+    def test_parse_failure_defaults_to_separate(self, model_config):
+        """R2: unparseable response defaults to 'no' (separate parts)."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+                ChangePoint(file_path="b.py", symbol="bar", change_type="add", rationale="r"),
+            ],
+        )
+        llm = _make_mock_llm(model_config, ["garbage"])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        # Unparseable -> treated as no -> two separate parts
+        assert len(result.parts) == 2
+
+    def test_validation_passes(self, model_config):
+        """Grouping passes validate_part_grouping (all indices covered)."""
+        enum_result = ChangePointEnumeration(
+            task_summary="t",
+            change_points=[
+                ChangePoint(file_path="a.py", symbol="foo", change_type="modify", rationale="r"),
+                ChangePoint(file_path="b.py", symbol="bar", change_type="add", rationale="r"),
+                ChangePoint(file_path="c.py", symbol="baz", change_type="modify", rationale="r"),
+            ],
+        )
+        # (0,1)=yes, (0,2)=no, (1,2)=no -> group {0,1} + isolated {2}
+        llm = _make_mock_llm(model_config, ["yes", "no", "no"])
+        result = _run_part_grouping_binary("task", enum_result, llm)
+        assert len(result.parts) == 2
+        # All indices are covered
+        all_indices = []
+        for part in result.parts:
+            all_indices.extend(part.change_point_indices)
+        assert sorted(all_indices) == [0, 1, 2]
+
+
+# -- Integration test: full pipeline with binary grouping --
+
+
+class TestDecomposedMetaPlanBinaryGrouping:
+    def test_end_to_end_binary_grouping(self, context_package, model_config):
+        """Full decomposed meta-plan with binary grouping."""
+        # Stage 1: change point enum
+        enum_json = json.dumps({
+            "task_summary": "Add validation",
+            "change_points": [
+                {"file_path": "a.py", "symbol": "validate", "change_type": "modify", "rationale": "Fix"},
+                {"file_path": "b.py", "symbol": "check", "change_type": "add", "rationale": "New"},
+            ],
+        })
+        # Stage 2: binary grouping — 1 pair: (0,1) -> no (separate parts)
+        # Stage 3: binary deps — 2 pairs: (p1→p2) and (p2→p1)
+        # p2 depends on p1, p1 does not depend on p2
+        responses = [enum_json, "no", "yes", "no"]
+        llm = _make_mock_llm(model_config, responses)
+
+        result = decomposed_meta_plan(
+            context_package, "Add validation", llm,
+            use_binary_grouping=True,
+        )
+
+        assert isinstance(result, MetaPlan)
+        assert result.task_summary == "Add validation"
+        assert len(result.parts) == 2
+        assert result.parts[0].id == "p1"
+        assert result.parts[1].depends_on == ["p1"]
+        # 4 LLM calls: enum + 1 binary grouping + 2 binary deps
+        assert llm.complete.call_count == 4

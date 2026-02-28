@@ -126,6 +126,7 @@ def create_default_config(repo_path: Path) -> Path:
         '# scaffold_compiler_flags = "-c -fsyntax-only -Wall"  # compiler flags for scaffold validation\n'
         '# decomposed_planning = false  # Multi-stage meta-plan/part-plan decomposition\n'
         '# decomposed_scaffold = false  # Multi-stage scaffold for smaller models\n'
+        '# decomposed_part_grouping = false  # Pairwise binary part grouping (A11 decomposition)\n'
         '\n'
         '# [retrieval]\n'
         '# max_deps = 30\n'

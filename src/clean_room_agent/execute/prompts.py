@@ -150,6 +150,21 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "- Parts should be independently testable where possible\n"
         "- Output only valid JSON, no markdown fencing or extra text"
     ),
+    "part_grouping_binary": (
+        "You are Jane, a task decomposition analyst. You will be given two change points "
+        "(files/symbols that need modification) from the same task. Determine whether these "
+        "two change points should be implemented together in the same part.\n\n"
+        "Two change points belong in the same part if:\n"
+        "- They modify the same logical component or subsystem\n"
+        "- One change depends on or closely interacts with the other\n"
+        "- They must be tested together to verify correctness\n"
+        "- Splitting them into separate parts would create artificial entanglement\n\n"
+        "Two change points belong in different parts if:\n"
+        "- They affect independent subsystems\n"
+        "- Either could be implemented and tested without the other\n"
+        "- They share no data flow or control flow coupling\n\n"
+        "Answer with exactly one word: \"yes\" or \"no\""
+    ),
     "part_dependency": (
         "You are Jane, a dependency analyst. You will be given two parts of a task decomposition. "
         "Determine whether the second part depends on the first part.\n\n"

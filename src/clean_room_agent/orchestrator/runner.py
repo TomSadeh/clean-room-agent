@@ -77,6 +77,14 @@ def _use_decomposed_planning(config: dict) -> bool:
     return bool(orch.get("decomposed_planning", False))
 
 
+def _use_decomposed_part_grouping(config: dict) -> bool:
+    """Check if decomposed part grouping is enabled. Supplementary, default False."""
+    orch = config.get("orchestrator", {})
+    if "decomposed_part_grouping" not in orch:
+        logger.debug("decomposed_part_grouping not in config, defaulting to False")
+    return bool(orch.get("decomposed_part_grouping", False))
+
+
 def _use_decomposed_scaffold(config: dict) -> bool:
     """Check if decomposed scaffold is enabled. Supplementary, default False."""
     orch = config.get("orchestrator", {})
@@ -651,7 +659,10 @@ def run_orchestrator(
 
         with LoggedLLMClient(reasoning_config) as llm:
             if _use_decomposed_planning(config):
-                meta_plan = decomposed_meta_plan(context, task, llm)
+                meta_plan = decomposed_meta_plan(
+                    context, task, llm,
+                    use_binary_grouping=_use_decomposed_part_grouping(config),
+                )
             else:
                 meta_plan = execute_plan(
                     context, task, llm,

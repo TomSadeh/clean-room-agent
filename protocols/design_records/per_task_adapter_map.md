@@ -99,7 +99,7 @@ Opportunities identified from code review (2026-02-28). Organized by implementat
 
 | Task | Current | Decomposition | Pattern |
 |---|---|---|---|
-| **A11** part grouping | 1.7B: produce clustered groups | Pairwise binary: "same part?" → union-find → deterministic descriptions | Deterministic enum → N×binary 0.6B → deterministic post-process |
+| **A11** part grouping | ~~1.7B: produce clustered groups~~ **Done** | Pairwise binary: "same part?" → union-find → deterministic descriptions | Deterministic enum → N×binary 0.6B → deterministic post-process |
 | **A20** adjustment | 1.7B: revise all steps at once | Binary viability per step + binary root cause per (failure, step) pair + binary "need new step?" → finalize | Deterministic enum → N×binary 0.6B → focused 1.7B finalize |
 | **A18** function implement (retry) | 1.7B: blind retry with compiler error | Add binary error classification: "missing include vs. logic error vs. missing definition?" → route recovery | +1 binary 0.6B call on retry path only |
 

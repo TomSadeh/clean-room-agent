@@ -74,7 +74,11 @@ def run_plan(
         with LoggedLLMClient(reasoning_config) as llm:
             try:
                 if decomposed:
-                    meta_plan = decomposed_meta_plan(package, task, llm)
+                    from clean_room_agent.orchestrator.runner import _use_decomposed_part_grouping
+                    meta_plan = decomposed_meta_plan(
+                        package, task, llm,
+                        use_binary_grouping=_use_decomposed_part_grouping(config),
+                    )
                 else:
                     meta_plan = execute_plan(
                         package, task, llm,

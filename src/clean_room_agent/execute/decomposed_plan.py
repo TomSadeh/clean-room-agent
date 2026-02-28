@@ -14,9 +14,11 @@ import json
 import logging
 
 from clean_room_agent.execute.dataclasses import (
+    ChangePoint,
     ChangePointEnumeration,
     MetaPlan,
     MetaPlanPart,
+    PartGroup,
     PartGrouping,
     PartPlan,
     PlanStep,
@@ -43,17 +45,23 @@ def decomposed_meta_plan(
     context: ContextPackage,
     task_description: str,
     llm: LoggedLLMClient,
+    *,
+    use_binary_grouping: bool = False,
 ) -> MetaPlan:
     """Generate a MetaPlan via three decomposed stages.
 
     1. Change point enumeration — identify all files/symbols that need to change
     2. Part grouping — cluster change points into logical parts
+       (monolithic or pairwise binary depending on use_binary_grouping)
     3. Binary part dependencies — pairwise "does B depend on A?" judgments
 
     Returns a MetaPlan structurally identical to what execute_plan("meta_plan") returns.
     """
     enum_result = _run_change_point_enum(context, task_description, llm)
-    grouping = _run_part_grouping(context, task_description, enum_result, llm)
+    if use_binary_grouping:
+        grouping = _run_part_grouping_binary(task_description, enum_result, llm)
+    else:
+        grouping = _run_part_grouping(context, task_description, enum_result, llm)
     dep_edges = _run_part_dependencies(grouping, task_description, llm)
     return _assemble_meta_plan(enum_result, grouping, dep_edges)
 
@@ -120,6 +128,235 @@ def _run_part_grouping(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Binary part grouping (A11 decomposition)
+# ---------------------------------------------------------------------------
+
+def _format_change_point_pair(pair: tuple[tuple[int, ChangePoint], tuple[int, ChangePoint]]) -> str:
+    """Format a pair of change points for binary judgment."""
+    (idx_a, cp_a), (idx_b, cp_b) = pair
+    return (
+        f"\nChange Point A (index {idx_a}): [{cp_a.change_type}] "
+        f"{cp_a.file_path} :: {cp_a.symbol}\n"
+        f"  Rationale: {cp_a.rationale}\n"
+        f"\nChange Point B (index {idx_b}): [{cp_b.change_type}] "
+        f"{cp_b.file_path} :: {cp_b.symbol}\n"
+        f"  Rationale: {cp_b.rationale}\n"
+        f"\nShould these two change points be in the same implementation part?"
+    )
+
+
+def _union_find_groups(pairs: list[tuple[int, int]]) -> dict[int, list[int]]:
+    """Union-find grouping from pairwise yes verdicts.
+
+    Args:
+        pairs: list of (index_a, index_b) pairs that should be grouped.
+
+    Returns:
+        dict mapping root index -> list of member indices (sorted).
+    """
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])  # path compression
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            if rx > ry:
+                rx, ry = ry, rx  # determinism: smaller root wins
+            parent[ry] = rx
+
+    for a, b in pairs:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        union(a, b)
+
+    groups: dict[int, list[int]] = {}
+    for idx in parent:
+        root = find(idx)
+        groups.setdefault(root, []).append(idx)
+
+    # Sort members within each group for determinism
+    for root in groups:
+        groups[root].sort()
+
+    return groups
+
+
+def _single_change_point_grouping(cps: list[ChangePoint]) -> PartGrouping:
+    """Handle trivial case: 0 or 1 change points."""
+    if not cps:
+        raise ValueError("Cannot group zero change points")
+    return PartGrouping(parts=[
+        PartGroup(
+            id="p1",
+            description=f"{cps[0].change_type.capitalize()} {cps[0].symbol} in {cps[0].file_path}",
+            change_point_indices=[0],
+            affected_files=[cps[0].file_path],
+        ),
+    ])
+
+
+def _generate_part_description(
+    member_indices: list[int],
+    change_points: list[ChangePoint],
+) -> str:
+    """Generate a deterministic part description from its change points.
+
+    Strategy:
+    - If all change points share the same file: "{change_type} {symbols} in {file}"
+    - If multiple files: "{change_types} across {files}: {symbols}"
+    - Uses the change points' rationales to add context
+    """
+    cps = [change_points[i] for i in member_indices]
+
+    files = list(dict.fromkeys(cp.file_path for cp in cps))  # deduplicated, ordered
+    symbols = list(dict.fromkeys(cp.symbol for cp in cps))
+    change_types = list(dict.fromkeys(cp.change_type for cp in cps))
+
+    type_str = "/".join(change_types)
+    sym_str = ", ".join(symbols)
+
+    if len(files) == 1:
+        desc = f"{type_str.capitalize()} {sym_str} in {files[0]}"
+    else:
+        file_str = ", ".join(files)
+        desc = f"{type_str.capitalize()} across {file_str}: {sym_str}"
+
+    # Append first rationale as context (truncated)
+    first_rationale = cps[0].rationale
+    if len(first_rationale) > 80:
+        first_rationale = first_rationale[:77] + "..."
+    desc += f" -- {first_rationale}"
+
+    return desc
+
+
+def _build_grouping_from_components(
+    groups: dict[int, list[int]],
+    change_points: list[ChangePoint],
+) -> PartGrouping:
+    """Build PartGrouping deterministically from union-find components.
+
+    Description: derived from the change points' file paths and symbols.
+    Affected files: unique file_paths from the component's change points.
+    Part IDs: "p1", "p2", ... in order of smallest member index.
+    """
+    # Sort groups by smallest member index for deterministic part ordering
+    sorted_roots = sorted(groups.keys())
+
+    parts = []
+    for part_num, root in enumerate(sorted_roots, start=1):
+        members = groups[root]  # already sorted in _union_find_groups
+
+        # Collect affected files (deduplicated, order-preserving)
+        affected_files: list[str] = []
+        seen_files: set[str] = set()
+        for idx in members:
+            fp = change_points[idx].file_path
+            if fp not in seen_files:
+                affected_files.append(fp)
+                seen_files.add(fp)
+
+        # Generate description from member change points
+        description = _generate_part_description(members, change_points)
+
+        parts.append(PartGroup(
+            id=f"p{part_num}",
+            description=description,
+            change_point_indices=list(members),
+            affected_files=affected_files,
+        ))
+
+    return PartGrouping(parts=parts)
+
+
+def _run_part_grouping_binary(
+    task_description: str,
+    enum_result: ChangePointEnumeration,
+    llm: LoggedLLMClient,
+) -> PartGrouping:
+    """Stage 2 (decomposed): Group change points via pairwise binary judgments.
+
+    1. Enumerate all N*(N-1)/2 unique pairs
+    2. Binary judgment per pair: "same part? yes/no"
+    3. Union-find on yes verdicts
+    4. Deterministic description + affected_files from components
+
+    No context package needed -- only change points and task description.
+    """
+    cps = enum_result.change_points
+    n = len(cps)
+
+    # Edge case: single change point -> single part
+    if n <= 1:
+        return _single_change_point_grouping(cps)
+
+    # Step 1: Enumerate all unique pairs (N*(N-1)/2)
+    indexed_cps = list(enumerate(cps))
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            pairs.append((indexed_cps[i], indexed_cps[j]))
+
+    # Step 2: Binary judgment per pair
+    from clean_room_agent.execute.prompts import SYSTEM_PROMPTS
+    system_prompt = SYSTEM_PROMPTS["part_grouping_binary"]
+
+    def pair_key(pair):
+        (idx_a, _), (idx_b, _) = pair
+        return f"{idx_a}-{idx_b}"
+
+    verdict_map, omitted = run_binary_judgment(
+        pairs,
+        system_prompt=system_prompt,
+        task_context=f"Task: {task_description}\n",
+        llm=llm,
+        format_item=_format_change_point_pair,
+        stage_name="part_grouping_binary",
+        item_key=pair_key,
+        default_action="separate_parts",
+    )
+    # R2 default-deny: omitted pairs default to "no" (separate parts).
+    # This is safe -- the worst case is too many parts, not too few.
+    # Unlike part_dependency (which fail-fasts on omissions), grouping
+    # tolerates parse failures because over-splitting is recoverable.
+
+    # Step 3: Union-find on yes verdicts
+    yes_pairs = []
+    for pair in pairs:
+        key = pair_key(pair)
+        if verdict_map.get(key, False):
+            (idx_a, _), (idx_b, _) = pair
+            yes_pairs.append((idx_a, idx_b))
+
+    # Ensure all indices appear in parent map (including isolated ones)
+    groups = _union_find_groups(yes_pairs)
+    # Add isolated indices (no yes verdict with any other)
+    grouped_indices = set()
+    for members in groups.values():
+        grouped_indices.update(members)
+    for i in range(n):
+        if i not in grouped_indices:
+            groups[i] = [i]
+
+    # Step 4: Deterministic PartGrouping construction
+    grouping = _build_grouping_from_components(groups, cps)
+
+    # Validate: same check as monolithic path
+    warnings = validate_part_grouping(grouping, len(cps))
+    if warnings:
+        raise ValueError(
+            f"Binary part grouping validation failed: {'; '.join(warnings)}"
+        )
+
+    return grouping
 
 
 def _run_part_dependencies(

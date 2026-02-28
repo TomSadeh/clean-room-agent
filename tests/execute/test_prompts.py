@@ -327,7 +327,7 @@ class TestBuildTestImplementPrompt:
             "meta_plan", "part_plan", "test_plan", "adjustment",
             "implement", "test_implement", "documentation",
             "scaffold", "function_implement",
-            "change_point_enum", "part_grouping", "part_dependency",
+            "change_point_enum", "part_grouping", "part_grouping_binary", "part_dependency",
             "symbol_targeting", "step_dependency", "step_design",
             "interface_enum", "header_gen", "kb_pattern_relevance",
         }
